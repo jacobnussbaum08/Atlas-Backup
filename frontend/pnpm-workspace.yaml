@@ -1,0 +1,7 @@
+# pnpm settings for the dashboard (single package, not a monorepo).
+packages:
+  - "."
+
+# Supply-chain hygiene: never install a package version published less than
+# 7 days ago (value in minutes).
+minimumReleaseAge: 10080

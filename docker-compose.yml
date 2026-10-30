@@ -1,0 +1,123 @@
+# Atlas AI Trader — local development stack (paper trading only).
+#
+#   docker compose up --build            start everything (migrations run first)
+#   docker compose down                  stop (data volume is kept)
+#   docker compose --profile test run --rm backend-tests   full backend test suite
+#
+# All published ports bind to 127.0.0.1 only.
+
+name: atlas
+
+x-backend-env: &backend-env
+  ATLAS_POSTGRES_HOST: postgres
+  ATLAS_POSTGRES_PORT: "5432"
+  ATLAS_REDIS_URL: redis://redis:6379/0
+
+services:
+  postgres:
+    image: postgres:16-bookworm
+    environment:
+      POSTGRES_DB: ${ATLAS_POSTGRES_DB:?set ATLAS_POSTGRES_DB in .env}
+      POSTGRES_USER: ${ATLAS_POSTGRES_USER:?set ATLAS_POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${ATLAS_POSTGRES_PASSWORD:?set ATLAS_POSTGRES_PASSWORD in .env}
+      TZ: UTC
+      PGTZ: UTC
+    command: ["postgres", "-c", "timezone=UTC", "-c", "log_timezone=UTC"]
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+  redis:
+    image: redis:7.4-bookworm
+    # Transient state only (spec 3.2): no RDB/AOF persistence.
+    environment:
+      ATLAS_REDIS_PASSWORD: ${ATLAS_REDIS_PASSWORD:-}
+    command:
+      - sh
+      - -c
+      - exec redis-server --save '' --appendonly no $${ATLAS_REDIS_PASSWORD:+--requirepass "$$ATLAS_REDIS_PASSWORD"}
+    ports:
+      - "127.0.0.1:${REDIS_HOST_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$ATLAS_REDIS_PASSWORD\" redis-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  migrate:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+      target: base
+    image: atlas-backend:dev
+    env_file: .env
+    environment: *backend-env
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  backend:
+    image: atlas-backend:dev
+    env_file: .env
+    environment:
+      <<: *backend-env
+      ATLAS_API_HOST: 0.0.0.0
+      ATLAS_API_PORT: "8000"
+    ports:
+      - "127.0.0.1:${API_HOST_PORT:-8000}:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    stop_grace_period: 20s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: ../docker/frontend.Dockerfile
+    environment:
+      ATLAS_BACKEND_URL: http://backend:8000
+      ATLAS_FRONTEND_HOST: 0.0.0.0
+    volumes:
+      - ./frontend/src:/app/src:ro
+      - ./frontend/public:/app/public:ro
+    ports:
+      - "127.0.0.1:${FRONTEND_HOST_PORT:-5173}:5173"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  backend-tests:
+    profiles: ["test"]
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+      target: dev
+    env_file: .env
+    environment:
+      <<: *backend-env
+      ATLAS_TEST_DATABASE_URL: postgresql+psycopg://${ATLAS_POSTGRES_USER}:${ATLAS_POSTGRES_PASSWORD}@postgres:5432/postgres
+      ATLAS_TEST_REDIS_URL: redis://redis:6379/15
+      ATLAS_REQUIRE_INTEGRATION: "1"
+    command: ["pytest"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
