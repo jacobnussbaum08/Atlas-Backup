@@ -194,3 +194,37 @@ Redis service, and there is no committed baseline to roll back to.
 Once Docker is installed (§7) and the baseline commit exists (§8), rerun the §7 commands. If
 PostgreSQL and Redis come up healthy and `/ready` reports all components `ok`, Atlas is
 **READY**. TimescaleDB is then a planned Phase 2 change, not a blocker.
+
+---
+
+## Addendum — infrastructure verification with Docker (2026-10-29)
+
+Docker Desktop (WSL 2 backend) was installed after the report above, and the infrastructure
+checks were rerun.
+
+**Stack state:** the `atlas` stack was already up when checked. Nothing was rebuilt, restarted
+or reset, and no volume was touched. `docker compose up -d postgres redis` was a no-op.
+
+| Check | Result |
+|---|---|
+| `docker --version` / `docker compose version` | ✅ Docker 29.9.2 / Compose v5.6.1 |
+| `docker compose config --quiet` | ✅ valid |
+| Services | ✅ `postgres`, `migrate`, `redis`, `backend`, `frontend` (+ `backend-tests` under profile `test`) |
+| PostgreSQL | ✅ 16.15. Healthy, `pg_isready` OK, timezone UTC, reachable from the host on `127.0.0.1:5432` with the app's engine |
+| Redis | ✅ 7.4.12. Healthy. `PING` → `PONG` in the container and from the host (app client). RDB/AOF persistence off as designed |
+| TimescaleDB | ❌ not available. `postgres:16-bookworm` has no `timescaledb` extension files (D-005). Planned as a Phase 2 change |
+| Migrations | ✅ `migrate` container applied `0001` and exited 0. `alembic current` = `0001 (head)`. Rerunning `upgrade head` is a no-op. `alembic check` reports no drift. Audit-log triggers and PAPER-only constraint present |
+| Running API `/health` / `/ready` | ✅ 200 / 200 `ready`: database, migrations and Redis all `ok` |
+| Dashboard and proxy (`:5173`) | ✅ 200, `/ready` proxied |
+| Backend suite against Docker PostgreSQL + Redis (`ATLAS_REQUIRE_INTEGRATION=1`) | ✅ **100 passed, 0 skipped**, including `test_real_redis_round_trip`. No scratch databases or test keys left behind |
+
+**Minor defect found (not fixed):** the Redis healthcheck in `docker-compose.yml` sets
+`REDISCLI_AUTH` even when `ATLAS_REDIS_PASSWORD` is empty. `redis-cli` then prints
+`AUTH failed: … called without any password configured` before `PONG`. The healthcheck still
+passes, but the message is misleading.
+
+**Revised readiness: READY WITH LIMITATIONS.** All Phase 1 acceptance criteria are now
+verified, including `docker compose up` and Redis. The limitations:
+
+* TimescaleDB is not yet in the stack. It is a planned Phase 2 decision.
+* The Alpaca credentials should be rotated before Phase 2 uses them (§4).
