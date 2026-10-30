@@ -37,6 +37,21 @@ class NotFoundError(AtlasError):
     http_status = 404
 
 
+class InvalidRequestError(AtlasError):
+    code = "invalid_request"
+    http_status = 422
+
+
+class UnauthorizedError(AtlasError):
+    code = "unauthorized"
+    http_status = 401
+
+
+class ForbiddenError(AtlasError):
+    code = "forbidden"
+    http_status = 403
+
+
 def _error_body(code: str, message: str, request: Request) -> dict[str, object]:
     return {
         "error": {
@@ -82,6 +97,9 @@ __all__ = [
     "AtlasError",
     "ConfigurationError",
     "DependencyUnavailableError",
+    "ForbiddenError",
+    "InvalidRequestError",
     "NotFoundError",
+    "UnauthorizedError",
     "register_exception_handlers",
 ]

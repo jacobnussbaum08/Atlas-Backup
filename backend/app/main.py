@@ -12,6 +12,7 @@ from importlib.metadata import PackageNotFoundError, version
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.api import health
 from app.api import v1 as api_v1
@@ -22,7 +23,10 @@ from app.core.exceptions import register_exception_handlers
 from app.core.logging import configure_logging, get_logger
 from app.core.redis_client import build_redis
 from app.core.security import TRADING_MODE
-from app.database.sessions import build_engine, build_session_factory
+from app.data_engine.historical import INTERRUPTED_REASON
+from app.data_engine.runtime import MarketDataContext, build_market_data_context
+from app.database.repositories import IngestionJobRepository
+from app.database.sessions import build_engine, build_session_factory, session_scope
 from app.monitoring.health import (
     HealthCheck,
     check_database,
@@ -41,16 +45,33 @@ def _package_version() -> str:
         return "0.0.0+unknown"
 
 
+def _recover_interrupted_jobs(session_factory: sessionmaker[Session], clock: Clock) -> None:
+    """Jobs run in-process, so any job still PENDING/RUNNING at startup was orphaned."""
+    try:
+        with session_scope(session_factory) as session:
+            count = IngestionJobRepository(session).mark_interrupted(
+                reason=INTERRUPTED_REASON, at=clock.now()
+            )
+    except Exception as exc:  # the database may be down; /ready reports that
+        logger.warning("historical.recovery_skipped", error_type=type(exc).__name__)
+        return
+    if count:
+        logger.warning("historical.jobs_interrupted", count=count)
+
+
 def create_app(
     settings: Settings | None = None,
     *,
     clock: Clock | None = None,
     health_checks: Mapping[str, HealthCheck] | None = None,
+    market_data: MarketDataContext | None = None,
 ) -> FastAPI:
     """Build the application.
 
     ``health_checks`` replaces the real dependency checks; when given, no
     database engine or Redis client is created (used by unit tests).
+    ``market_data`` injects the market-data context (tests); otherwise it is built
+    lazily from the environment on first use.
     """
     settings = settings or get_settings()
     clock = clock or SystemClock()
@@ -76,6 +97,11 @@ def create_app(
                 "migrations": lambda: check_migrations(engine, heads),
                 "redis": lambda: check_redis(redis_client),
             }
+            session_factory = app.state.session_factory
+            app.state.market_data_factory = lambda: build_market_data_context(
+                session_factory, clock
+            )
+            _recover_interrupted_jobs(session_factory, clock)
         else:
             app.state.health_checks = dict(health_checks)
 
@@ -103,6 +129,7 @@ def create_app(
     )
     app.state.settings = settings
     app.state.clock = clock
+    app.state.market_data = market_data
     app.state.version = app.version
     app.state.started_at = clock.now()
 

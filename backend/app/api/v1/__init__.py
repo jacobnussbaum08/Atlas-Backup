@@ -2,6 +2,11 @@
 
 from fastapi import APIRouter
 
+from app.api.v1 import market_data, market_data_recovery, market_data_stream
+
 router = APIRouter(prefix="/api/v1")
+router.include_router(market_data.router)
+router.include_router(market_data_stream.router)
+router.include_router(market_data_recovery.router)
 
 __all__ = ["router"]

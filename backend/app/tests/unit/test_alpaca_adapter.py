@@ -8,11 +8,11 @@ import pytest
 
 from app.core.clocks import FixedClock
 from app.core.config import MarketDataSettings
+from app.data_engine.enums import PriceAdjustment
 from app.data_engine.errors import (
     CredentialsNotConfiguredError,
     InvalidProviderSymbolError,
     ProviderConfigurationError,
-    ProviderOperationNotImplementedError,
     UnknownProviderError,
     UnsupportedCapabilityError,
 )
@@ -44,6 +44,7 @@ def _request(**overrides) -> HistoricalBarsRequest:
     values = {
         "provider_symbols": ("SPY", "AAPL"),
         "timeframe": "5Min",
+        "adjustment": PriceAdjustment.RAW,
         "start": NOW - timedelta(days=2),
         "end": NOW - timedelta(days=1),
     } | overrides
@@ -235,18 +236,51 @@ def test_only_market_data_hosts_are_used():
     assert not any("api.alpaca.markets" in h or "paper-api" in h for h in hosts)
 
 
-# ------------------------------------------------------------------ later deliverables
-async def _call(coro_or_iter):
-    return await coro_or_iter
+# ------------------------------------------------------------------ streaming (2C)
+def test_create_stream_uses_the_configured_feed_without_connecting():
+    stream = _provider().create_stream()
+    assert stream.url == "wss://stream.data.alpaca.markets/v2/iex"
+    assert stream.state.value == "DISCONNECTED"
+    assert stream.auth_state.value == "NOT_ATTEMPTED"
+    assert FAKE_SECRET not in repr(stream)
+    assert FAKE_KEY not in repr(stream)
 
 
-def test_network_operations_are_explicitly_not_implemented_yet():
-    import asyncio
+def test_create_stream_refuses_unentitled_feed_and_missing_credentials():
+    with pytest.raises(UnsupportedCapabilityError):
+        _provider(data_feed="sip").create_stream()  # Basic plan: no real-time SIP
+    with pytest.raises(CredentialsNotConfiguredError):
+        AlpacaMarketDataProvider(AlpacaSettings(_env_file=None), FixedClock(NOW)).create_stream()
 
+
+def test_streaming_channels_follow_the_feed_entitlement():
+    assert {c.value for c in _provider().streaming_channels()} == {
+        "bars",
+        "updated_bars",
+        "daily_bars",
+        "trades",
+        "quotes",
+    }
+    assert _provider(data_feed="sip").streaming_channels() == frozenset()
+
+
+@pytest.mark.parametrize(
+    ("adjustment", "expected"),
+    [
+        (PriceAdjustment.RAW, "raw"),
+        (PriceAdjustment.SPLIT, "split"),
+        (PriceAdjustment.DIVIDEND, "dividend"),
+        (PriceAdjustment.SPIN_OFF, "spin-off"),
+        (PriceAdjustment.ALL, "all"),
+    ],
+)
+def test_adjustment_policy_is_sent_explicitly(adjustment, expected):
+    query = _provider().historical_bars_query(_request(adjustment=adjustment))
+    assert query["adjustment"] == expected
+
+
+def test_validate_historical_request_is_offline_and_strict():
     provider = _provider()
-    with pytest.raises(ProviderOperationNotImplementedError, match="2B"):
-        provider.fetch_bars(_request())
-    with pytest.raises(ProviderOperationNotImplementedError, match="2C"):
-        provider.create_stream()
-    with pytest.raises(ProviderOperationNotImplementedError, match="2B"):
-        asyncio.run(_call(provider.check_authentication()))
+    provider.validate_historical_request(_request())
+    with pytest.raises(UnsupportedCapabilityError):
+        provider.validate_historical_request(_request(timeframe="2Day"))

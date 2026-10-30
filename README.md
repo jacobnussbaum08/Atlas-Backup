@@ -31,7 +31,8 @@ It supersedes all earlier specifications.
 | Phase | Scope | State |
 |---|---|---|
 | 1 — Foundation | Repo, config, logging, DB + migrations, Redis, API health/readiness, dashboard shell, tests | Implemented. See [docs/phase-reports/phase-1-report.md](docs/phase-reports/phase-1-report.md) |
-| 2–11 | Market data → autonomous paper trading | Not started |
+| 2 — Market data | 2A provider architecture ✅. 2B historical retrieval ✅ (live-verified for AAPL and SPY on IEX). 2C live streaming ✅ (stream worker; live-verified: real IEX quotes, trades and bars for AAPL and SPY persisted). 2D reliability and recovery ✅ (completeness evidence, gap detection, recovery worker; live-verified recovery of real outages from Alpaca's IEX history). 2E dashboard pending | In progress. Reports in [docs/phase-reports/](docs/phase-reports/) |
+| 3–11 | Asset discovery → autonomous paper trading | Not started |
 
 ## Stack
 
@@ -127,7 +128,11 @@ backend/
     __main__.py           `python -m app` entry point (validates config first)
     api/                  HTTP layer: /health, /ready, versioned /api/v1
     core/                 config, logging, security (paper-only, redaction), exceptions, clocks, redis
+    data_engine/          market-data providers (Alpaca), historical and live ingestion, quality,
+                          NYSE calendar, completeness and recovery
     database/             ORM models, repositories, engine/session management
+    workers/              background processes (market_data_stream: live stream worker;
+                          market_data_recovery: gap detection and backfill)
     monitoring/           dependency health checks
     <future modules>/     documented placeholders (data_engine, risk, accounting, …)
     tests/                unit/ (no services) and integration/ (real PostgreSQL/Redis)

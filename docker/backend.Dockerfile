@@ -22,6 +22,7 @@ RUN uv sync --frozen --no-dev --no-install-project
 # Application code. The project is installed in editable mode so the Alembic
 # migrations and alembic.ini stay next to the code they belong to.
 COPY alembic.ini ./
+COPY config ./config
 COPY backend ./backend
 RUN uv sync --frozen --no-dev
 

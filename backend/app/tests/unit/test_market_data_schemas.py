@@ -9,6 +9,7 @@ from decimal import Decimal
 import pytest
 from pydantic import ValidationError
 
+from app.data_engine.enums import PriceAdjustment
 from app.data_engine.schemas import (
     DataIngestionJob,
     DataQualityStatus,
@@ -43,6 +44,7 @@ def _bar(**overrides) -> ProviderBar:
         "close": "100.20",
         "volume": "1200",
         "is_complete": True,
+        "adjustment": PriceAdjustment.RAW,
     } | overrides
     return ProviderBar(**values)
 
@@ -152,9 +154,10 @@ def test_ingestion_job_requires_ordered_range_and_symbols():
         "range_start": T0,
         "range_end": T0 + timedelta(days=1),
         "status": IngestionJobStatus.PENDING,
+        "adjustment": PriceAdjustment.RAW,
         "created_at": T0,
     }
-    assert DataIngestionJob(**base).records_stored == 0
+    assert DataIngestionJob(**base).counters.records_stored == 0
     with pytest.raises(ValidationError, match="range_end"):
         DataIngestionJob(**base | {"range_end": T0})
     with pytest.raises(ValidationError):

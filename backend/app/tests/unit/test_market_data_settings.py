@@ -101,5 +101,6 @@ def test_env_example_market_data_section_is_valid(isolated, tmp_path):
 
     settings = get_market_data_settings()
 
-    assert settings.market_data_symbols == ("SPY", "QQQ", "AAPL", "MSFT", "NVDA")
+    assert settings.market_data_symbols == ("AAPL", "SPY")
+    assert settings.historical_data_adjustment.value == "RAW"
     assert settings.market_data_stream_enabled is False

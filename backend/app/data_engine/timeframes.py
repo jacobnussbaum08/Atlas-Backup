@@ -8,10 +8,11 @@ form to their own syntax inside their adapters.
 from __future__ import annotations
 
 import re
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from functools import total_ordering
 from typing import Annotated, Any
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, PlainSerializer
 
@@ -77,6 +78,47 @@ class Timeframe(BaseModel):
         if self.unit is TimeframeUnit.HOUR:
             return timedelta(hours=self.amount)
         return None
+
+
+US_EQUITY_TIMEZONE = ZoneInfo("America/New_York")
+
+
+def bar_interval_end(
+    event_time: datetime, timeframe: Timeframe, session_timezone: ZoneInfo = US_EQUITY_TIMEZONE
+) -> datetime | None:
+    """End of the bar that starts at ``event_time``; ``None`` if it has no exact end.
+
+    Intraday bars have a fixed length. Day and week bars start at midnight in the
+    exchange's time zone (New York for US equities), so their end is computed in local
+    time to stay correct across daylight-saving changes. Month bars return ``None``.
+    """
+    duration = timeframe.fixed_duration
+    if duration is not None:
+        return event_time + duration
+    local = event_time.astimezone(session_timezone)
+    if timeframe.unit is TimeframeUnit.DAY:
+        return (local + timedelta(days=timeframe.amount)).astimezone(UTC)
+    if timeframe.unit is TimeframeUnit.WEEK:
+        return (local + timedelta(weeks=timeframe.amount)).astimezone(UTC)
+    return None
+
+
+def is_aligned(
+    event_time: datetime, timeframe: Timeframe, session_timezone: ZoneInfo = US_EQUITY_TIMEZONE
+) -> bool | None:
+    """Whether a bar start lies on the timeframe's grid; ``None`` if not checkable.
+
+    Intraday bars start on multiples of their length from the Unix epoch (UTC); day
+    bars start at local midnight. Week/month grids are not checked.
+    """
+    duration = timeframe.fixed_duration
+    if duration is not None:
+        offset = event_time - datetime(1970, 1, 1, tzinfo=UTC)
+        return offset % duration == timedelta(0)
+    if timeframe.unit is TimeframeUnit.DAY and timeframe.amount == 1:
+        local = event_time.astimezone(session_timezone)
+        return (local.hour, local.minute, local.second, local.microsecond) == (0, 0, 0, 0)
+    return None
 
 
 def _coerce(value: Any) -> Any:

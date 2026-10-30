@@ -89,6 +89,10 @@ class Settings(BaseSettings):
     api_port: int = Field(default=8000, ge=1, le=65535)
     cors_origins: Annotated[list[AnyHttpUrl], NoDecode] = Field(default_factory=list)
 
+    # Shared secret required in X-Atlas-Operator-Token for operational endpoints
+    # (e.g. starting a historical fetch). Unset: allowed only in development/test.
+    operator_token: SecretStr | None = None
+
     # ------------------------------------------------------------ logging
     log_level: LogLevel = "INFO"
     log_json: bool = True
@@ -122,7 +126,7 @@ class Settings(BaseSettings):
             return [item.strip() for item in value.split(",") if item.strip()]
         return value
 
-    @field_validator("redis_password", mode="before")
+    @field_validator("redis_password", "operator_token", mode="before")
     @classmethod
     def _empty_password_is_none(cls, value: object) -> object:
         return None if value == "" else value

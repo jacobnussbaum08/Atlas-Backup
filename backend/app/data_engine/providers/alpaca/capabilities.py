@@ -15,16 +15,19 @@ and ``delayed_sip``. BOATS, overnight and OTC feeds are intentionally excluded.
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, time, timedelta
 
+from app.data_engine.calendar import FeedHours
 from app.data_engine.capabilities import (
     DataType,
     FeedAccess,
     FeedCapability,
     FeedCoverage,
+    PriceAdjustment,
     ProviderCapabilities,
     TimeframeRule,
 )
+from app.data_engine.enums import StreamChannel
 from app.data_engine.errors import UnsupportedCapabilityError
 from app.data_engine.providers.alpaca.config import AlpacaDataPlan, AlpacaFeed
 from app.data_engine.timeframes import DAY_1, MINUTE_1, TimeframeUnit
@@ -77,8 +80,9 @@ ALPACA_CAPABILITIES = ProviderCapabilities(
     provider=PROVIDER_ID,
     display_name=DISPLAY_NAME,
     asset_classes=frozenset({AssetClass.EQUITY, AssetClass.ETF}),
-    # Historical trades/quotes exist at Alpaca but are not implemented by this adapter.
-    historical_data_types=frozenset({DataType.BAR}),
+    # Historical trades and quotes (2D recovery): on IEX the REST history was verified on
+    # 2026-10-30 to hold trades the live stream had skipped.
+    historical_data_types=frozenset({DataType.BAR, DataType.TRADE, DataType.QUOTE}),
     streaming_data_types=frozenset({DataType.BAR, DataType.QUOTE, DataType.TRADE}),
     feeds=FEEDS,
     historical_timeframes=(
@@ -91,9 +95,34 @@ ALPACA_CAPABILITIES = ProviderCapabilities(
     # Stream bars are minute bars ("b") and running daily bars ("d").
     streaming_bar_timeframes=frozenset({MINUTE_1, DAY_1}),
     max_page_size=10_000,
+    adjustments=frozenset(PriceAdjustment),  # raw, split, dividend, spin-off, all
     documentation=DOCUMENTATION,
     verified_on=date(2026, 10, 29),
 )
+
+# Live channels implemented for Alpaca stocks. Trade corrections and cancel/errors are
+# delivered automatically with ``trades`` and are recorded, never applied silently.
+# Statuses, LULD and imbalances are not subscribed.
+STREAMING_CHANNELS = frozenset(
+    {
+        StreamChannel.BARS,
+        StreamChannel.UPDATED_BARS,
+        StreamChannel.DAILY_BARS,
+        StreamChannel.TRADES,
+        StreamChannel.QUOTES,
+    }
+)
+# Hours in which each feed publishes (America/New_York). IEX: pre-market from 08:00 (IEX
+# rule filing, SEC 34-105959) to post-market end 17:00; Atlas's first IEX message on
+# 2026-10-30 arrived at 08:00:04. SIP: the consolidated 04:00-20:00 extended day. On
+# early-close days the late sessions still run to 17:00 (NYSE), so windows err wide.
+FEED_HOURS: dict[AlpacaFeed, FeedHours] = {
+    AlpacaFeed.IEX: FeedHours(time(8, 0), time(17, 0), time(17, 0)),
+    AlpacaFeed.SIP: FeedHours(time(4, 0), time(20, 0), time(17, 0)),
+    AlpacaFeed.DELAYED_SIP: FeedHours(time(4, 0), time(20, 0), time(17, 0)),
+}
+# Alpaca documents quote sizes ("bs"/"as") in round lots; Atlas stores them unconverted.
+QUOTE_SIZE_UNIT = "round_lots"
 
 _PLAN_LIMITS: dict[AlpacaDataPlan, tuple[int, int | None]] = {
     # plan: (historical requests per minute, WebSocket equity symbol limit; None = unlimited)
@@ -134,8 +163,19 @@ def feed_access(feed: AlpacaFeed, plan: AlpacaDataPlan) -> FeedAccess:
         historical_recency_limit=recency_limit,
         stream_symbol_limit=symbol_limit,
         requests_per_minute=requests_per_minute,
+        session_hours=FEED_HOURS[feed],
         notes=tuple(notes),
     )
+
+
+# Alpaca's spelling of each adjustment (query parameter ``adjustment``).
+ADJUSTMENT_PARAMS: dict[PriceAdjustment, str] = {
+    PriceAdjustment.RAW: "raw",
+    PriceAdjustment.SPLIT: "split",
+    PriceAdjustment.DIVIDEND: "dividend",
+    PriceAdjustment.SPIN_OFF: "spin-off",
+    PriceAdjustment.ALL: "all",
+}
 
 
 def parse_feed(code: str) -> AlpacaFeed:

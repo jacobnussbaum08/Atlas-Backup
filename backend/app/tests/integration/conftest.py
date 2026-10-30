@@ -78,6 +78,41 @@ def engine(migrated_url: URL) -> Iterator[Engine]:
     engine.dispose()
 
 
+@pytest.fixture(scope="session")
+def template_database(server_url: URL) -> Iterator[str]:
+    """A migrated database used as a template for fast per-test copies."""
+    name = f"atlas_tpl_{uuid.uuid4().hex[:12]}"
+    admin = create_engine(server_url, isolation_level="AUTOCOMMIT")
+    try:
+        with admin.connect() as conn:
+            conn.execute(text(f'CREATE DATABASE "{name}"'))
+        command.upgrade(alembic_config(server_url.set(database=name)), "head")
+        yield name
+    finally:
+        with admin.connect() as conn:
+            conn.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
+        admin.dispose()
+
+
+@pytest.fixture
+def fresh_engine(server_url: URL, template_database: str) -> Iterator[Engine]:
+    """An isolated, migrated database for one test (copied from the template)."""
+    name = f"atlas_t_{uuid.uuid4().hex[:12]}"
+    admin = create_engine(server_url, isolation_level="AUTOCOMMIT")
+    with admin.connect() as conn:
+        conn.execute(text(f'CREATE DATABASE "{name}" TEMPLATE "{template_database}"'))
+    engine = create_engine(
+        server_url.set(database=name), connect_args={"options": "-c timezone=UTC"}
+    )
+    try:
+        yield engine
+    finally:
+        engine.dispose()
+        with admin.connect() as conn:
+            conn.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
+        admin.dispose()
+
+
 @pytest.fixture
 def session(engine: Engine) -> Iterator[Session]:
     """A session whose work is rolled back after each test."""

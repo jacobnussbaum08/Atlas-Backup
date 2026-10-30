@@ -1,0 +1,50 @@
+# Atlas instrument reference data (operator-maintained, reviewed like code).
+#
+# This is instrument identity, not market data: asset class, listing exchange,
+# quote currency, and each provider's symbol with the period it is valid for.
+# Atlas does not call Alpaca's asset directory because it lives on the trading
+# API (decision D-019); Phase 3 asset discovery will maintain this from providers.
+#
+# Register entries into PostgreSQL with:
+#   uv run python -m app.data_engine.cli register-assets --symbols AAPL,SPY
+#
+# Fields
+#   symbol          Atlas symbol (upper case)
+#   asset_class     EQUITY | ETF | FOREX | CRYPTO
+#   exchange_code   ISO 10383 MIC of the primary listing
+#   quote_currency  ISO 4217
+#   [[asset.providers]]
+#     provider        registered provider id (market_data_providers.code)
+#     symbol          provider's symbol
+#     exchange        provider's own exchange label (optional)
+#     valid_from      start of the period this mapping is valid for (RFC 3339, UTC).
+#                     2016-01-01 covers Alpaca's documented stock history (from 2016).
+#
+# Initial Phase 2B universe: AAPL and SPY. QQQ, MSFT and NVDA are added here once
+# the first two pass acceptance.
+
+[[asset]]
+symbol = "AAPL"
+name = "Apple Inc."
+asset_class = "EQUITY"
+exchange_code = "XNAS"
+quote_currency = "USD"
+
+  [[asset.providers]]
+  provider = "alpaca"
+  symbol = "AAPL"
+  exchange = "NASDAQ"
+  valid_from = 2016-01-01T00:00:00Z
+
+[[asset]]
+symbol = "SPY"
+name = "SPDR S&P 500 ETF Trust"
+asset_class = "ETF"
+exchange_code = "ARCX"
+quote_currency = "USD"
+
+  [[asset.providers]]
+  provider = "alpaca"
+  symbol = "SPY"
+  exchange = "ARCA"
+  valid_from = 2016-01-01T00:00:00Z

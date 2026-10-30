@@ -9,7 +9,24 @@ from app.database.models.asset import (
 )
 from app.database.models.audit_log import ActorType, AuditLog
 from app.database.models.base import Base
-from app.database.models.market_data import MarketDataFeedRecord, MarketDataProviderRecord
+from app.database.models.market_data import (
+    CoverageRecord,
+    DataQualityEventRecord,
+    IngestionJobRecord,
+    IngestionJobSymbolRecord,
+    MarketBarRecord,
+    MarketDataFeedRecord,
+    MarketDataGapRecord,
+    MarketDataProviderRecord,
+    MarketQuoteRecord,
+    MarketTradeRecord,
+    RawMarketDataEventRecord,
+    RecoveryJobRecord,
+    RecoveryStatusRecord,
+    StreamGapRecord,
+    StreamSessionRecord,
+    StreamStatusRecord,
+)
 from app.database.models.portfolio_account import (
     PortfolioAccount,
     PortfolioAccountStatus,
@@ -24,10 +41,24 @@ __all__ = [
     "AssetStatus",
     "AuditLog",
     "Base",
+    "CoverageRecord",
+    "DataQualityEventRecord",
+    "IngestionJobRecord",
+    "IngestionJobSymbolRecord",
     "MappingStatus",
+    "MarketBarRecord",
     "MarketDataFeedRecord",
+    "MarketDataGapRecord",
     "MarketDataProviderRecord",
+    "MarketQuoteRecord",
+    "MarketTradeRecord",
     "PortfolioAccount",
     "PortfolioAccountStatus",
     "PortfolioAccountType",
+    "RawMarketDataEventRecord",
+    "RecoveryJobRecord",
+    "RecoveryStatusRecord",
+    "StreamGapRecord",
+    "StreamSessionRecord",
+    "StreamStatusRecord",
 ]

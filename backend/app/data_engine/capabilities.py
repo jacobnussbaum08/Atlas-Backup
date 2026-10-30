@@ -12,7 +12,8 @@ from datetime import date, timedelta
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.data_engine.enums import DataType, FeedCoverage
+from app.data_engine.calendar import REGULAR_HOURS, FeedHours
+from app.data_engine.enums import DataType, FeedCoverage, PriceAdjustment
 from app.data_engine.errors import UnsupportedCapabilityError
 from app.data_engine.timeframes import Timeframe, TimeframeUnit
 from app.database.models.asset import AssetClass
@@ -22,6 +23,7 @@ __all__ = [
     "FeedAccess",
     "FeedCapability",
     "FeedCoverage",
+    "PriceAdjustment",
     "ProviderCapabilities",
     "TimeframeRule",
 ]
@@ -61,6 +63,10 @@ class FeedAccess(BaseModel):
     historical_recency_limit: timedelta | None = None
     stream_symbol_limit: int | None = None
     requests_per_minute: int | None = None
+    # Local hours in which the feed can publish data on a trading day (2D completeness).
+    # Expected windows err wide: a recovery request that finds nothing costs one call,
+    # a window that is too narrow would hide real gaps.
+    session_hours: FeedHours = REGULAR_HOURS
     notes: tuple[str, ...] = ()
 
     def require_historical(self) -> None:
@@ -90,6 +96,8 @@ class ProviderCapabilities(BaseModel):
     historical_timeframes: tuple[TimeframeRule, ...]
     streaming_bar_timeframes: frozenset[Timeframe]
     max_page_size: int | None = Field(default=None, ge=1)
+    # Historical price adjustments the provider can apply on request.
+    adjustments: frozenset[PriceAdjustment] = frozenset({PriceAdjustment.RAW})
     documentation: tuple[str, ...] = ()
     # Date the declared facts were last checked against the provider's documentation.
     verified_on: date
@@ -122,6 +130,14 @@ class ProviderCapabilities(BaseModel):
                 f"{self.display_name} does not provide {timeframe} historical bars"
             )
         return capability
+
+    def require_adjustment(self, adjustment: PriceAdjustment) -> None:
+        if adjustment not in self.adjustments:
+            supported = ", ".join(sorted(a.value for a in self.adjustments))
+            raise UnsupportedCapabilityError(
+                f"{self.display_name} does not provide {adjustment.value} adjustment "
+                f"(supported: {supported})"
+            )
 
     def require_streaming(self, feed: str, data_type: DataType) -> FeedCapability:
         if data_type not in self.streaming_data_types:

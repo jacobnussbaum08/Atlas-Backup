@@ -139,4 +139,46 @@ def test_openapi_exposes_no_order_endpoints(build_client):
     with build_client() as client:
         paths = client.get("/openapi.json").json()["paths"]
 
-    assert set(paths) == {"/health", "/ready"}
+    assert set(paths) == {
+        "/health",
+        "/ready",
+        "/api/v1/market-data/providers",
+        "/api/v1/market-data/historical-fetch",
+        "/api/v1/market-data/ingestion-jobs",
+        "/api/v1/market-data/ingestion-jobs/{job_id}",
+        "/api/v1/market-data/quality-events",
+        "/api/v1/market-data/assets",
+        "/api/v1/market-data/assets/{asset_id}/history",
+        "/api/v1/market-data/candles",
+        # 2C live streaming (read-only)
+        "/api/v1/market-data/stream",
+        "/api/v1/market-data/stream/sessions",
+        "/api/v1/market-data/stream/gaps",
+        "/api/v1/market-data/quotes",
+        "/api/v1/market-data/trades",
+        # 2D completeness and recovery
+        "/api/v1/market-data/completeness",
+        "/api/v1/market-data/gaps",
+        "/api/v1/market-data/recovery-jobs",
+        "/api/v1/market-data/recovery-requests",
+        "/api/v1/market-data/pipeline-health",
+        "/api/v1/market-data/metrics",
+    }
+    # Market trades (exchange prints) are read-only market data, not trading: the one
+    # allowed path containing "trade" must expose GET only.
+    market_data_reads = {"/api/v1/market-data/trades"}
+    forbidden = ("order", "trade", "broker", "position", "account", "execution")
+    assert not [
+        p
+        for p in paths
+        if p not in market_data_reads and any(word in p.lower() for word in forbidden)
+    ]
+    for path in market_data_reads:
+        assert set(paths[path]) == {"get"}
+    writes = {p for p, methods in paths.items() if set(methods) - {"get"}}
+    # Operator-gated market-data actions only: a historical fetch, and a request to verify
+    # a range (it records gaps; the recovery worker retrieves market data).
+    assert writes == {
+        "/api/v1/market-data/historical-fetch",
+        "/api/v1/market-data/recovery-requests",
+    }

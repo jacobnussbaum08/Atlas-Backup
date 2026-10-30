@@ -63,8 +63,13 @@ def test_require_streaming_checks_data_type():
         bars_only.require_streaming("iex", DataType.QUOTE)
 
 
-def test_historical_scope_is_bars_only_in_this_adapter():
-    assert ALPACA_CAPABILITIES.historical_data_types == {DataType.BAR}
+def test_historical_scope_includes_trades_and_quotes_for_recovery():
+    # 2B implemented historical bars only; 2D adds trades and quotes for recovery.
+    assert ALPACA_CAPABILITIES.historical_data_types == {
+        DataType.BAR,
+        DataType.QUOTE,
+        DataType.TRADE,
+    }
     assert ALPACA_CAPABILITIES.streaming_data_types == {
         DataType.BAR,
         DataType.QUOTE,

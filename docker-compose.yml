@@ -84,6 +84,39 @@ services:
     restart: unless-stopped
     stop_grace_period: 20s
 
+  # Live market-data stream (Deliverable 2C). One process per provider/feed, enforced by a
+  # PostgreSQL advisory lock. With MARKET_DATA_STREAM_ENABLED=false (the default) it
+  # records DISABLED and exits 0, so it is not restarted. On a permanent failure (e.g.
+  # rejected credentials) it stays up reporting FAILED instead of retrying.
+  stream-worker:
+    image: atlas-backend:dev
+    env_file: .env
+    environment: *backend-env
+    command: ["python", "-m", "app.workers.market_data_stream"]
+    # The image's HEALTHCHECK probes the API's HTTP port, which this worker does not serve.
+    # Stream health is derived from the worker's heartbeat: GET /api/v1/market-data/stream.
+    healthcheck:
+      disable: true
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: on-failure
+    stop_grace_period: 30s
+
+  recovery-worker:
+    image: atlas-backend:dev
+    env_file: .env
+    environment: *backend-env
+    command: ["python", "-m", "app.workers.market_data_recovery"]
+    # No HTTP port either; health: GET /api/v1/market-data/pipeline-health.
+    healthcheck:
+      disable: true
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: on-failure
+    stop_grace_period: 30s
+
   frontend:
     build:
       context: ./frontend

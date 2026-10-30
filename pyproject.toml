@@ -16,13 +16,14 @@ dependencies = [
     "psycopg[binary]>=3.2",
     "redis>=5.2",
     "structlog>=24.4",
+    "httpx>=0.28",
+    "websockets>=15.0",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=8.3",
     "pytest-cov>=6.0",
-    "httpx>=0.28",
     "ruff>=0.8",
     "mypy>=1.13",
 ]
@@ -41,10 +42,11 @@ default-groups = ["dev"]
 [tool.pytest.ini_options]
 testpaths = ["backend/app/tests"]
 pythonpath = ["backend"]
-addopts = "-ra --strict-markers --strict-config"
+addopts = "-ra --strict-markers --strict-config -m 'not live'"
 markers = [
     "integration: requires a real PostgreSQL server (ATLAS_TEST_DATABASE_URL)",
     "redis: requires a real Redis server (ATLAS_TEST_REDIS_URL)",
+    "live: calls a real market-data provider; opt-in (ATLAS_LIVE_PROVIDER_TESTS=1, run with -m live)",
 ]
 filterwarnings = [
     "error::DeprecationWarning:app.*",

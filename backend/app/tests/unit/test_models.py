@@ -20,6 +20,23 @@ def test_expected_tables_exist():
         # Phase 2A provider registry
         "market_data_providers",
         "market_data_feeds",
+        # Phase 2B historical ingestion
+        "market_data_ingestion_jobs",
+        "market_data_ingestion_job_symbols",
+        "market_data_raw_events",
+        "market_bars",
+        "market_data_quality_events",
+        # Phase 2C live streaming
+        "market_quotes",
+        "market_trades",
+        "market_data_stream_sessions",
+        "market_data_stream_status",
+        "market_data_stream_gaps",
+        # Phase 2D reliability and recovery
+        "market_data_coverage",
+        "market_data_gaps",
+        "market_data_recovery_jobs",
+        "market_data_recovery_status",
     }
 
 
