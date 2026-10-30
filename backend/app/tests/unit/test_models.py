@@ -10,12 +10,16 @@ from app.database.models import Base, PortfolioAccount, PortfolioAccountType
 TABLES = Base.metadata.sorted_tables
 
 
-def test_expected_foundation_tables_exist():
+def test_expected_tables_exist():
     assert set(Base.metadata.tables) == {
+        # Phase 1 foundation
         "assets",
         "asset_identifiers",
         "portfolio_accounts",
         "audit_logs",
+        # Phase 2A provider registry
+        "market_data_providers",
+        "market_data_feeds",
     }
 
 

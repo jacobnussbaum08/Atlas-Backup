@@ -67,13 +67,26 @@ class Asset(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     identifiers: Mapped[list[AssetIdentifier]] = relationship(back_populates="asset")
 
 
+class MappingStatus(StrEnum):
+    ACTIVE = "ACTIVE"
+    SUSPENDED = "SUSPENDED"  # provider temporarily not serving the symbol; mapping still current
+    RETIRED = "RETIRED"  # validity ended (valid_to set); kept for point-in-time history
+
+
 class AssetIdentifier(UUIDPrimaryKeyMixin, Base):
-    """A provider's identifier for an Atlas asset, with an effective period."""
+    """A provider's symbol for an Atlas asset over an effective period [valid_from, valid_to).
+
+    Symbols can change and be reused, so the asset ID, never the ticker, is identity.
+    Migration 0002 adds two exclusion constraints (not expressible to autogenerate):
+    a provider symbol never maps to two assets in overlapping periods, and an asset
+    never has two overlapping symbols at the same provider.
+    """
 
     __tablename__ = "asset_identifiers"
     __table_args__ = (
         UniqueConstraint("provider", "provider_symbol", "valid_from"),
         CheckConstraint("valid_to IS NULL OR valid_to > valid_from", name="valid_period_ordered"),
+        CheckConstraint("(status = 'RETIRED') = (valid_to IS NOT NULL)", name="retired_iff_ended"),
         Index(None, "asset_id"),
         # A provider symbol maps to at most one asset at a time.
         Index(
@@ -86,8 +99,17 @@ class AssetIdentifier(UUIDPrimaryKeyMixin, Base):
     )
 
     asset_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("assets.id", ondelete="RESTRICT"))
-    provider: Mapped[str] = mapped_column(String(64))
+    provider: Mapped[str] = mapped_column(
+        String(64), ForeignKey("market_data_providers.code", ondelete="RESTRICT")
+    )
     provider_symbol: Mapped[str] = mapped_column(String(128))
+    # The provider's own exchange code for the listing, where it reports one.
+    provider_exchange: Mapped[str | None] = mapped_column(String(32))
+    status: Mapped[MappingStatus] = mapped_column(
+        str_enum(MappingStatus, "mapping_status"),
+        default=MappingStatus.ACTIVE,
+        server_default="ACTIVE",
+    )
     valid_from: Mapped[datetime] = mapped_column(server_default=func.now())
     valid_to: Mapped[datetime | None]
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())

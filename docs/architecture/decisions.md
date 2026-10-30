@@ -138,3 +138,83 @@ and tests gate the frontend for now.
 recommends a successor package. Adopting it was deferred until the package has been reviewed.
 
 **Revisit:** When upgrading Starlette.
+
+---
+
+## Phase 2A — provider architecture
+
+### D-014 Market-data variables keep the names from the Phase 2 brief
+
+**Decision:** Market-data settings use `MARKET_DATA_*` and `HISTORICAL_DATA_*`, and the Alpaca
+settings use `ALPACA_*`, instead of the Phase 1 `ATLAS_` prefix.
+
+**Why:**
+* The Phase 2 brief specifies these names, and the local `.env` already uses them.
+* Each group has its own settings class. Provider settings live in the provider's package
+  (`data_engine/providers/alpaca/config.py`).
+* Unknown keys under each prefix are rejected as typos, the same guarantee D-009 gives
+  `ATLAS_*`.
+
+### D-015 Provider contract, two-layer records, capabilities vs entitlements
+
+**Decision:**
+* Every provider implements `data_engine/providers/base.MarketDataProvider`. The registry is
+  the only place that maps a provider ID to an adapter.
+* Adapters emit `Provider*` records keyed by provider symbol. `Market*` records add Atlas's
+  asset ID and a quality status.
+* `ProviderCapabilities` is what the adapter can deliver. `FeedAccess` is what the configured
+  subscription is entitled to. Combinations the docs do not confirm (e.g. delayed SIP on
+  Trading API plans) are denied, not assumed.
+
+**Why:**
+* Adapters stay ignorant of the database, and the rest of Atlas stays ignorant of providers.
+* Plan limits (Basic: no real-time SIP, 15-minute historical SIP limit, 30 stream symbols)
+  are explicit errors, never silent downgrades.
+
+### D-016 Schemas validate structure; the quality engine validates semantics
+
+**Decision:** Schemas enforce types, UTC, finite decimals and the meaning of missing values
+(`None`, never 0). They do not check OHLC relationships, negative volume or crossed quotes.
+
+**Why:** An impossible bar must be recorded and quarantined with an explanation by the
+data-quality engine (Phase 2 Part 8), not lost as a parse failure.
+
+### D-017 `asset_identifiers` is the asset-provider mapping table
+
+**Decision:** The Phase 1 table keeps its name. Migration 0002 adds:
+* the provider FK;
+* `provider_exchange`;
+* `status`, which must be `RETIRED` exactly when `valid_to` is set;
+* two GiST exclusion constraints (`btree_gist`) forbidding overlapping validity periods, per
+  (provider, symbol) and per (asset, provider).
+
+**Why:**
+* Renaming the table would churn Phase 1 code for no functional gain.
+* The exclusion constraints guarantee point-in-time resolution is unambiguous when symbols
+  are reused.
+* They are created in the migration, because autogenerate cannot represent them, and are
+  documented on the model.
+
+**Consequence:** Phase 1 tests that used the made-up provider `example` now use the registered
+`alpaca`.
+
+### D-018 Configuration errors never print input values
+
+**Decision:** `describe_validation_error` renders pydantic errors without inputs, and the
+market-data and Alpaca loaders raise `InvalidSettingsError` with that sanitized text.
+`python -m app` prints only sanitized errors.
+
+**Why:** Pydantic's default message includes `input_value=…`, which would print a malformed
+credential or a rejected password.
+
+**Corrects:** a Phase 1 comment that claimed the default output contained no secret values.
+
+### D-019 The Alpaca adapter talks to market-data hosts only
+
+**Decision:** The hosts are `https://data.alpaca.markets` and `wss://stream.data.alpaca.markets`.
+They are constants, with no base-URL setting.
+
+**Why:** No configuration can point the adapter at a trading or brokerage endpoint.
+
+**Detail:** Historical requests always send `feed` (Alpaca defaults to `sip` otherwise) and
+`adjustment=raw`.

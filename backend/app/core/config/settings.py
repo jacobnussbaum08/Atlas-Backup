@@ -23,6 +23,7 @@ from pydantic import (
     Field,
     RedisDsn,
     SecretStr,
+    ValidationError,
     field_validator,
     model_validator,
 )
@@ -43,6 +44,19 @@ INSECURE_DEFAULT_PASSWORDS = frozenset({"atlas", "CHANGE_ME_LOCAL_ONLY", "postgr
 
 class UnknownSettingError(ValueError):
     """An ATLAS_* variable does not correspond to any setting (usually a typo)."""
+
+
+class InvalidSettingsError(ValueError):
+    """Settings failed validation. The message names fields but never contains input values."""
+
+
+def describe_validation_error(exc: ValidationError, title: str = "Settings") -> str:
+    """Render a pydantic error without input values (they may be credentials)."""
+    lines = [f"{title}: {exc.error_count()} invalid value(s)"]
+    for error in exc.errors(include_input=False, include_url=False, include_context=False):
+        location = ".".join(str(part) for part in error["loc"]) or "(settings)"
+        lines.append(f"  {location}: {error['msg']}")
+    return "\n".join(lines)
 
 
 class Environment(StrEnum):
@@ -148,18 +162,44 @@ class Settings(BaseSettings):
         )
 
 
-def find_unknown_atlas_keys(keys: Iterable[str]) -> list[str]:
-    """Return ATLAS_* keys that match no setting, so typos fail instead of being ignored."""
-    known = {f"{ENV_PREFIX}{name}".upper() for name in Settings.model_fields}
+def find_unknown_keys(
+    keys: Iterable[str], prefixes: tuple[str, ...], known: Iterable[str]
+) -> list[str]:
+    """Return keys under ``prefixes`` that are not in ``known`` (case-insensitive).
+
+    Test-harness keys (``ATLAS_TEST_*``, ``ATLAS_REQUIRE_INTEGRATION``) are never reported.
+    """
+    known_upper = {name.upper() for name in known}
     unknown = {
         key.upper()
         for key in keys
-        if key.upper().startswith(ENV_PREFIX)
-        and key.upper() not in known
+        if key.upper().startswith(prefixes)
+        and key.upper() not in known_upper
         and key.upper() not in _NON_APPLICATION_KEYS
         and not key.upper().startswith(_NON_APPLICATION_PREFIXES)
     }
     return sorted(unknown)
+
+
+def find_unknown_atlas_keys(keys: Iterable[str]) -> list[str]:
+    """Return ATLAS_* keys that match no setting, so typos fail instead of being ignored."""
+    known = {f"{ENV_PREFIX}{name}" for name in Settings.model_fields}
+    return find_unknown_keys(keys, (ENV_PREFIX,), known)
+
+
+def environment_keys(env_file: str | Path = ENV_FILE) -> set[str]:
+    """Names (never values) of variables in the process environment and the ``.env`` file."""
+    keys = set(os.environ)
+    path = Path(env_file)
+    if path.is_file():
+        keys |= {key for key in dotenv_values(path, encoding="utf-8") if key}
+    return keys
+
+
+def reject_unknown_keys(prefixes: tuple[str, ...], known: Iterable[str]) -> None:
+    unknown = find_unknown_keys(environment_keys(), prefixes, known)
+    if unknown:
+        raise UnknownSettingError(f"Unknown Atlas setting(s): {', '.join(unknown)}")
 
 
 @lru_cache(maxsize=1)
@@ -169,11 +209,5 @@ def get_settings() -> Settings:
     Raises ``UnknownSettingError`` for unrecognised ATLAS_* keys in the process
     environment or ``.env``, and ``pydantic.ValidationError`` for invalid values.
     """
-    keys = set(os.environ)
-    env_file = Path(ENV_FILE)
-    if env_file.is_file():
-        keys |= {key for key in dotenv_values(env_file, encoding="utf-8") if key}
-    unknown = find_unknown_atlas_keys(keys)
-    if unknown:
-        raise UnknownSettingError(f"Unknown Atlas setting(s): {', '.join(unknown)}")
+    reject_unknown_keys((ENV_PREFIX,), {f"{ENV_PREFIX}{name}" for name in Settings.model_fields})
     return Settings()  # values come from the environment and .env

@@ -12,6 +12,7 @@ from app.database.models import (
     Asset,
     AssetClass,
     AssetIdentifier,
+    MappingStatus,
     PortfolioAccount,
     PortfolioAccountType,
 )
@@ -102,13 +103,13 @@ def test_provider_symbol_maps_to_one_current_asset(session):
     session.add_all([first, second])
     session.flush()
 
-    session.add(AssetIdentifier(asset_id=first.id, provider="example", provider_symbol="SPY"))
+    session.add(AssetIdentifier(asset_id=first.id, provider="alpaca", provider_symbol="SPY"))
     session.flush()
 
     _expect_integrity_error(
         session,
         "INSERT INTO asset_identifiers (asset_id, provider, provider_symbol) "
-        "VALUES (:id, 'example', 'SPY')",
+        "VALUES (:id, 'alpaca', 'SPY')",
         {"id": second.id},
     )
 
@@ -127,14 +128,15 @@ def test_provider_symbol_may_be_reassigned_after_validity_ends(session):
         [
             AssetIdentifier(
                 asset_id=old.id,
-                provider="example",
+                provider="alpaca",
                 provider_symbol="X1",
                 valid_from=start,
                 valid_to=start + timedelta(days=365),
+                status=MappingStatus.RETIRED,
             ),
             AssetIdentifier(
                 asset_id=new.id,
-                provider="example",
+                provider="alpaca",
                 provider_symbol="X1",
                 valid_from=start + timedelta(days=365),
             ),
@@ -158,7 +160,7 @@ def test_identifier_validity_period_must_be_ordered(session):
     _expect_integrity_error(
         session,
         "INSERT INTO asset_identifiers (asset_id, provider, provider_symbol, valid_from, valid_to) "
-        "VALUES (:id, 'example', 'QQQ', now(), now() - interval '1 day')",
+        "VALUES (:id, 'alpaca', 'QQQ', now(), now() - interval '1 day')",
         {"id": asset.id},
     )
 
@@ -169,7 +171,7 @@ def test_assets_with_identifiers_cannot_be_deleted(session):
     )
     session.add(asset)
     session.flush()
-    session.add(AssetIdentifier(asset_id=asset.id, provider="example", provider_symbol="IWM"))
+    session.add(AssetIdentifier(asset_id=asset.id, provider="alpaca", provider_symbol="IWM"))
     session.flush()
 
     _expect_integrity_error(session, "DELETE FROM assets WHERE id = :id", {"id": asset.id})

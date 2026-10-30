@@ -1,8 +1,10 @@
 """Shared test fixtures.
 
-Unit tests never read the developer's real environment or ``.env`` file:
-``make_settings`` removes ``ATLAS_*`` variables (except ``ATLAS_TEST_*``) and
-builds settings from explicit values only.
+Unit tests never read the developer's real environment or ``.env`` file (which
+may hold real provider credentials): ``clean_env`` removes ``ATLAS_*``,
+``ALPACA_*``, ``MARKET_DATA_*`` and ``HISTORICAL_DATA_*`` variables (except
+``ATLAS_TEST_*``), settings are built with ``_env_file=None``, and tests that use
+the real loaders first ``chdir`` to an empty temporary directory.
 """
 
 from __future__ import annotations
@@ -15,7 +17,8 @@ from typing import Any
 import pytest
 
 from app.core.clocks import FixedClock
-from app.core.config import Settings, get_settings
+from app.core.config import Settings, get_market_data_settings, get_settings
+from app.data_engine.providers.alpaca.config import get_alpaca_settings
 
 FIXED_NOW = datetime(2026, 1, 2, 14, 30, tzinfo=UTC)
 
@@ -31,17 +34,27 @@ BASE_SETTINGS: dict[str, Any] = {
 }
 
 
+def _clear_settings_caches() -> None:
+    get_settings.cache_clear()
+    get_market_data_settings.cache_clear()
+    get_alpaca_settings.cache_clear()
+
+
 @pytest.fixture(autouse=True)
 def _isolate_settings_cache() -> Iterator[None]:
-    get_settings.cache_clear()
+    _clear_settings_caches()
     yield
-    get_settings.cache_clear()
+    _clear_settings_caches()
+
+
+_APPLICATION_PREFIXES = ("ATLAS_", "ALPACA_", "MARKET_DATA_", "HISTORICAL_DATA_")
 
 
 @pytest.fixture
 def clean_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
     for key in list(os.environ):
-        if key.upper().startswith("ATLAS_") and not key.upper().startswith("ATLAS_TEST_"):
+        upper = key.upper()
+        if upper.startswith(_APPLICATION_PREFIXES) and not upper.startswith("ATLAS_TEST_"):
             monkeypatch.delenv(key, raising=False)
     return monkeypatch
 

@@ -17,7 +17,7 @@ one deployable backend, with modules separated by package boundaries rather than
 | `monitoring` | Dependency health checks used by `/ready` | 1 ✅ |
 | `api` | `/health`, `/ready`, versioned `/api/v1` router | 1 ✅ |
 | `events`, `workers` | Transactional outbox, background task system | later |
-| `data_engine` | Provider adapters, normalisation, validation, storage | 2 |
+| `data_engine` | Provider contract, capabilities, standardized schemas, Alpaca adapter (2A); retrieval, streaming, quality, storage (2B+) | 2 🚧 |
 | `asset_discovery`, `market_intelligence`, `feature_engine` | Universe, regimes, features | 3 |
 | `strategies` | Strategy proposals (no execution access) | 4 |
 | `ai_engine`, `ml_engine`, `news` | Decision coordinator, ML models, async LLM features | 5 |
@@ -79,6 +79,51 @@ python -m app
 | `asset_identifiers` | Provider symbols mapped to Atlas assets, with validity periods | FK `RESTRICT`. `valid_to > valid_from`. At most one *current* mapping per (provider, symbol) |
 | `portfolio_accounts` | Identity and future lock target for portfolio state | `account_type = 'PAPER'` only. ISO-4217-style base currency. Unique name |
 | `audit_logs` | Immutable audit trail (actor, action, entity, before/after state, reason, request ID) | Identity PK generated always. Append-only triggers. Secrets redacted before insert |
+
+## Market Data Engine — provider architecture (Phase 2A)
+
+```text
+MarketDataSettings (MARKET_DATA_*, HISTORICAL_DATA_*)
+        |
+        v
+providers/registry.create_provider ──> AlpacaMarketDataProvider (ALPACA_*)
+        |                                   | implements
+        v                                   v
+providers/base.MarketDataProvider  <── contract: feed, capabilities(), feed_access(),
+        |                                normalize_symbol(), validate_configuration(),
+        |                                check_authentication(), fetch_bars(), create_stream()
+        v
+schemas: Provider{Bar,Quote,Trade}  ──(asset mapping)──>  Market{Bar,Quote,Trade}
+                                         ^
+         database/repositories/asset_mapping (point-in-time provider symbol -> asset ID)
+```
+
+* **Isolation.** Provider-specific code lives only in `data_engine/providers/<provider>/`.
+  Other modules see the contract, the capability model (`capabilities.py`), the enums and
+  `schemas.py`.
+* **Capabilities vs entitlements.** `ProviderCapabilities` says what an adapter can deliver
+  (feeds, coverage, timeframes, data types, page size, documentation, date verified).
+  `FeedAccess` says what the configured plan allows (historical/streaming, recency limits,
+  stream symbol limit, request rate).
+* **Feeds.**
+  * The configured feed is the only feed used.
+  * IEX is labelled `SINGLE_VENUE` and SIP `CONSOLIDATED`, both in code and in the
+    `market_data_feeds` table.
+  * Configuration that needs another feed or plan fails with `UnsupportedCapabilityError`.
+* **Configuration check at startup.** `validate_configuration` is offline. `python -m app`
+  logs its warnings and refuses to start on errors. Errors include half-set credentials,
+  streaming without credentials, an unstreamable feed, too many stream symbols, an oversized
+  batch, and invalid symbols.
+* **Not yet built.** Network operations raise `ProviderOperationNotImplementedError` until 2B
+  (historical retrieval, authentication check) and 2C (streaming).
+
+Migration `0002` adds:
+
+| Table | Purpose |
+|---|---|
+| `market_data_providers` | Registered providers (seeded: `alpaca`) |
+| `market_data_feeds` | Feeds per provider with coverage and delay (seeded: `iex`, `sip`, `delayed_sip`). A test checks they equal the adapter's declared feeds |
+| `asset_identifiers` (extended) | Provider FK, `provider_exchange`, `status`, and exclusion constraints so a provider symbol identifies one asset at any instant |
 
 ## Frontend
 
