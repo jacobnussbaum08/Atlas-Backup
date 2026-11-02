@@ -51,6 +51,13 @@ def test_expected_tables_exist():
         "qualification_evaluations",
         "watchlist_scores",
         "universe_membership_events",
+        # Phase 3B market intelligence
+        "intelligence_configs",
+        "intelligence_runs",
+        "market_feature_snapshots",
+        "regime_classifications",
+        "market_summaries",
+        "cross_asset_relationships",
     }
 
 

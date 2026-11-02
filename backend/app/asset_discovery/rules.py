@@ -21,7 +21,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any, Literal, cast
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
@@ -43,6 +43,7 @@ from app.database.models import (
     QualificationRuleSetRecord,
     ScoringVersionRecord,
 )
+from app.database.models.universe import VersionedConfig
 from app.database.repositories import AuditLogRepository
 
 
@@ -166,25 +167,25 @@ DEFAULT_SCORING: dict[str, tuple[str, ScoringConfig]] = {
 
 
 # ------------------------------------------------------------------ versioned storage
-Model = type[QualificationRuleSetRecord] | type[ScoringVersionRecord]
+# The helpers below serve any immutable versioned configuration table (rule sets, scoring
+# versions, intelligence configs: subclasses of ``VersionedConfig``).
 
 
 def _config_json(config: BaseModel) -> dict[str, Any]:
     return config.model_dump(mode="json")
 
 
-def latest_version(
-    session: Session, model: Model, code: str
-) -> QualificationRuleSetRecord | ScoringVersionRecord | None:
-    found = session.scalars(
+def latest_version[ConfigT: VersionedConfig](
+    session: Session, model: type[ConfigT], code: str
+) -> ConfigT | None:
+    return session.scalars(
         select(model).where(model.code == code).order_by(model.version.desc()).limit(1)
     ).one_or_none()
-    return cast(QualificationRuleSetRecord | ScoringVersionRecord | None, found)
 
 
-def create_version(
+def create_version[ConfigT: VersionedConfig](
     session: Session,
-    model: Model,
+    model: type[ConfigT],
     *,
     code: str,
     config: BaseModel,
@@ -192,7 +193,7 @@ def create_version(
     created_by: str,
     actor_type: ActorType,
     reason: str,
-) -> QualificationRuleSetRecord | ScoringVersionRecord:
+) -> ConfigT:
     """Store ``config`` as the next version of ``code`` (or return the identical one).
 
     Safe under concurrency: if another transaction creates the same content first, its
@@ -201,25 +202,25 @@ def create_version(
     data = _config_json(config)
     digest = sha256_text(canonical_json(data))
 
-    def identical() -> QualificationRuleSetRecord | ScoringVersionRecord | None:
-        found = session.scalars(
+    def identical() -> ConfigT | None:
+        return session.scalars(
             select(model).where(model.code == code, model.content_sha256 == digest)
         ).one_or_none()
-        return cast(QualificationRuleSetRecord | ScoringVersionRecord | None, found)
 
     existing = identical()
     if existing is not None:
         return existing
     latest = latest_version(session, model, code)
-    record = model(
-        id=uuid.uuid4(),
-        code=code,
-        version=1 if latest is None else latest.version + 1,
-        description=description,
-        config=data,
-        content_sha256=digest,
-        created_by=created_by,
-    )
+    values: dict[str, Any] = {
+        "id": uuid.uuid4(),
+        "code": code,
+        "version": 1 if latest is None else latest.version + 1,
+        "description": description,
+        "config": data,
+        "content_sha256": digest,
+        "created_by": created_by,
+    }
+    record = model(**values)
     try:
         with session.begin_nested():
             session.add(record)

@@ -87,8 +87,12 @@ def daily_bars(
     sessions: Sequence[SessionDay],
     calendar: ExchangeCalendar,
     as_of: datetime,
+    known_at: datetime | None = None,
 ) -> list[DailyBar]:
-    """Newest revision, as known at ``as_of``, of each session's daily bar."""
+    """Newest revision, as known at ``known_at`` (default ``as_of``), of each session's
+    daily bar. ``sessions`` must already be limited to sessions completed by ``as_of``;
+    a later ``known_at`` (reconstruction) admits bars retrieved after ``as_of``."""
+    known = known_at or as_of
     ids = _ids(asset_ids)
     if not ids or not sessions:
         return []
@@ -106,6 +110,7 @@ def daily_bars(
             b.volume,
             b.vwap,
             b.quality_status,
+            b.available_at,
         )
         .where(
             b.asset_id.in_(ids),
@@ -115,8 +120,8 @@ def daily_bars(
             b.adjustment == adjustment,
             b.event_time >= start,
             b.event_time <= end,
-            b.ingested_at <= as_of,
-            b.available_at <= as_of,
+            b.ingested_at <= known,
+            b.available_at <= known,
         )
         .ext(distinct_on(b.asset_id, b.event_time))
         .order_by(b.asset_id, b.event_time, b.revision.desc())
@@ -139,6 +144,7 @@ def daily_bars(
                 volume=None if row.volume is None else float(row.volume),
                 vwap=None if row.vwap is None else float(row.vwap),
                 quality_status=row.quality_status.value,
+                available_at=row.available_at,
             )
         )
     return bars

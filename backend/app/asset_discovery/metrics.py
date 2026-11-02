@@ -87,6 +87,8 @@ class DailyBar:
     volume: float | None
     vwap: float | None
     quality_status: str
+    # When the bar (this revision) became available to Atlas; used by point-in-time readers.
+    available_at: datetime | None = None
 
 
 @dataclass(frozen=True)

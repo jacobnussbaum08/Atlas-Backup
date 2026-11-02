@@ -9,6 +9,14 @@ from app.database.models.asset import (
 )
 from app.database.models.audit_log import ActorType, AuditLog
 from app.database.models.base import Base
+from app.database.models.intelligence import (
+    CrossAssetRelationshipRecord,
+    IntelligenceConfigRecord,
+    IntelligenceRunRecord,
+    MarketFeatureSnapshotRecord,
+    MarketSummaryRecord,
+    RegimeClassificationRecord,
+)
 from app.database.models.market_data import (
     CoverageRecord,
     DataQualityEventRecord,
@@ -62,18 +70,23 @@ __all__ = [
     "AuditLog",
     "Base",
     "CoverageRecord",
+    "CrossAssetRelationshipRecord",
     "DataQualityEventRecord",
     "DiscoveryJobRecord",
     "DiscoveryResultRecord",
     "ExchangeRecord",
     "IngestionJobRecord",
     "IngestionJobSymbolRecord",
+    "IntelligenceConfigRecord",
+    "IntelligenceRunRecord",
     "MappingStatus",
     "MarketBarRecord",
     "MarketDataFeedRecord",
     "MarketDataGapRecord",
     "MarketDataProviderRecord",
+    "MarketFeatureSnapshotRecord",
     "MarketQuoteRecord",
+    "MarketSummaryRecord",
     "MarketTradeRecord",
     "PortfolioAccount",
     "PortfolioAccountStatus",
@@ -85,6 +98,7 @@ __all__ = [
     "RawMarketDataEventRecord",
     "RecoveryJobRecord",
     "RecoveryStatusRecord",
+    "RegimeClassificationRecord",
     "ScoringVersionRecord",
     "StreamGapRecord",
     "StreamSessionRecord",

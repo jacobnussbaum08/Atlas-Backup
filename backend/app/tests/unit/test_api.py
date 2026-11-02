@@ -187,6 +187,15 @@ def test_openapi_exposes_no_order_endpoints(build_client):
         "/api/v1/discovery/run",
         "/api/v1/discovery/refresh",
         "/api/v1/market-sessions",
+        # 3B market intelligence (descriptive; runs are operator-gated)
+        "/api/v1/intelligence/market",
+        "/api/v1/intelligence/regimes/history",
+        "/api/v1/intelligence/assets",
+        "/api/v1/intelligence/assets/{asset_id}",
+        "/api/v1/intelligence/correlations",
+        "/api/v1/intelligence/runs",
+        "/api/v1/intelligence/runs/{run_id}",
+        "/api/v1/intelligence/config",
     }
     # Market trades (exchange prints) are read-only market data, not trading: the one
     # allowed path containing "trade" must expose GET only.
@@ -202,7 +211,8 @@ def test_openapi_exposes_no_order_endpoints(build_client):
     writes = {p for p, methods in paths.items() if set(methods) - {"get"}}
     # Operator-gated actions only: a historical fetch, a request to verify a range (it
     # records gaps; the recovery worker retrieves market data), starting discovery or a
-    # reference-data refresh, and new versions of the qualification/scoring configuration.
+    # reference-data refresh, new versions of the qualification/scoring configuration, and
+    # starting a market intelligence run.
     assert writes == {
         "/api/v1/market-data/historical-fetch",
         "/api/v1/market-data/recovery-requests",
@@ -210,4 +220,5 @@ def test_openapi_exposes_no_order_endpoints(build_client):
         "/api/v1/discovery/refresh",
         "/api/v1/discovery/config/rule-set",
         "/api/v1/discovery/config/scoring",
+        "/api/v1/intelligence/runs",
     }

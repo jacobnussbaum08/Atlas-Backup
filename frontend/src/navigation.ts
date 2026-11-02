@@ -6,6 +6,7 @@ import {
   FlaskConical,
   HeartPulse,
   LayoutDashboard,
+  Radar,
   type LucideIcon,
   ServerCog,
   Settings,
@@ -25,7 +26,7 @@ export interface NavSection {
   summary: string;
 }
 
-/** Pages backed by real backend data (Phase 1, the Phase 2 market-data engine, Phase 3A). */
+/** Pages backed by real backend data (Phase 1, the Phase 2 market-data engine, Phases 3A-3B). */
 export const NAV_SECTIONS: readonly NavSection[] = [
   {
     path: "/",
@@ -50,6 +51,14 @@ export const NAV_SECTIONS: readonly NavSection[] = [
     specSection: "8",
     phase: 3,
     summary: "Discovery pool, qualified universe and active watchlist, with reasons and history.",
+  },
+  {
+    path: "/intelligence",
+    title: "Market Intelligence",
+    icon: Radar,
+    specSection: "9",
+    phase: 3,
+    summary: "Trend, volatility and stability of the market, universe participation and correlation.",
   },
   {
     path: "/data-health",

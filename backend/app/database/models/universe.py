@@ -131,8 +131,10 @@ class DiscoveryResultRecord(Base):
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
-class _VersionedConfig:
+class VersionedConfig:
     """Immutable named configuration; a change is a new ``version`` of the same ``code``."""
+
+    __tablename__: str
 
     id: Mapped[uuid.UUID] = mapped_column(
         primary_key=True, default=uuid.uuid4, server_default=func.gen_random_uuid()
@@ -146,7 +148,7 @@ class _VersionedConfig:
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
-class QualificationRuleSetRecord(_VersionedConfig, Base):
+class QualificationRuleSetRecord(VersionedConfig, Base):
     __tablename__ = "qualification_rule_sets"
     __table_args__ = (
         UniqueConstraint("code", "version"),
@@ -155,7 +157,7 @@ class QualificationRuleSetRecord(_VersionedConfig, Base):
     )
 
 
-class ScoringVersionRecord(_VersionedConfig, Base):
+class ScoringVersionRecord(VersionedConfig, Base):
     __tablename__ = "scoring_versions"
     __table_args__ = (
         UniqueConstraint("code", "version"),

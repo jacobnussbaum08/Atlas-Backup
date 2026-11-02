@@ -387,6 +387,40 @@ A change is a new version (audited): `POST /api/v1/discovery/config/rule-set` or
 Opt-in real-provider test (throw-away database):
 `ATLAS_LIVE_PROVIDER_TESTS=1 uv run pytest -m live -s backend/app/tests/live/test_discovery_live.py`.
 
+## Market intelligence (Phase 3B)
+
+Prerequisites: the database at head (migration 0007), Alpaca credentials in `.env`, the
+benchmark (`MARKET_INTELLIGENCE_BENCHMARK_SYMBOL`, default SPY) registered, and a qualified
+universe from Phase 3A for participation and correlation (at least 20 members).
+
+1. A live run: re-retrieves the split-adjusted daily history window of the benchmark and
+   the qualified universe (one read-only request each, at most
+   `MARKET_INTELLIGENCE_HISTORY_PREP_MAX_ASSETS`), then measures and stores intelligence at
+   now (basis RECORDED):
+
+   ```bash
+   uv run python -m app.market_intelligence.cli live
+   ```
+
+2. Reconstruct past decision times (basis RECONSTRUCTED; each session's close + settle),
+   e.g. for the dashboard's regime history:
+
+   ```bash
+   uv run python -m app.market_intelligence.cli reconstruct --sessions 120
+   ```
+
+3. Print the newest recorded broad-market classifications, or as known at a time:
+
+   ```bash
+   uv run python -m app.market_intelligence.cli market --at 2026-11-03T22:00:00Z
+   ```
+
+The dashboard's **Market Intelligence** page starts the same runs (operator token outside
+development). Only one run per provider and feed runs at a time (HTTP 409 otherwise); a run
+whose process died is failed as interrupted after 5 minutes without a heartbeat. Results
+are append-only; thresholds and windows are versioned configuration
+(`GET /api/v1/intelligence/config`, decisions D-066 to D-071).
+
 ## Backup and restore
 
 ```bash

@@ -824,3 +824,86 @@ job owned by someone else, the runner cancels the job and records nothing. Every
 transaction of qualification, scoring and membership first checks, under the job's row lock,
 that this runner still holds the lease, so a thread that finishes after losing it commits
 nothing.
+
+### D-066 Phase 3B analytics in plain Python; no NumPy dependency yet
+
+**Context:** the Phase 3B prompt suggests Polars and NumPy "where beneficial / appropriate".
+NumPy is not a project dependency, and `uv` (needed to update `uv.lock`, which the Docker
+build installs with `--frozen`) is not available in the development shell used for 3B.
+
+**Decision:** indicators, classifiers and correlations are pure Python over float lists
+(`app.feature_engine.indicators`, `app.market_intelligence.*`). Every per-instrument window
+is at most a few hundred values and the correlation matrix at most 40 x 40 (power
+iteration for its top eigenvalue), so vectorization would not change results or run time
+materially, while plain loops keep each definition readable and checkable against its
+reference. Polars stays the tool for the 3A cross-sectional measurements. NumPy can replace
+these loops later (with a lock update) without changing any stored definition.
+
+### D-067 Market intelligence defaults are interpretable starting points
+
+**Decision:** every window, weight and cut point lives in the versioned
+`intelligence_configs` table (default `market-intelligence-default` v1); each result names
+the configuration and algorithm version it used. Initial values and their rationale:
+
+* Daily windows: 20/50-session averages (~1 month / 1 quarter), ADX and ATR 14 (Wilder's
+  defaults), Bollinger 20/2 (Bollinger's defaults), 20-session realized volatility ranked
+  against 120 sessions of its own history, 5-session change look-back. Weekly: 10/30-week
+  averages, 13-week momentum and volatility, 26-week volatility history.
+* Trend: ADX logistic midpoint 20 (Wilder's commonly cited 20-25 trending threshold),
+  direction components weighted 0.20/0.20/0.20/0.15/0.25, confidence floor 0.40.
+* Volatility: own-history percentile cut points 0.25 / 0.75 / 0.95 (quartiles, and a
+  1-in-20 extreme), soft boundaries (width 0.03); range expansion at ATR(5)/ATR(14) >= 1.25.
+* Stability: 10 % drawdown = full drawdown stress; average correlation 0.3-0.7 mapped to
+  0-1; participation below 50 % above the slow average; STABLE below 0.35, STRESSED above
+  0.60 stress score.
+* Correlation: 60 daily returns compared with the preceding 60, at least 45 shared
+  observations per pair, 95 % Fisher-z intervals, at most 40 instruments.
+
+None of these values were fitted to returns or validated against outcomes. They were chosen
+so that each output can be explained from its inputs; changing them is a new version.
+
+### D-068 Knowledge basis: RECORDED versus RECONSTRUCTED
+
+**Context:** look-ahead prevention requires "only observations available at the decision
+time". Atlas began storing data recently, and REST backfills carry `available_at` = their
+retrieval time, so a strictly point-in-time history of past periods would be empty.
+
+**Decision:** every result states its basis.
+
+* RECORDED (live runs): bars with `ingested_at` and `available_at` <= the decision time,
+  sessions completed (close + settle) by then, the newest revision known then, VALID only.
+  This is what a strategy could have used at that moment.
+* RECONSTRUCTED (reconstruction runs): bars retrieved later whose session had completed and
+  settled by the decision time. They may include corrections published afterwards, and are
+  always labelled; the API's "current view" never uses them.
+* In both, universe membership is what Atlas had recorded by the decision time, so periods
+  before Phase 3A have no universe (no participation): never today's universe applied to
+  the past (survivorship bias).
+
+Features are scale-free (ratios, percentages) so the provider's re-adjustment of
+split-adjusted history after a split does not change a recomputed value. Results are
+append-only; recomputing a decision time adds rows, and readers take the newest available
+by their query time.
+
+### D-069 Classification probabilities are evidence weights, not forecasts
+
+**Decision:** trend, volatility and stability outputs are distributions over labels
+(including UNCERTAIN) from transparent formulas (logistic transforms of configured
+evidence). They are normalized evidence shares, not calibrated probabilities; they predict
+nothing and authorize nothing. Missing inputs move mass to UNCERTAIN; insufficient data
+gives UNCERTAIN with probability 1; a label below the confidence floor is reported as
+UNCERTAIN. Calibration against outcomes belongs to later validation work (spec 19-20).
+
+### D-070 Participation is universe participation, not market breadth
+
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+### D-071 Market intelligence runs: one at a time, heartbeat, ownership checks
+
+**Decision:** `intelligence_runs` allows one RUNNING run per provider and feed (partial
+unique index). A run renews `heartbeat_at` every 30 s; a RUNNING run with a heartbeat older
+than 5 minutes is failed as interrupted when the next run is created. Each decision time is
+written in one transaction that first checks, under a row lock, that the run is still
+RUNNING, so a run reclaimed meanwhile commits nothing (as D-064/D-065). Runs start from the
+CLI or the operator-gated API (in a background thread of the API process, D-006 still
+open); there is no scheduled worker yet.
