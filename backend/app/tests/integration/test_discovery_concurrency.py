@@ -321,3 +321,65 @@ def test_concurrent_qualification_evaluations_write_separately(env):
         per_job = dict(session.execute(select(E.job_id, func.count()).group_by(E.job_id)).all())
         assert per_job[a] == per_job[b] == 40
         assert session.scalar(select(func.count()).select_from(Asset)) == 50
+
+
+# ------------------------------------------------------------------ leases (audit P1-3)
+def test_blocking_steps_keep_the_lease_heartbeat_running(env, monkeypatch):
+    """Qualification is blocking database and Polars work; it runs in a thread so the
+    heartbeat keeps renewing the lease meanwhile (before, it starved the event loop)."""
+    import time
+
+    env.discover()
+    env.clock.advance(timedelta(minutes=5))
+    service = env.service
+    service.heartbeat_seconds = 0.05
+    renewals = {"n": 0}
+    renew, evaluate = service._renew_lease, service.qualification.evaluate_all
+
+    def counting_renew(job_id):
+        renewals["n"] += 1
+        renew(job_id)
+
+    def slow_evaluate(*args, **kwargs):
+        time.sleep(0.5)  # blocking, as a long evaluation is
+        return evaluate(*args, **kwargs)
+
+    monkeypatch.setattr(service, "_renew_lease", counting_renew)
+    monkeypatch.setattr(service.qualification, "evaluate_all", slow_evaluate)
+    job = env.run(DiscoveryJobKind.QUALIFICATION, prepare_history=False)
+    assert job.status is DiscoveryJobStatus.COMPLETED
+    assert renewals["n"] >= 3
+
+
+def test_a_runner_that_lost_its_lease_stops_and_commits_nothing(env, monkeypatch):
+    import time
+
+    from app.database.models import QualificationEvaluationRecord
+
+    env.discover()
+    env.clock.advance(timedelta(minutes=5))
+    service = env.service
+    service.heartbeat_seconds = 0.05
+    evaluate = service.qualification.evaluate_all
+
+    def taken_over(job_id, *args, **kwargs):
+        # The lease expired and another worker reclaimed the job while this one worked.
+        with session_scope(env.factory) as session:
+            row = session.get(DiscoveryJobRecord, job_id)
+            assert row is not None
+            row.lease_owner = "other-worker"
+        time.sleep(0.3)
+        return evaluate(job_id, *args, **kwargs)
+
+    monkeypatch.setattr(service.qualification, "evaluate_all", taken_over)
+    job = env.run(DiscoveryJobKind.QUALIFICATION, prepare_history=False)
+    # Not finished or failed by the stale runner: the job belongs to the other worker.
+    assert job.status is DiscoveryJobStatus.RUNNING
+    assert job.lease_owner == "other-worker"
+    with session_scope(env.factory) as session:
+        written = session.scalar(
+            select(func.count())
+            .select_from(QualificationEvaluationRecord)
+            .where(QualificationEvaluationRecord.job_id == job.id)
+        )
+    assert written == 0

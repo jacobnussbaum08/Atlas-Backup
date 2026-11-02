@@ -774,3 +774,53 @@ runs (or a larger bound) before the qualified universe reflects the whole pool.
 
 **Decision:** unchanged. The validator is not weakened for qualification; the effect is
 reported in the Phase 3A report.
+
+### D-063 Qualification measures split-adjusted daily bars (audit P1-1; amends D-020 for 3A)
+
+**Context:** D-020 keeps stored history RAW and warns that return calculations across
+corporate actions are wrong. Phase 3A nevertheless computed volatility, ATR, 20-session
+momentum and relative strength from RAW daily bars: a 4:1 split read as a -75% move, which
+inflated volatility, could disqualify the asset and pushed it up the momentum ranking.
+
+**Decision:** qualification reads and retrieves the daily-bar series of
+`ASSET_DISCOVERY_PRICE_ADJUSTMENT` (default `SPLIT`). The RAW default of
+`HISTORICAL_DATA_ADJUSTMENT` is unchanged for every other path; `HistoricalFetchRequest`
+gained an optional `adjustment`, and the adjusted bars are a separate series (D-020).
+
+* `SPLIT`, not `ALL`: it removes the large discontinuities while prices stay close to as
+  traded. Dividend adjustment rewrites every earlier price after each dividend and would
+  churn revisions for little gain over a 20-60 session window.
+* An adjusted series is only consistent within one retrieval (the provider re-adjusts after
+  each split). History preparation always re-retrieves the whole window in one request, and
+  reads take the newest revision known at `as_of`, so a window never mixes adjustments.
+* The metric version names its input: `daily-liquidity-v2-split` (v1 was RAW).
+
+**Limitations:** spin-offs and special dividends still appear as discontinuities. Existing
+RAW history is not used by qualification; the first runs after this change re-prepare
+history (bounded by D-061), so assets without split-adjusted history are
+`INSUFFICIENT_DATA` until prepared.
+
+### D-064 Ingestion jobs carry a heartbeat; only stale jobs are reclaimed (audit P1-2)
+
+**Context:** the API (at startup) and the recovery worker marked *every* PENDING/RUNNING
+ingestion job FAILED as "interrupted". The recovery and discovery workers run ingestion jobs
+too, so restarting one process failed another process's live job, whose final status then
+overwrote the failure.
+
+**Decision:** a job's `heartbeat_at` is set at creation and renewed every 30 s while it runs
+(and per page). Only jobs whose heartbeat is older than 5 minutes are reclaimed, by the API at
+startup and then every 60 s, and by the recovery worker at startup. A running job whose row is
+no longer RUNNING stops itself, and a finished run never overwrites a reclaimed status. No
+migration: `heartbeat_at` already existed.
+
+### D-065 Discovery work runs off the event loop; a lost lease stops the job (audit P1-3)
+
+**Context:** directory application, qualification, scoring and membership updates were
+blocking calls on the event loop that also renews the job lease, so a long step starved the
+heartbeat; a lost lease was only logged, and the job ran on beside the worker that reclaimed it.
+
+**Decision:** those steps run in a worker thread (`asyncio.to_thread`). When a renewal finds the
+job owned by someone else, the runner cancels the job and records nothing. Every write
+transaction of qualification, scoring and membership first checks, under the job's row lock,
+that this runner still holds the lease, so a thread that finishes after losing it commits
+nothing.

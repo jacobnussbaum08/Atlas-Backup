@@ -27,6 +27,7 @@ from app.data_engine.enums import (
 )
 from app.data_engine.errors import UnsupportedCapabilityError
 from app.data_engine.historical import (
+    STALE_AFTER,
     HistoricalFetchRequest,
     HistoricalIngestionService,
     IngestionJobStateError,
@@ -45,7 +46,7 @@ from app.database.models import (
     MarketBarRecord,
     RawMarketDataEventRecord,
 )
-from app.database.repositories import MarketBarRepository, SeriesKey
+from app.database.repositories import IngestionJobRepository, MarketBarRepository, SeriesKey
 from app.database.sessions import session_scope
 from app.tests.fixtures.alpaca import FakeAlpaca, fake_provider, fixture_bar
 
@@ -69,10 +70,12 @@ def assets(factory):
     return {r.symbol: r.asset_id for r in registered}
 
 
-def _service(factory, fake: FakeAlpaca, **provider_settings) -> HistoricalIngestionService:
+def _service(
+    factory, fake: FakeAlpaca, clock: FixedClock | None = None, **provider_settings
+) -> HistoricalIngestionService:
     settings = MarketDataSettings(_env_file=None, historical_data_batch_size=2)
     provider = fake_provider(fake, now=NOW, **provider_settings)
-    return HistoricalIngestionService(factory, provider, settings, FixedClock(NOW))
+    return HistoricalIngestionService(factory, provider, settings, clock or FixedClock(NOW))
 
 
 def _request(**overrides) -> HistoricalFetchRequest:
@@ -163,6 +166,20 @@ def test_job_lifecycle_persists_exact_normalized_bars(factory, assets):
     assert len(raws) == 3
     assert all(len(r.payload_sha256) == 64 for r in raws)
     assert "187.1234" in raws[0].payload_text  # verbatim response kept
+
+
+def test_an_adjustment_override_is_requested_and_stored_as_its_own_series(factory, assets):
+    """Qualification retrieves split-adjusted bars (audit P1-1) without touching the RAW
+    default: the override reaches the provider and the bars form a separate series."""
+    fake = FakeAlpaca().add_page({"AAPL": [fixture_bar(DAYS[0]), fixture_bar(DAYS[1])]})
+    service = _service(factory, fake)
+    job = _run(service, _request(adjustment=PriceAdjustment.SPLIT))
+    assert job.status is IngestionJobStatus.COMPLETED
+    assert job.adjustment is PriceAdjustment.SPLIT
+    assert fake.params(0)["adjustment"] == "split"
+    assert {b.adjustment for b in _bars(factory)} == {PriceAdjustment.SPLIT}
+    # The configured default is unchanged for every other request.
+    assert service.create_job(_request(), requested_by="t").adjustment is PriceAdjustment.RAW
 
 
 def test_missing_volume_is_stored_as_null_with_a_quality_note(factory, assets):
@@ -421,15 +438,49 @@ def test_unknown_symbol_is_an_error(factory, assets):
 
 
 def test_jobs_run_once_and_orphans_are_recovered(factory, assets):
-    service = _service(factory, FakeAlpaca())
+    clock = FixedClock(NOW)
+    service = _service(factory, FakeAlpaca(), clock)
     job = service.create_job(_request(), requested_by="test")
 
+    # Another process's fresh job is live work, not an orphan (audit P1-2).
+    assert service.recover_interrupted_jobs() == 0
+    assert service.get_job(job.job_id).status is IngestionJobStatus.PENDING
+    # Nobody ran it: once its heartbeat is stale it is an orphan.
+    clock.advance(STALE_AFTER + timedelta(seconds=1))
     assert service.recover_interrupted_jobs() == 1
     recovered = service.get_job(job.job_id)
     assert recovered.status is IngestionJobStatus.FAILED
     assert "interrupted" in (recovered.error or "")
     with pytest.raises(IngestionJobStateError, match="only PENDING"):
         asyncio.run(service.run_job(job.job_id))
+
+
+def test_a_job_reclaimed_while_running_stops_and_keeps_its_failed_status(
+    factory, assets, monkeypatch
+):
+    settings = MarketDataSettings(_env_file=None, historical_data_batch_size=2)
+    provider = fake_provider(FakeAlpaca(), now=NOW)
+    service = HistoricalIngestionService(
+        factory, provider, settings, FixedClock(NOW), heartbeat_seconds=0.05
+    )
+
+    async def slow_fetch(request):
+        # Mid-run, another process wrongly decides this job is an orphan.
+        with session_scope(factory) as session:
+            IngestionJobRepository(session).mark_interrupted(
+                reason="swept by another process", at=NOW, stale_before=NOW + timedelta(days=1)
+            )
+        await asyncio.sleep(30)
+        if False:  # an async generator that never yields a page
+            yield
+
+    monkeypatch.setattr(provider, "fetch_bars", slow_fetch)
+    job = service.create_job(_request(), requested_by="test")
+    with pytest.raises(IngestionJobStateError, match="marked interrupted while running"):
+        asyncio.run(asyncio.wait_for(service.run_job(job.job_id), timeout=10))
+    final = service.get_job(job.job_id)
+    assert final.status is IngestionJobStatus.FAILED
+    assert final.error == "swept by another process"  # not overwritten by the stopped run
 
 
 # ------------------------------------------------------------------ immutability

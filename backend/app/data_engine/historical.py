@@ -34,6 +34,7 @@ Deliverable 2D:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import uuid
 from collections import Counter
@@ -117,6 +118,11 @@ logger = get_logger(__name__)
 
 MAX_SYMBOLS_PER_JOB = 20
 INTERRUPTED_REASON = "interrupted: the process running this job stopped before it finished"
+# Several processes run ingestion jobs (API, recovery worker, discovery worker). A running
+# job renews ``heartbeat_at`` every HEARTBEAT_SECONDS; only a job whose heartbeat is older
+# than STALE_AFTER is presumed orphaned, so a restart never fails another process's job.
+HEARTBEAT_SECONDS = 30.0
+STALE_AFTER = timedelta(minutes=5)
 
 
 class UnknownAssetError(MarketDataError):
@@ -143,6 +149,9 @@ class HistoricalFetchRequest(BaseModel):
     end: UtcDatetime
     # Optional: must equal the configured feed. Atlas never switches feeds per request.
     feed: str | None = None
+    # Optional price adjustment for bars (default: HISTORICAL_DATA_ADJUSTMENT). A different
+    # adjustment is a different series; it never mixes with the default one.
+    adjustment: PriceAdjustment | None = None
 
     @model_validator(mode="after")
     def _valid(self) -> Self:
@@ -242,16 +251,19 @@ class HistoricalIngestionService:
         provider: MarketDataProvider,
         settings: MarketDataSettings,
         clock: Clock,
+        *,
+        heartbeat_seconds: float = HEARTBEAT_SECONDS,
     ) -> None:
         self._sessions = session_factory
         self._provider = provider
         self._settings = settings
         self._clock = clock
+        self._heartbeat_seconds = heartbeat_seconds
 
     # ------------------------------------------------------------ job creation
     def create_job(self, request: HistoricalFetchRequest, requested_by: str) -> DataIngestionJob:
         provider_id, feed = self._provider.provider_id, self._provider.feed
-        adjustment = self._settings.historical_data_adjustment
+        adjustment = request.adjustment or self._settings.historical_data_adjustment
         if request.feed is not None and request.feed != feed:
             message = (
                 f"requested feed '{request.feed}' but the configured feed is '{feed}'; "
@@ -301,6 +313,8 @@ class HistoricalIngestionService:
                     range_end=request.end,
                     requested_symbols=[symbol for symbol, _ in targets],
                     status=IngestionJobStatus.PENDING,
+                    # A fresh job is alive; it goes stale only if nobody runs it.
+                    heartbeat_at=self._clock.now(),
                     requested_by=requested_by,
                 ),
                 targets,
@@ -373,13 +387,25 @@ class HistoricalIngestionService:
             job = _Job.of(record)
             symbols = [(s.provider_symbol, s.asset_id) for s in repo.symbols(job_id)]
 
+        reclaimed = asyncio.Event()
+        work = asyncio.ensure_future(self._run_symbols(job, symbols))
+        beat = asyncio.create_task(self._keep_alive(job_id, work, reclaimed))
         try:
-            for provider_symbol, asset_id in symbols:
-                await self._run_symbol(job, provider_symbol, asset_id)
+            await work
+        except asyncio.CancelledError:
+            if not reclaimed.is_set():
+                raise
+            # Another process declared this job orphaned; its status is final now.
+            logger.error("historical.job_reclaimed", job_id=str(job_id))
+            raise IngestionJobStateError(
+                f"job {job_id} was marked interrupted while running; stopped"
+            ) from None
         except Exception as exc:
             logger.exception("historical.job_crashed", job_id=str(job_id))
             self._finish_job(job_id, crash=f"unexpected error: {type(exc).__name__}")
             raise
+        finally:
+            beat.cancel()
         self._finish_job(job_id)
         result = self.get_job(job_id)
         logger.info(
@@ -392,6 +418,30 @@ class HistoricalIngestionService:
             pages=result.counters.pages_retrieved,
         )
         return result
+
+    async def _run_symbols(self, job: _Job, symbols: list[tuple[str, uuid.UUID]]) -> None:
+        for provider_symbol, asset_id in symbols:
+            await self._run_symbol(job, provider_symbol, asset_id)
+
+    async def _keep_alive(
+        self, job_id: uuid.UUID, work: asyncio.Future[None], reclaimed: asyncio.Event
+    ) -> None:
+        """Renew the heartbeat; stop ``work`` if the job is no longer RUNNING."""
+        while True:
+            await asyncio.sleep(self._heartbeat_seconds)
+            try:
+                alive = await asyncio.to_thread(self._touch, job_id)
+            except SQLAlchemyError as exc:
+                logger.warning("historical.heartbeat_failed", error_type=type(exc).__name__)
+                continue
+            if not alive:
+                reclaimed.set()
+                work.cancel()
+                return
+
+    def _touch(self, job_id: uuid.UUID) -> bool:
+        with session_scope(self._sessions) as session:
+            return IngestionJobRepository(session).touch(job_id, self._clock.now())
 
     async def _run_symbol(self, job: _Job, provider_symbol: str, asset_id: uuid.UUID) -> None:
         with session_scope(self._sessions) as session:
@@ -890,6 +940,12 @@ class HistoricalIngestionService:
             record = repo.get(job_id, lock=True)
             if record is None:
                 return
+            if record.status is not IngestionJobStatus.RUNNING:
+                # Reclaimed as interrupted by another process: never overwrite that.
+                logger.warning(
+                    "historical.finish_skipped", job_id=str(job_id), status=record.status.value
+                )
+                return
             symbols = repo.symbols(job_id)
             finished = (IngestionSymbolStatus.COMPLETED, IngestionSymbolStatus.NO_DATA)
             failed = [s for s in symbols if s.status not in finished]
@@ -921,9 +977,11 @@ class HistoricalIngestionService:
             return job_snapshot(record, repo.symbols(job_id))
 
     def recover_interrupted_jobs(self) -> int:
+        """Fail jobs whose heartbeat is stale (their process died); live jobs are kept."""
+        now = self._clock.now()
         with session_scope(self._sessions) as session:
             return IngestionJobRepository(session).mark_interrupted(
-                reason=INTERRUPTED_REASON, at=self._clock.now()
+                reason=INTERRUPTED_REASON, at=now, stale_before=now - STALE_AFTER
             )
 
     # ------------------------------------------------------------ helpers

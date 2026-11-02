@@ -29,6 +29,7 @@ from app.asset_discovery.qualification import QualificationService
 from app.asset_discovery.rules import DEFAULT_RULE_SETS
 from app.core.clocks import FixedClock
 from app.core.config import MarketDataSettings
+from app.data_engine.enums import PriceAdjustment
 from app.data_engine.schemas import DataIngestionJob
 from app.database.models import (
     AssetMetricValueRecord,
@@ -157,7 +158,7 @@ def test_measurements_record_window_source_range_and_version(env):
     assert adv.value is not None
     assert float(adv.value) == pytest.approx(500_000)
     assert adv.window == "20 sessions"
-    assert adv.feature_version == FEATURE_VERSION
+    assert adv.feature_version == f"{FEATURE_VERSION}-split"  # names the input series
     assert adv.source_start is not None
     assert adv.source_end is not None
     assert adv.source_end <= adv.as_of
@@ -436,3 +437,63 @@ def test_history_preparation_is_bounded_and_attributable_only(fresh_engine):
     assert requested[0] == env.asset_id("BENCH")  # benchmark first
     assert env.asset_id("SHARED") not in requested
     assert all(str(r.timeframe) == "1Day" for r in stub.requests)
+    # The series qualification measures, retrieved whole (audit P1-1).
+    assert all(r.adjustment is PriceAdjustment.SPLIT for r in stub.requests)
+
+
+# ------------------------------------------------------------------ splits (audit P1-1)
+def _split_history(env) -> None:
+    """MOCK history of SPLT around a 4:1 split ten sessions ago: the RAW series falls from
+    100 to 25 overnight; the split-adjusted series is continuous around 25."""
+    seed_daily_bars(env, "SPLT", close="100", skip_last=10, adjustment=PriceAdjustment.RAW)
+    seed_daily_bars(env, "SPLT", close="25", count=10, adjustment=PriceAdjustment.RAW)
+    seed_daily_bars(env, "SPLT", close="25", adjustment=PriceAdjustment.SPLIT)
+
+
+def _metrics(env, job_id, symbol: str) -> dict[str, AssetMetricValueRecord]:
+    with session_scope(env.factory) as session:
+        return {
+            r.metric: r
+            for r in session.scalars(
+                select(AssetMetricValueRecord).where(
+                    AssetMetricValueRecord.job_id == job_id,
+                    AssetMetricValueRecord.asset_id == env.asset_id(symbol),
+                )
+            )
+        }
+
+
+def _value(found: dict[str, AssetMetricValueRecord], metric: str) -> float:
+    value = found[metric].value
+    assert value is not None, metric
+    return float(value)
+
+
+def test_a_split_does_not_distort_volatility_or_momentum(fresh_engine):
+    env = make_env(fresh_engine)
+    env.directory.set(asset_record("SPLT"))
+    env.discover()
+    env.clock.advance(timedelta(minutes=5))
+    _split_history(env)
+    job = env.run(DiscoveryJobKind.QUALIFICATION, prepare_history=False)
+    assert job.summary["price_adjustment"] == "SPLIT"
+    found = _metrics(env, job.id, "SPLT")
+    # Measured on the adjusted series: ordinary 1% moves, no -75% "crash".
+    assert _value(found, "realized_volatility") < 0.5
+    assert abs(_value(found, "return_20d")) < 0.05
+    assert found["realized_volatility"].feature_version == f"{FEATURE_VERSION}-split"
+    assert evaluations(env, job.id)["SPLT"].outcome is QualificationOutcome.QUALIFIED
+
+
+def test_raw_prices_would_read_the_split_as_a_crash(fresh_engine):
+    """The same history measured RAW (the old behaviour): the split dominates every
+    return-based metric. This is what the SPLIT default prevents."""
+    env = make_env(fresh_engine, price_adjustment="RAW")
+    env.directory.set(asset_record("SPLT"))
+    env.discover()
+    env.clock.advance(timedelta(minutes=5))
+    _split_history(env)
+    job = env.run(DiscoveryJobKind.QUALIFICATION, prepare_history=False)
+    found = _metrics(env, job.id, "SPLT")
+    assert _value(found, "realized_volatility") > 1.0
+    assert _value(found, "return_20d") < -0.7

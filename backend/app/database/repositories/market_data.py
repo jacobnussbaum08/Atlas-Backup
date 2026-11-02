@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import and_, func, insert, select, update
+from sqlalchemy import and_, func, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import distinct_on
 from sqlalchemy.orm import Session, aliased
 
@@ -388,12 +388,34 @@ class IngestionJobRepository:
             .values(status=status, error=error)
         )
 
-    def mark_interrupted(self, *, reason: str, at: datetime) -> int:
-        """Fail every job left PENDING/RUNNING by a process that no longer exists."""
+    def touch(self, job_id: uuid.UUID, at: datetime) -> bool:
+        """Renew a RUNNING job's heartbeat. False if the job is no longer RUNNING."""
+        result = self._session.execute(
+            update(IngestionJobRecord)
+            .where(
+                IngestionJobRecord.id == job_id,
+                IngestionJobRecord.status == IngestionJobStatus.RUNNING,
+            )
+            .values(heartbeat_at=at)
+        )
+        return bool(getattr(result, "rowcount", 0))
+
+    def mark_interrupted(self, *, reason: str, at: datetime, stale_before: datetime) -> int:
+        """Fail PENDING/RUNNING jobs whose heartbeat is older than ``stale_before``: their
+        process died. Jobs other processes are running keep a fresh heartbeat and are
+        left alone; a row being started right now (locked) is skipped."""
         unfinished = (IngestionJobStatus.PENDING, IngestionJobStatus.RUNNING)
         job_ids = list(
             self._session.scalars(
-                select(IngestionJobRecord.id).where(IngestionJobRecord.status.in_(unfinished))
+                select(IngestionJobRecord.id)
+                .where(
+                    IngestionJobRecord.status.in_(unfinished),
+                    or_(
+                        IngestionJobRecord.heartbeat_at.is_(None),
+                        IngestionJobRecord.heartbeat_at < stale_before,
+                    ),
+                )
+                .with_for_update(skip_locked=True)
             )
         )
         if not job_ids:

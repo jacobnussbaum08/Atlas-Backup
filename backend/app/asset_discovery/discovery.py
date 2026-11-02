@@ -35,6 +35,7 @@ Safety
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Sequence
@@ -223,9 +224,13 @@ class DiscoveryEngine:
                 if mode is DiscoveryMode.FULL
                 else ReferenceSource.DIRECTORY_ACTIVE
             )
-            seen = self.apply_directory(job_id, directory, source, counters)
+            # REDACTED_FOR_GITHUB
+            # job's lease heartbeat keeps running on the event loop.
+            seen = await asyncio.to_thread(
+                self.apply_directory, job_id, directory, source, counters
+            )
             if mode is DiscoveryMode.FULL:
-                self._mark_missing(job_id, directory, seen, counters)
+                await asyncio.to_thread(self._mark_missing, job_id, directory, seen, counters)
             else:
                 await self._verify_absent_active(job_id, directory, seen, counters)
         return counters

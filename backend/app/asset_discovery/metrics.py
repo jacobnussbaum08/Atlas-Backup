@@ -17,6 +17,10 @@ weekends, holidays and early closes are not counted as missing.
 Floats are used inside Polars (analytics); values are persisted as ``Decimal`` rounded to
 a stated number of places (``app.asset_discovery.qualification``). ``FEATURE_VERSION``
 changes whenever a definition below changes.
+
+Input bars carry one price adjustment (``ASSET_DISCOVERY_PRICE_ADJUSTMENT``, SPLIT by
+default). Returns, true range and momentum are only meaningful on a series without split
+discontinuities; the stored version names the adjustment (``feature_version``).
 """
 
 from __future__ import annotations
@@ -32,8 +36,18 @@ import polars as pl
 
 from app.asset_discovery.enums import MetricStatus, SessionDayStatus
 from app.asset_discovery.sessions import SessionDay
+from app.data_engine.enums import PriceAdjustment
 
-FEATURE_VERSION = "daily-liquidity-v1"
+# v2: measured on daily bars of a stated price adjustment (D-063); v1 used RAW bars, whose
+# returns, ATR and volatility were wrong across splits.
+FEATURE_VERSION = "daily-liquidity-v2"
+
+
+def feature_version(adjustment: PriceAdjustment) -> str:
+    """The stored version names the input series too, e.g. ``daily-liquidity-v2-split``."""
+    return f"{FEATURE_VERSION}-{adjustment.value.lower()}"
+
+
 TRADING_DAYS_PER_YEAR = 252
 VALID = "VALID"
 _HAS_VALID_BAR = (
@@ -541,5 +555,6 @@ __all__ = [
     "SpreadSummary",
     "classify",
     "compute",
+    "feature_version",
     "spread_measurements",
 ]

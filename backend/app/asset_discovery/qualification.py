@@ -41,11 +41,12 @@ from app.asset_discovery.enums import (
     UniverseLayer,
     ValidFromBasis,
 )
+from app.asset_discovery.jobs import assert_owned
 from app.asset_discovery.metrics import (
-    FEATURE_VERSION,
     AssetMeasurements,
     Measurement,
     compute,
+    feature_version,
     spread_measurements,
 )
 from app.asset_discovery.rules import (
@@ -223,7 +224,7 @@ class QualificationService:
                 [c.asset.id for c in eligible],
                 provider=self._provider.provider_id,
                 feed=self._provider.feed,
-                adjustment=self._market.historical_data_adjustment,
+                adjustment=self._settings.price_adjustment,
                 start=window_start,
                 end=window_end,
                 as_of=now,
@@ -268,6 +269,10 @@ class QualificationService:
                         timeframe=DAY_1,
                         start=start,
                         end=window_end,
+                        # The whole window in one retrieval: an adjusted series is only
+                        # consistent within one retrieval (the provider re-adjusts history
+                        # after each split), and this refetch replaces all of it.
+                        adjustment=self._settings.price_adjustment,
                     ),
                     requested_by=f"asset_discovery:{job_id}",
                 )
@@ -302,9 +307,13 @@ class QualificationService:
         }
 
     # ------------------------------------------------------------ evaluation
-    def evaluate_all(self, job_id: uuid.UUID, as_of: datetime, *, live: bool) -> dict[str, Any]:
+    def evaluate_all(
+        self, job_id: uuid.UUID, as_of: datetime, *, live: bool, owner: str | None = None
+    ) -> dict[str, Any]:
+        """Evaluate every candidate at ``as_of``. With ``owner``, results are committed only
+        if that runner still holds the job's lease."""
         provider, feed = self._provider.provider_id, self._provider.feed
-        adjustment = self._market.historical_data_adjustment
+        adjustment = self._settings.price_adjustment
         with session_scope(self._sessions) as session:
             rule_set_id, config = self.rule_set(session)
             candidates = self.candidates(session, as_of, live=live)
@@ -404,6 +413,8 @@ class QualificationService:
         # One transaction: an interrupted job leaves nothing behind, so its retry (which
         # evaluates at a new as-of time) never mixes with a partial earlier attempt.
         with session_scope(self._sessions) as session:
+            if owner is not None:
+                assert_owned(session, job_id, owner)
             for rows, model in (
                 (metric_rows, AssetMetricValueRecord),
                 (eval_rows, QualificationEvaluationRecord),
@@ -418,7 +429,8 @@ class QualificationService:
             "as_of": as_of.isoformat(),
             "live": live,
             "rule_set_id": str(rule_set_id),
-            "feature_version": FEATURE_VERSION,
+            "feature_version": feature_version(adjustment),
+            "price_adjustment": adjustment.value,
             "candidates": len(candidates),
             "instrument_eligible": len(eligible),
             "measured": len(measured),
@@ -446,6 +458,7 @@ class QualificationService:
         spreads: dict[uuid.UUID, list[Measurement]],
     ) -> list[dict[str, Any]]:
         rows = []
+        version = feature_version(self._settings.price_adjustment)
         # Instruments with no stored observations at all get no metric rows: their
         # evaluation already says the inputs are unavailable.
         observed = {
@@ -487,7 +500,7 @@ class QualificationService:
                         else "quote",
                         "provider": self._provider.provider_id,
                         "feed": self._provider.feed,
-                        "feature_version": FEATURE_VERSION,
+                        "feature_version": version,
                         "as_of": as_of,
                         "source_start": m.source_start,
                         "source_end": None if m.source_end is None else min(m.source_end, as_of),

@@ -6,6 +6,8 @@ Invalid configuration raises before the server accepts a single request.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from importlib.metadata import PackageNotFoundError, version
@@ -25,6 +27,7 @@ from app.core.logging import configure_logging, get_logger
 from app.core.redis_client import build_redis
 from app.core.security import TRADING_MODE
 from app.data_engine.historical import INTERRUPTED_REASON
+from app.data_engine.historical import STALE_AFTER as INGESTION_STALE_AFTER
 from app.data_engine.runtime import MarketDataContext, build_market_data_context
 
 if TYPE_CHECKING:
@@ -41,6 +44,8 @@ from app.monitoring.health import (
 
 logger = get_logger(__name__)
 
+INTERRUPTED_SWEEP_SECONDS = 60.0
+
 
 def _package_version() -> str:
     try:
@@ -50,17 +55,29 @@ def _package_version() -> str:
 
 
 def _recover_interrupted_jobs(session_factory: sessionmaker[Session], clock: Clock) -> None:
-    """Jobs run in-process, so any job still PENDING/RUNNING at startup was orphaned."""
+    """Fail ingestion jobs whose heartbeat went stale (their process died).
+
+    Other processes (recovery and discovery workers) run ingestion jobs too: a job with a
+    fresh heartbeat is someone's live work and is never touched.
+    """
+    now = clock.now()
     try:
         with session_scope(session_factory) as session:
             count = IngestionJobRepository(session).mark_interrupted(
-                reason=INTERRUPTED_REASON, at=clock.now()
+                reason=INTERRUPTED_REASON, at=now, stale_before=now - INGESTION_STALE_AFTER
             )
     except Exception as exc:  # the database may be down; /ready reports that
         logger.warning("historical.recovery_skipped", error_type=type(exc).__name__)
         return
     if count:
         logger.warning("historical.jobs_interrupted", count=count)
+
+
+async def _sweep_interrupted_jobs(session_factory: sessionmaker[Session], clock: Clock) -> None:
+    """Repeat the sweep: jobs orphaned just before a restart only go stale afterwards."""
+    while True:
+        await asyncio.sleep(INTERRUPTED_SWEEP_SECONDS)
+        await asyncio.to_thread(_recover_interrupted_jobs, session_factory, clock)
 
 
 def create_app(
@@ -90,6 +107,7 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         engine = redis_client = None
+        sweeper: asyncio.Task[None] | None = None
         if health_checks is None:
             engine = build_engine(settings)
             redis_client = build_redis(settings)
@@ -107,6 +125,7 @@ def create_app(
                 session_factory, clock
             )
             _recover_interrupted_jobs(session_factory, clock)
+            sweeper = asyncio.create_task(_sweep_interrupted_jobs(session_factory, clock))
         else:
             app.state.health_checks = dict(health_checks)
 
@@ -120,6 +139,10 @@ def create_app(
         try:
             yield
         finally:
+            if sweeper is not None:
+                sweeper.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await sweeper
             live_hub = getattr(app.state, "live_hub", None)
             if live_hub is not None:
                 await live_hub.close()

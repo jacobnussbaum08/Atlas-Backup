@@ -116,6 +116,7 @@ class AssetDiscoveryService:
         self.settings = settings
         self._clock = clock
         self.owner = owner or default_owner()
+        self.heartbeat_seconds = HEARTBEAT_SECONDS
         self.engine = DiscoveryEngine(session_factory, provider, settings, clock)
         self.qualification = QualificationService(
             session_factory, provider, market_settings, settings, clock, ingestion
@@ -185,9 +186,17 @@ class AssetDiscoveryService:
         logger.info(
             "discovery.job_started", job_id=str(job.id), kind=job.kind.value, attempt=job.attempt
         )
-        beat = asyncio.create_task(self._heartbeat(job.id))
+        lost = asyncio.Event()
+        work = asyncio.ensure_future(self._dispatch(job))
+        beat = asyncio.create_task(self._heartbeat(job.id, work, lost))
         try:
-            status, counters, summary = await self._dispatch(job)
+            status, counters, summary = await work
+        except asyncio.CancelledError:
+            if not lost.is_set():
+                raise
+            # Another runner reclaimed the job: it is theirs now; record nothing here.
+            logger.error("discovery.lease_lost", job_id=str(job.id), kind=job.kind.value)
+            return
         except Exception as exc:
             beat.cancel()
             permanent = isinstance(exc, _PERMANENT) and not isinstance(exc, ProviderResponseError)
@@ -221,7 +230,8 @@ class AssetDiscoveryService:
             ):
                 raise
             return
-        beat.cancel()
+        finally:
+            beat.cancel()
         with session_scope(self._sessions) as session:
             jobs.finish(
                 session,
@@ -239,16 +249,26 @@ class AssetDiscoveryService:
         if job.params.get("pipeline") and status is not DiscoveryJobStatus.FAILED:
             self._chain(job)
 
-    async def _heartbeat(self, job_id: uuid.UUID) -> None:
+    async def _heartbeat(
+        self, job_id: uuid.UUID, work: asyncio.Future[Any], lost: asyncio.Event
+    ) -> None:
+        """Renew the lease; if another runner took the job over, stop ``work``."""
         while True:
-            await asyncio.sleep(HEARTBEAT_SECONDS)
+            await asyncio.sleep(self.heartbeat_seconds)
             try:
-                with session_scope(self._sessions) as session:
-                    jobs.heartbeat(
-                        session, job_id, owner=self.owner, now=self._clock.now(), lease=self._lease
-                    )
-            except (SQLAlchemyError, jobs.JobStateError):
+                await asyncio.to_thread(self._renew_lease, job_id)
+            except SQLAlchemyError:
                 logger.warning("discovery.heartbeat_failed", job_id=str(job_id))
+            except jobs.JobStateError:
+                lost.set()
+                work.cancel()
+                return
+
+    def _renew_lease(self, job_id: uuid.UUID) -> None:
+        with session_scope(self._sessions) as session:
+            jobs.heartbeat(
+                session, job_id, owner=self.owner, now=self._clock.now(), lease=self._lease
+            )
 
     def _chain(self, job: DiscoveryJobRecord) -> None:
         step = int(job.params.get("pipeline_step", -1)) + 1
@@ -281,10 +301,12 @@ class AssetDiscoveryService:
             return self._directory_status(counters), counters.as_dict(), {}
         if job.kind is DiscoveryJobKind.QUALIFICATION:
             return await self._qualify(job)
+        # Blocking database and Polars work runs in a thread so the lease heartbeat keeps
+        # running on the event loop.
         if job.kind is DiscoveryJobKind.WATCHLIST_SCORING:
-            return self._score(job)
+            return await asyncio.to_thread(self._score, job)
         if job.kind is DiscoveryJobKind.MEMBERSHIP_UPDATE:
-            return self._update_membership(job)
+            return await asyncio.to_thread(self._update_membership, job)
         raise ValueError(f"unknown job kind {job.kind}")
 
     @staticmethod
@@ -354,7 +376,9 @@ class AssetDiscoveryService:
         as_of = (
             self._clock.now() if as_of_param is None else datetime.fromisoformat(str(as_of_param))
         )
-        summary = self.qualification.evaluate_all(job.id, as_of, live=live)
+        summary = await asyncio.to_thread(
+            self.qualification.evaluate_all, job.id, as_of, live=live, owner=self.owner
+        )
         summary["history_preparation"] = prep
         failed_prep = [
             j
@@ -444,6 +468,7 @@ class AssetDiscoveryService:
             current_members={a: True for a in members},
         )
         with session_scope(self._sessions) as session:
+            jobs.assert_owned(session, job.id, self.owner)
             for s in scores:
                 session.add(
                     WatchlistScoreRecord(
@@ -499,6 +524,7 @@ class AssetDiscoveryService:
             for attempt in range(3):
                 try:
                     with session_scope(self._sessions) as session:
+                        jobs.assert_owned(session, job.id, self.owner)
                         local = self._apply_decisions(session, job.id, layer, part)
                     counts.update(local)
                     break

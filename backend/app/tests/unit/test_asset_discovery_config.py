@@ -8,6 +8,7 @@ import pytest
 
 from app.asset_discovery.config import AssetDiscoverySettings, get_asset_discovery_settings
 from app.core.config import InvalidSettingsError, UnknownSettingError
+from app.data_engine.enums import PriceAdjustment
 
 
 def test_defaults_are_conservative(clean_env):
@@ -20,6 +21,11 @@ def test_defaults_are_conservative(clean_env):
     assert settings.rule_set_code("sip") == "us-equity-sip"
     assert (
         AssetDiscoverySettings(_env_file=None, rule_set="custom").rule_set_code("iex") == "custom"
+    )
+    # Qualification measures split-adjusted bars (audit P1-1, D-063); env values are lenient.
+    assert settings.price_adjustment is PriceAdjustment.SPLIT
+    assert AssetDiscoverySettings(_env_file=None, price_adjustment="all").price_adjustment is (
+        PriceAdjustment.ALL
     )
 
 

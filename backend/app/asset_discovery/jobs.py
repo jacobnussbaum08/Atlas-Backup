@@ -156,6 +156,12 @@ def _owned(session: Session, job_id: uuid.UUID, owner: str) -> Job:
     return job
 
 
+def assert_owned(session: Session, job_id: uuid.UUID, owner: str) -> None:
+    """Raise ``JobStateError`` unless ``owner`` still holds the job (row locked until the
+    transaction ends): a runner that lost its lease must not commit results."""
+    _owned(session, job_id, owner)
+
+
 def heartbeat(
     session: Session,
     job_id: uuid.UUID,
@@ -276,6 +282,7 @@ __all__ = [
     "CreatedJob",
     "JobStateError",
     "active_job",
+    "assert_owned",
     "claim_next",
     "create_job",
     "fail_attempt",

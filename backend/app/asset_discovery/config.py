@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from functools import lru_cache
 
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.config.settings import (
@@ -22,6 +22,7 @@ from app.core.config.settings import (
     describe_validation_error,
     reject_unknown_keys,
 )
+from app.data_engine.enums import PriceAdjustment
 
 ENV_PREFIX = "ASSET_DISCOVERY_"
 
@@ -70,6 +71,17 @@ class AssetDiscoverySettings(BaseSettings):
     history_prep_lookback_days: int = Field(default=130, ge=30, le=730)
     # Benchmark for relative strength (an Atlas symbol with daily history).
     benchmark_symbol: str = "SPY"
+    # Price adjustment of the daily bars qualification measures (decision D-063). Returns,
+    # volatility, ATR and momentum across a split are meaningless on RAW prices (a 4:1
+    # split reads as -75%), so the default is SPLIT. RAW reintroduces that error.
+    price_adjustment: PriceAdjustment = PriceAdjustment.SPLIT
+
+    @field_validator("price_adjustment", mode="before")
+    @classmethod
+    def _normalise_adjustment(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip().upper().replace("-", "_")
+        return value
 
     @property
     def assumed_history_start_at(self) -> datetime:

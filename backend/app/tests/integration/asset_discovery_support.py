@@ -139,8 +139,10 @@ def seed_daily_bars(
     skip_last: int = 0,
     quality: DataQualityStatus = DataQualityStatus.VALID,
     revision: int = 0,
+    adjustment: PriceAdjustment | None = None,
 ) -> int:
-    """Insert MOCK daily bars for the ``count`` sessions completed before ``as_of``."""
+    """Insert MOCK daily bars for the ``count`` sessions completed before ``as_of``, in
+    the series qualification reads (default: the configured price adjustment)."""
     asset_id = env.asset_id(symbol)
     days = sessions_before(as_of, count)
     if skip_last:
@@ -157,7 +159,7 @@ def seed_daily_bars(
                 "feed": "iex",
                 "provider_symbol": symbol,
                 "timeframe": "1Day",
-                "adjustment": PriceAdjustment.RAW,
+                "adjustment": adjustment or env.service.settings.price_adjustment,
                 "event_time": at,
                 "revision": revision,
                 "open": price,

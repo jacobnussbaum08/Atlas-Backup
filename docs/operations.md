@@ -311,6 +311,12 @@ Prerequisites: Alpaca **paper-account** keys in `.env` (the asset directory is r
 Run from the repository root. Every command prints JSON on stdout and exits 0 only when every
 job it ran finished `COMPLETED`.
 
+Qualification measures **split-adjusted** daily bars (`ASSET_DISCOVERY_PRICE_ADJUSTMENT=SPLIT`,
+D-063), a series separate from the RAW history other features use. After upgrading from the
+RAW-based version, run `qualify` a few times: each run prepares adjusted history for at most
+`ASSET_DISCOVERY_HISTORY_PREP_MAX_ASSETS` instruments, and the others stay `INSUFFICIENT_DATA`
+until theirs is prepared.
+
 1. First full catalog, then qualification, scoring and membership updates (~2 min for
    ~33,500 records; history is prepared for at most `ASSET_DISCOVERY_HISTORY_PREP_MAX_ASSETS`
    instruments per run):
