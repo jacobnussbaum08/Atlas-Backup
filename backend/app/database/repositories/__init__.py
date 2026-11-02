@@ -4,6 +4,7 @@ from app.database.repositories.asset_mapping import AssetMappingRepository, Mapp
 from app.database.repositories.audit_log import AuditLogRepository
 from app.database.repositories.live_market_data import (
     LiveObservationRepository,
+    LiveUpdateRepository,
     StreamRepository,
 )
 from app.database.repositories.market_data import (
@@ -27,6 +28,7 @@ __all__ = [
     "CoverageRow",
     "IngestionJobRepository",
     "LiveObservationRepository",
+    "LiveUpdateRepository",
     "MappingError",
     "MarketBarRepository",
     "MarketDataEventRepository",

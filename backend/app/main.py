@@ -115,6 +115,9 @@ def create_app(
         try:
             yield
         finally:
+            live_hub = getattr(app.state, "live_hub", None)
+            if live_hub is not None:
+                await live_hub.close()
             if redis_client is not None:
                 redis_client.close()
             if engine is not None:

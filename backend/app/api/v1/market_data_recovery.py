@@ -48,6 +48,7 @@ from app.database.models import (
 )
 from app.database.repositories import (
     CompletenessRepository,
+    IngestionJobRepository,
     RecoveryJobRepository,
     RecoveryStatusRepository,
     StreamRepository,
@@ -179,6 +180,12 @@ class Dimension(BaseModel):
     state: DimensionState
     detail: str
     essential: bool
+    last_success_at: datetime | None = Field(
+        default=None, description="Last time this stage demonstrably did its job"
+    )
+    updated_at: datetime | None = Field(
+        default=None, description="When the process behind this stage last reported"
+    )
 
 
 class PipelineHealthResponse(BaseModel):
@@ -433,8 +440,33 @@ def pipeline_health(ctx: Context, request: Request) -> PipelineHealthResponse:
     stream_active = report.health not in (StreamHealth.DISABLED,)
     dims: list[Dimension] = []
 
+    heartbeat = row.heartbeat_at if row is not None else None
+    stage_success = {
+        "provider_connection": row.last_message_at if row is not None else None,
+        "authentication": row.last_authenticated_at if row is not None else None,
+        "subscription": row.last_subscribed_at if row is not None else None,
+        "message_reception": row.last_message_at if row is not None else None,
+        "message_processing": row.last_persisted_at if row is not None else None,
+        "database_persistence": row.last_persisted_at if row is not None else None,
+        "historical_completeness": last_backfill,
+        "backfill_activity": last_backfill,
+    }
+    stage_updated = {
+        "historical_completeness": recovery.heartbeat_at if recovery is not None else None,
+        "backfill_activity": recovery.heartbeat_at if recovery is not None else None,
+    }
+
     def add(name: str, state: DimensionState, detail: str, essential: bool = True) -> None:
-        dims.append(Dimension(name=name, state=state, detail=detail, essential=essential))
+        dims.append(
+            Dimension(
+                name=name,
+                state=state,
+                detail=detail,
+                essential=essential,
+                last_success_at=stage_success.get(name),
+                updated_at=stage_updated.get(name, heartbeat),
+            )
+        )
 
     inactive = DimensionState.INACTIVE
     if not stream_active:
@@ -461,28 +493,37 @@ def pipeline_health(ctx: Context, request: Request) -> PipelineHealthResponse:
             DimensionState.OK if connected else DimensionState.FAILING,
             "; ".join(report.reasons) if not connected else f"connected ({report.health.value})",
         )
+        # The recorded auth/subscription states describe the last connection; without a
+        # live connection they are history, not the current state (2E).
         auth = row.auth_state if row is not None else None
-        add(
-            "authentication",
-            DimensionState.OK
-            if auth == StreamAuthState.AUTHENTICATED
-            else DimensionState.FAILING
-            if auth == StreamAuthState.REJECTED
-            else DimensionState.UNKNOWN,
-            f"auth state {auth}",
-        )
+        if auth == StreamAuthState.REJECTED:
+            auth_state, auth_detail = DimensionState.FAILING, f"auth state {auth}"
+        elif not connected:
+            auth_state = DimensionState.UNKNOWN
+            auth_detail = f"not connected (last known auth state {auth})"
+        elif auth == StreamAuthState.AUTHENTICATED:
+            auth_state, auth_detail = DimensionState.OK, f"auth state {auth}"
+        else:
+            auth_state, auth_detail = DimensionState.UNKNOWN, f"auth state {auth}"
+        add("authentication", auth_state, auth_detail)
         sub = row.subscription_state if row is not None else None
-        add(
-            "subscription",
-            DimensionState.OK
-            if sub == StreamSubscriptionState.ACTIVE
-            else DimensionState.WARNING
-            if sub == StreamSubscriptionState.PARTIAL
-            else DimensionState.FAILING
-            if sub == StreamSubscriptionState.REJECTED or not connected
-            else DimensionState.UNKNOWN,
-            f"subscription state {sub}",
-        )
+        if sub == StreamSubscriptionState.REJECTED or not connected:
+            sub_detail = (
+                f"subscription state {sub}"
+                if connected
+                else f"not connected (last known subscription state {sub})"
+            )
+            add("subscription", DimensionState.FAILING, sub_detail)
+        else:
+            add(
+                "subscription",
+                DimensionState.OK
+                if sub == StreamSubscriptionState.ACTIVE
+                else DimensionState.WARNING
+                if sub == StreamSubscriptionState.PARTIAL
+                else DimensionState.UNKNOWN,
+                f"subscription state {sub}",
+            )
         if report.health is StreamHealth.STALE:
             add("message_reception", DimensionState.FAILING, "; ".join(report.reasons))
         elif report.health is StreamHealth.IDLE:
@@ -647,6 +688,7 @@ def metrics(ctx: Context, request: Request) -> dict[str, Any]:
             .group_by(MarketDataGapRecord.data_type)
         ).all()
         recovery = RecoveryStatusRepository(session).get(provider, feed)
+        ingestion_jobs = IngestionJobRepository(session).counts()
     return {
         "provider": provider,
         "feed": feed,
@@ -690,6 +732,7 @@ def metrics(ctx: Context, request: Request) -> dict[str, Any]:
             "gaps": gap_counts,
             "recovery_jobs": job_counts,
             "records_recovered": {dt.value: int(n) for dt, n in recovered},
+            "ingestion_jobs": ingestion_jobs,
         },
         "performance": {
             "queue_depth": row.queue_depth if row is not None else None,

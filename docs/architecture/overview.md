@@ -240,12 +240,51 @@ recovery worker (one per provider/feed) -> market_data_recovery_jobs
 * Migration `0005`: coverage, gaps, recovery jobs and status tables, `btree_gist` exclusion
   constraint, `frame_seq`, widened quality/status enums.
 
-## Frontend
+## Market-data dashboard (Phase 2E)
 
-The React dashboard shell has a navigation entry for every section in spec §22:
+```text
+Alpaca IEX stream ── stream worker (only provider connection) ──> PostgreSQL
+                                                                     │
+FastAPI ── REST: snapshots, market-status, candles, quotes, trades,  │
+           completeness, gaps, recovery/ingestion jobs, health ... <─┤
+        └─ SSE /market-data/live <── LiveUpdateHub (1 per API process,│
+                                     polls new rows by id, 1 s) <─────┘
+                │
+Vite proxy (/api, /health, /ready: one origin)
+                │
+React dashboard ── one shared EventSource per tab (liveUpdates.ts)
+```
 
-* **System Health** is live. It polls `/health` and `/ready` every 15 s.
-* **The other sections** are explicit "No data yet — Phase N" placeholders. They never show
-  invented numbers.
-* **Routing.** The Vite dev server proxies `/health`, `/ready` and `/api` to the backend, so the
-  browser talks to a single origin.
+The dashboard reads only Atlas's API; the browser never contacts a provider and never
+receives credentials (status values only). Pages:
+
+| Route | Content | Data |
+|---|---|---|
+| `/` Overview | NYSE session and next session, pipeline and stream state, summary counts, monitored assets | `market-status`, `stream`, `pipeline-health`, `metrics`, `snapshots` + live trades/quotes |
+| `/markets` | Asset table: search, sortable and selectable columns, freshness, quality | `snapshots` + live |
+| `/markets/:symbol` | Price chart (1Min–1Day, ranges), quote and last trade, trade tape, coverage, quality events | `candles`, `completeness`, `trades`, `quality-events`, live bars/trades |
+| `/data-health` | Nine pipeline stages with last success/update, gaps by status, provider interruptions, quality events, audit trail | `pipeline-health`, `metrics`, `gaps`, `stream/gaps`, `quality-events`, `audit-events` |
+| `/ingestion` | Historical retrieval form (backend-validated), job list with filters, recovery jobs | `assets`, `historical-fetch`, `ingestion-jobs`, `recovery-jobs` |
+| `/system-health` | API, PostgreSQL, migrations, Redis (Phase 1) | `/health`, `/ready` |
+| `/settings` | Effective market-data configuration (read-only), display time zone | `configuration`, `providers` |
+
+Later-phase sections (Strategies, AI Intelligence, Portfolio, Risk Center, Backtesting) are
+disabled in the navigation; their URLs show an explicit "not built" page.
+
+Frontend modules (`frontend/src`):
+
+* `types/marketData.ts`: TypeScript mirrors of the backend schemas (decimals stay strings).
+* `services/api.ts`, `services/marketData.ts`: typed REST clients and error parsing;
+  `services/liveUpdates.ts`: the shared SSE client (reference-counted, reconnects, `resync`).
+* `hooks/`: `useApiResource` (loading/success/empty/error, abort + sequence numbers so stale
+  responses never win, polling paused in hidden tabs), `useSnapshots`, `useCandles`,
+  `useLiveUpdates`, `useNow`, `useSystemStatus`.
+* `lib/candles.ts`: chart correctness (ordering, revisions, grid, OHLC, live-bar rules);
+  `lib/format.ts`, `lib/time.tsx` (display zone), `lib/snapshots.ts` (live merging).
+* `components/`: `ui.tsx` (design-system primitives), `status.tsx` (state badges),
+  `market/AssetTable.tsx`, `market/PriceChart.tsx` (Lightweight Charts).
+* `layouts/DashboardLayout.tsx` (sidebar, header) and `pages/`.
+
+Refresh strategy: stream status 15 s, market status 60 s, snapshots 15 s plus live merges,
+pipeline health 15 s, metrics 30–60 s, job lists 10–15 s; trade tape refetched (25 rows) at
+most every 2 s on live trades. Decisions: D-043 to D-049.

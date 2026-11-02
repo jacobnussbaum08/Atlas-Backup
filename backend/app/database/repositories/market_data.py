@@ -144,6 +144,38 @@ class MarketBarRepository:
         )
         return self._session.scalars(stmt).all()
 
+    def latest_bar(
+        self, key: SeriesKey, *, statuses: Iterable[DataQualityStatus], since: datetime
+    ) -> MarketBarRecord | None:
+        """Current revision of the newest bar at or after ``since`` whose current
+        revision has one of ``statuses`` (same revision rule as ``current_bars``)."""
+        latest = (
+            select(MarketBarRecord.id)
+            .where(*self._series(key), MarketBarRecord.event_time >= since)
+            .order_by(MarketBarRecord.event_time, MarketBarRecord.revision.desc())
+            .ext(distinct_on(MarketBarRecord.event_time))
+        ).subquery()
+        stmt = (
+            select(MarketBarRecord)
+            .where(
+                MarketBarRecord.id.in_(select(latest.c.id)),
+                MarketBarRecord.quality_status.in_(list(statuses)),
+            )
+            .order_by(MarketBarRecord.event_time.desc())
+            .limit(1)
+        )
+        return self._session.scalars(stmt).first()
+
+    def current_bar(self, key: SeriesKey, event_time: datetime) -> MarketBarRecord | None:
+        """Highest revision of one bar, whatever its status."""
+        stmt = (
+            select(MarketBarRecord)
+            .where(*self._series(key), MarketBarRecord.event_time == event_time)
+            .order_by(MarketBarRecord.revision.desc())
+            .limit(1)
+        )
+        return self._session.scalars(stmt).first()
+
     def revisions(self, key: SeriesKey, event_time: datetime) -> Sequence[MarketBarRecord]:
         stmt = (
             select(MarketBarRecord)
@@ -262,13 +294,42 @@ class IngestionJobRepository:
         return self._session.scalars(stmt).all()
 
     def list(
-        self, *, statuses: Iterable[IngestionJobStatus] | None = None, limit: int, offset: int
+        self,
+        *,
+        statuses: Iterable[IngestionJobStatus] | None = None,
+        limit: int,
+        offset: int,
+        asset_id: uuid.UUID | None = None,
+        timeframe: str | None = None,
+        created_from: datetime | None = None,
+        created_to: datetime | None = None,
     ) -> Sequence[IngestionJobRecord]:
         stmt = select(IngestionJobRecord)
         if statuses:
             stmt = stmt.where(IngestionJobRecord.status.in_(list(statuses)))
+        if asset_id is not None:
+            stmt = stmt.where(
+                IngestionJobRecord.id.in_(
+                    select(IngestionJobSymbolRecord.job_id).where(
+                        IngestionJobSymbolRecord.asset_id == asset_id
+                    )
+                )
+            )
+        if timeframe is not None:
+            stmt = stmt.where(IngestionJobRecord.timeframe == timeframe)
+        if created_from is not None:
+            stmt = stmt.where(IngestionJobRecord.created_at >= created_from)
+        if created_to is not None:
+            stmt = stmt.where(IngestionJobRecord.created_at < created_to)
         stmt = stmt.order_by(IngestionJobRecord.created_at.desc()).limit(limit).offset(offset)
         return self._session.scalars(stmt).all()
+
+    def counts(self) -> dict[str, int]:
+        """Jobs per status (all time)."""
+        rows = self._session.execute(
+            select(IngestionJobRecord.status, func.count()).group_by(IngestionJobRecord.status)
+        ).all()
+        return {status.value: int(n) for status, n in rows}
 
     def add_counts(
         self, job_id: uuid.UUID, provider_symbol: str, counts: dict[str, int], at: datetime

@@ -163,6 +163,12 @@ def test_openapi_exposes_no_order_endpoints(build_client):
         "/api/v1/market-data/recovery-requests",
         "/api/v1/market-data/pipeline-health",
         "/api/v1/market-data/metrics",
+        # 2E dashboard read models and live distribution (read-only)
+        "/api/v1/market-data/market-status",
+        "/api/v1/market-data/snapshots",
+        "/api/v1/market-data/configuration",
+        "/api/v1/market-data/audit-events",
+        "/api/v1/market-data/live",
     }
     # Market trades (exchange prints) are read-only market data, not trading: the one
     # allowed path containing "trade" must expose GET only.

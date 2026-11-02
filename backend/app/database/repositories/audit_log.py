@@ -55,3 +55,20 @@ class AuditLogRepository:
             .order_by(AuditLog.id)
         )
         return self._session.scalars(stmt).all()
+
+    def list_by_prefix(
+        self,
+        prefix: str,
+        *,
+        limit: int,
+        before_id: int | None = None,
+        priority: str | None = None,
+    ) -> Sequence[AuditLog]:
+        """Entries whose action starts with ``prefix``, newest first; ``priority``
+        matches ``details.priority``."""
+        stmt = select(AuditLog).where(AuditLog.action.startswith(prefix, autoescape=True))
+        if priority is not None:
+            stmt = stmt.where(AuditLog.details["priority"].astext == priority)
+        if before_id is not None:
+            stmt = stmt.where(AuditLog.id < before_id)
+        return self._session.scalars(stmt.order_by(AuditLog.id.desc()).limit(limit)).all()

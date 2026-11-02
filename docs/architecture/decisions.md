@@ -542,3 +542,72 @@ authenticated while writes fail). Metrics come from the workers' persisted state
 to the append-only audit log with `details.priority`: `HIGH` only for genuine integrity problems
 (unrecoverable intervals, failed backfills, missed stream data, outages over 5 minutes in
 expected hours, database interruptions over a minute); ordinary quiet markets produce nothing.
+
+## Deliverable 2E — market-data dashboard
+
+### D-043 Live updates: Server-Sent Events from stored data, one hub per API process
+
+**Context:** the dashboard needs live candles, trades and quotes. The stream worker is the
+only provider connection (2C) and writes to PostgreSQL. Options were WebSockets, Server-Sent
+Events, or polling; Redis pub/sub could carry notifications.
+
+**Decision:** `GET /api/v1/market-data/live` is an SSE stream. Each API process has one
+`LiveUpdateHub` that polls PostgreSQL once a second while at least one client is connected
+and fans the rows out to all clients: every new bar row (a new revision is a new row), and per
+asset only the newest trade and quote with an arrival count. Updates flow one way, so SSE is
+enough (no WebSocket protocol, automatic browser reconnection, works through the Vite proxy).
+Polling by primary-key cursor keeps PostgreSQL the source of truth and adds no coupling
+between the worker and the API; Redis is not used (it would only shorten latency below the
+1 s poll, which a monitoring view does not need). Late-committing transactions can hold an id
+below the cursor, so bar ids are re-checked over a trailing window of 2,000 ids. A client
+that falls behind receives `resync` and reloads from REST; a client that reconnects does the
+same, because missed events are not replayed. At most 50 clients per API process.
+
+### D-044 Snapshot semantics: last price, previous close and freshness are derived, never filled
+
+[REDACTED_FOR_GITHUB] Without a valid daily bar there is no change and the response says why.
+Market status (`/market-status`) comes from the 2D calendar; the frontend does no session
+arithmetic.
+
+### D-045 Charts show stored bars only; nothing is synthesised
+
+**Decision:** charts load `/candles` (VALID, INCOMPLETE and QUARANTINED, newest revision per
+bar) for a bounded range per timeframe (at most 20,000 candles). The browser validates order,
+uniqueness, timeframe grid and OHLC before drawing and reports, not repairs, any failure.
+Live bars follow Alpaca's semantics: 1-minute bars are appended when published (LIVE_INITIAL)
+and replaced by higher revisions (LIVE_UPDATED); the daily bar is replaced while it forms
+(LIVE_RUNNING, drawn faded). The provider streams only 1Min and 1Day bars, so 5Min, 15Min and
+1Hour charts change only when history is retrieved; they are never aggregated from trades or
+1-minute bars in the browser. QUARANTINED bars leave an empty, marked slot. Missing volume is
+not drawn as zero. Decision-time snapshots are unaffected: the chart only reads, and the bar
+table stays append-only (`known_at` reads remain available).
+
+### D-046 Exchange time (ET) is the default display zone
+
+**Decision:** all data stays UTC. The dashboard shows times in one labelled zone, by default
+America/New_York ("ET", the zone of the NYSE calendar and IEX hours), switchable to UTC or the
+browser's local zone in Settings (stored per browser). The header also shows local time.
+
+### D-047 Read endpoints answer 503 when the database is unreachable
+
+**Decision:** SQLAlchemy `OperationalError`/`InterfaceError` escaping a request now maps to
+`503 dependency_unavailable` ("The database is unavailable.") instead of a generic 500, so
+the dashboard can tell an outage from a bug. Internal details stay in the log.
+
+### D-048 Pipeline health: recorded auth/subscription states are history when disconnected
+
+**Context:** with the stream worker stopped, `/pipeline-health` still reported
+authentication and subscription `OK` from the last recorded states (2D), while `/stream`
+already treated the subscription as inactive. The dashboard made the inconsistency visible.
+
+**Decision:** while the stream is not connected, authentication is `UNKNOWN` ("not connected
+(last known auth state …)") and the subscription `FAILING`; a rejected authentication stays
+`FAILING`. Connected behaviour is unchanged. Dimensions now also carry `last_success_at` and
+`updated_at`.
+
+### D-049 Charting library: TradingView Lightweight Charts 5
+
+**Decision:** `lightweight-charts` ^5.2.1 (Apache-2.0, named in spec §6). The TradingView
+attribution logo stays enabled, which satisfies the licence's attribution requirement. The
+asset page (and with it the library) is loaded on demand, so the initial bundle is 367 kB
+(110 kB gzipped) instead of 561 kB.

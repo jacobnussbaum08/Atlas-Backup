@@ -31,7 +31,7 @@ It supersedes all earlier specifications.
 | Phase | Scope | State |
 |---|---|---|
 | 1 — Foundation | Repo, config, logging, DB + migrations, Redis, API health/readiness, dashboard shell, tests | Implemented. See [docs/phase-reports/phase-1-report.md](docs/phase-reports/phase-1-report.md) |
-| 2 — Market data | 2A provider architecture ✅. 2B historical retrieval ✅ (live-verified for AAPL and SPY on IEX). 2C live streaming ✅ (stream worker; live-verified: real IEX quotes, trades and bars for AAPL and SPY persisted). 2D reliability and recovery ✅ (completeness evidence, gap detection, recovery worker; live-verified recovery of real outages from Alpaca's IEX history). 2E dashboard pending | In progress. Reports in [docs/phase-reports/](docs/phase-reports/) |
+| 2 — Market data | 2A provider architecture ✅. 2B historical retrieval ✅ (live-verified for AAPL and SPY on IEX). 2C live streaming ✅ (stream worker; live-verified: real IEX quotes, trades and bars for AAPL and SPY persisted). 2D reliability and recovery ✅ (completeness evidence, gap detection, recovery worker; live-verified recovery of real outages from Alpaca's IEX history). 2E market-data dashboard ✅ (overview, markets, asset charts, data health, ingestion, settings on real stored data; live chart updates over SSE verified end to end with a mock provider stream, not yet during a real trading session) | Implemented; real-session live-update check outstanding. Reports in [docs/phase-reports/](docs/phase-reports/) |
 | 3–11 | Asset discovery → autonomous paper trading | Not started |
 
 ## Stack
@@ -53,7 +53,7 @@ docker compose up --build
 This starts PostgreSQL and Redis, runs `alembic upgrade head` once (`migrate` service),
 then starts the API and the dashboard:
 
-* Dashboard: <http://127.0.0.1:5173>
+* Dashboard: <http://127.0.0.1:5173> (market monitoring; paper-only, no order execution)
 * API liveness: <http://127.0.0.1:8000/health>
 * API readiness: <http://127.0.0.1:8000/ready> (PostgreSQL, migration head, Redis)
 * OpenAPI docs: <http://127.0.0.1:8000/docs>
@@ -136,7 +136,7 @@ backend/
     monitoring/           dependency health checks
     <future modules>/     documented placeholders (data_engine, risk, accounting, …)
     tests/                unit/ (no services) and integration/ (real PostgreSQL/Redis)
-frontend/                 React dashboard shell
+frontend/                 React market-data dashboard (Lightweight Charts, SSE live updates)
 docker/                   Dockerfiles
 config/                   versioned non-secret configuration (empty in Phase 1)
 docs/                     architecture, decisions, operations, phase reports

@@ -6,6 +6,7 @@ from typing import ClassVar
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import InterfaceError, OperationalError
 
 from app.core.logging import get_logger
 
@@ -65,8 +66,17 @@ def _error_body(code: str, message: str, request: Request) -> dict[str, object]:
 def unexpected_error_response(request: Request, exc: Exception) -> JSONResponse:
     """Log an unhandled exception and return a generic 500 body.
 
-    Details go to the log only; clients never see internal messages.
+    Details go to the log only; clients never see internal messages. A database that
+    cannot be reached is a dependency failure (503), not an internal error.
     """
+    if isinstance(exc, (OperationalError, InterfaceError)):
+        logger.warning("request.database_unavailable", error_type=type(exc).__name__)
+        return JSONResponse(
+            status_code=DependencyUnavailableError.http_status,
+            content=_error_body(
+                DependencyUnavailableError.code, "The database is unavailable.", request
+            ),
+        )
     logger.error("request.unhandled_error", error_type=type(exc).__name__, exc_info=exc)
     return JSONResponse(
         status_code=500,

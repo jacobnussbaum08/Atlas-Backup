@@ -231,8 +231,8 @@ def stream_status(ctx: Context, request: Request) -> StreamStatusResponse:
         symbols = sorted({s for values in active.values() for s in values})
         notes = _feed_notes(ctx)
         notes.append(
-            "Gaps listed under /market-data/stream/gaps are pending backfill; automated "
-            "recovery is Deliverable 2D."
+            "Stream gaps are interruptions of live collection. Whether data is missing and "
+            "whether it was recovered is reported by /market-data/gaps and /completeness."
         )
         return StreamStatusResponse(
             provider=provider,
@@ -317,9 +317,14 @@ def quotes(
     quality: Annotated[list[DataQualityStatus] | None, Query()] = None,
     after_id: int | None = None,
     limit: Annotated[int, Query(ge=1, le=10_000)] = 1000,
+    newest_first: Annotated[
+        bool, Query(description="Latest `limit` stored rows, newest first (no paging)")
+    ] = False,
 ) -> QuotesResponse:
     """Stored live quotes for one asset on the configured feed, in arrival order."""
     _range(start, end)
+    if newest_first and after_id is not None:
+        raise InvalidRequestError("newest_first does not page; omit after_id")
     statuses = quality or [DataQualityStatus.VALID]
     provider = ctx.provider
     with session_scope(ctx.session_factory) as session:
@@ -327,7 +332,13 @@ def quotes(
         mapping = AssetMappingRepository(session).current_for_asset(asset.id, provider.provider_id)
         rows: list[MarketQuoteRecord] = list(
             LiveObservationRepository(session).quotes(
-                asset.id, provider.feed, start=start, end=end, limit=limit, after_id=after_id
+                asset.id,
+                provider.feed,
+                start=start,
+                end=end,
+                limit=limit,
+                after_id=after_id,
+                newest_first=newest_first,
             )
         )
         notes = _feed_notes(ctx)
@@ -345,7 +356,7 @@ def quotes(
                 for r in rows
                 if r.quality_status in statuses
             ],
-            next_after_id=rows[-1].id if len(rows) == limit else None,
+            next_after_id=rows[-1].id if len(rows) == limit and not newest_first else None,
             notes=notes,
         )
 
@@ -360,10 +371,15 @@ def trades(
     quality: Annotated[list[DataQualityStatus] | None, Query()] = None,
     after_id: int | None = None,
     limit: Annotated[int, Query(ge=1, le=10_000)] = 1000,
+    newest_first: Annotated[
+        bool, Query(description="Latest `limit` stored rows, newest first (no paging)")
+    ] = False,
 ) -> TradesResponse:
     """Stored live market trades (exchange prints) for one asset. Read-only market data:
     Atlas has no order or execution endpoints."""
     _range(start, end)
+    if newest_first and after_id is not None:
+        raise InvalidRequestError("newest_first does not page; omit after_id")
     statuses = quality or [DataQualityStatus.VALID]
     provider = ctx.provider
     with session_scope(ctx.session_factory) as session:
@@ -371,7 +387,13 @@ def trades(
         mapping = AssetMappingRepository(session).current_for_asset(asset.id, provider.provider_id)
         rows: list[MarketTradeRecord] = list(
             LiveObservationRepository(session).trades(
-                asset.id, provider.feed, start=start, end=end, limit=limit, after_id=after_id
+                asset.id,
+                provider.feed,
+                start=start,
+                end=end,
+                limit=limit,
+                after_id=after_id,
+                newest_first=newest_first,
             )
         )
         notes = _feed_notes(ctx)
@@ -392,6 +414,6 @@ def trades(
                 for r in rows
                 if r.quality_status in statuses
             ],
-            next_after_id=rows[-1].id if len(rows) == limit else None,
+            next_after_id=rows[-1].id if len(rows) == limit and not newest_first else None,
             notes=notes,
         )

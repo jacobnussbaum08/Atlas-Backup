@@ -232,6 +232,46 @@ def session_at(at: datetime) -> MarketSession:
     return MarketSession.CLOSED
 
 
+# Holidays are never more than a few days apart from a trading day; the bound only
+# stops a runaway loop on a broken calendar.
+_MAX_SEARCH_DAYS = 14
+
+
+def next_trading_day(after: date) -> TradingDay:
+    """First trading day strictly after the New York date ``after``."""
+    day = after
+    for _ in range(_MAX_SEARCH_DAYS):
+        day += timedelta(days=1)
+        found = trading_day(day)
+        if found is not None:
+            return found
+    raise RuntimeError(f"no trading day within {_MAX_SEARCH_DAYS} days after {after}")
+
+
+def previous_trading_day(before: date) -> TradingDay:
+    """Last trading day strictly before the New York date ``before``."""
+    day = before
+    for _ in range(_MAX_SEARCH_DAYS):
+        day -= timedelta(days=1)
+        found = trading_day(day)
+        if found is not None:
+            return found
+    raise RuntimeError(f"no trading day within {_MAX_SEARCH_DAYS} days before {before}")
+
+
+def next_session(at: datetime) -> TradingDay:
+    """Trading day of the next regular session that begins after ``at``."""
+    today = trading_day(local_date(at))
+    if today is not None and at < today.regular_open:
+        return today
+    return next_trading_day(local_date(at))
+
+
+def next_regular_open(at: datetime) -> datetime:
+    """Start of the next regular session that begins after ``at``."""
+    return next_session(at).regular_open
+
+
 def describe_closure(at: datetime) -> str | None:
     """Why the market is closed on ``at``'s New York date, or None if it trades."""
     day = local_date(at)
@@ -258,6 +298,10 @@ __all__ = [
     "holidays",
     "is_verified",
     "local_date",
+    "next_regular_open",
+    "next_session",
+    "next_trading_day",
+    "previous_trading_day",
     "session_at",
     "trading_day",
     "trading_days",

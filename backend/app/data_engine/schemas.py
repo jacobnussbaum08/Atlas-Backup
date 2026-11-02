@@ -236,6 +236,7 @@ class MarketDataEvent(_Record):
 class MarketAsset(_Record):
     asset_id: uuid.UUID
     symbol: str
+    name: str | None = None
     asset_class: AssetClass
     exchange_code: str | None = None
     quote_currency: str

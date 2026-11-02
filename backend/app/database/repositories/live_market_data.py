@@ -20,8 +20,9 @@ from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from app.data_engine.enums import GapRecoveryStatus, StreamGapKind
+from app.data_engine.enums import DataQualityStatus, GapRecoveryStatus, StreamGapKind
 from app.database.models import (
+    MarketBarRecord,
     MarketQuoteRecord,
     MarketTradeRecord,
     StreamGapRecord,
@@ -78,6 +79,7 @@ class LiveObservationRepository:
         end: datetime,
         limit: int,
         after_id: int | None = None,
+        newest_first: bool = False,
     ) -> Sequence[MarketQuoteRecord]:
         stmt = select(MarketQuoteRecord).where(
             MarketQuoteRecord.asset_id == asset_id,
@@ -87,7 +89,9 @@ class LiveObservationRepository:
         )
         if after_id is not None:
             stmt = stmt.where(MarketQuoteRecord.id > after_id)
-        stmt = stmt.order_by(MarketQuoteRecord.id).limit(limit)  # storage (arrival) order
+        # Storage (arrival) order; newest_first returns the latest ``limit`` stored rows.
+        order = MarketQuoteRecord.id.desc() if newest_first else MarketQuoteRecord.id
+        stmt = stmt.order_by(order).limit(limit)
         return self._session.scalars(stmt).all()
 
     def trades(
@@ -99,6 +103,7 @@ class LiveObservationRepository:
         end: datetime,
         limit: int,
         after_id: int | None = None,
+        newest_first: bool = False,
     ) -> Sequence[MarketTradeRecord]:
         stmt = select(MarketTradeRecord).where(
             MarketTradeRecord.asset_id == asset_id,
@@ -108,8 +113,135 @@ class LiveObservationRepository:
         )
         if after_id is not None:
             stmt = stmt.where(MarketTradeRecord.id > after_id)
-        stmt = stmt.order_by(MarketTradeRecord.id).limit(limit)  # storage (arrival) order
+        # Storage (arrival) order; newest_first returns the latest ``limit`` stored rows.
+        order = MarketTradeRecord.id.desc() if newest_first else MarketTradeRecord.id
+        stmt = stmt.order_by(order).limit(limit)
         return self._session.scalars(stmt).all()
+
+    def latest_quote(
+        self, asset_id: uuid.UUID, feed: str, statuses: Sequence[DataQualityStatus]
+    ) -> MarketQuoteRecord | None:
+        """Quote with the latest event time (ties: last stored)."""
+        stmt = (
+            select(MarketQuoteRecord)
+            .where(
+                MarketQuoteRecord.asset_id == asset_id,
+                MarketQuoteRecord.feed == feed,
+                MarketQuoteRecord.quality_status.in_(list(statuses)),
+            )
+            .order_by(MarketQuoteRecord.event_time.desc(), MarketQuoteRecord.id.desc())
+            .limit(1)
+        )
+        return self._session.scalars(stmt).first()
+
+    def latest_trade(
+        self, asset_id: uuid.UUID, feed: str, statuses: Sequence[DataQualityStatus]
+    ) -> MarketTradeRecord | None:
+        """Trade with the latest event time (ties: last stored)."""
+        stmt = (
+            select(MarketTradeRecord)
+            .where(
+                MarketTradeRecord.asset_id == asset_id,
+                MarketTradeRecord.feed == feed,
+                MarketTradeRecord.quality_status.in_(list(statuses)),
+            )
+            .order_by(MarketTradeRecord.event_time.desc(), MarketTradeRecord.id.desc())
+            .limit(1)
+        )
+        return self._session.scalars(stmt).first()
+
+
+class LiveUpdateRepository:
+    """Rows stored since a cursor (primary keys only grow), for distributing updates
+    to dashboard clients. Reads PostgreSQL only; never the provider."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def cursor(self) -> dict[str, int]:
+        """Highest stored id per observation table (0 when empty)."""
+        return {
+            name: int(self._session.scalar(select(func.coalesce(func.max(model.id), 0))) or 0)
+            for name, model in _UPDATE_TABLES.items()
+        }
+
+    def new_bars(
+        self, after_id: int, upto_id: int, asset_ids: Sequence[uuid.UUID], feed: str, limit: int
+    ) -> Sequence[MarketBarRecord]:
+        stmt = (
+            select(MarketBarRecord)
+            .where(
+                MarketBarRecord.id > after_id,
+                MarketBarRecord.id <= upto_id,
+                MarketBarRecord.asset_id.in_(list(asset_ids)),
+                MarketBarRecord.feed == feed,
+            )
+            .order_by(MarketBarRecord.id)
+            .limit(limit)
+        )
+        return self._session.scalars(stmt).all()
+
+    def bar_ids(
+        self, after_id: int, upto_id: int, asset_ids: Sequence[uuid.UUID], feed: str
+    ) -> Sequence[int]:
+        stmt = select(MarketBarRecord.id).where(
+            MarketBarRecord.id > after_id,
+            MarketBarRecord.id <= upto_id,
+            MarketBarRecord.asset_id.in_(list(asset_ids)),
+            MarketBarRecord.feed == feed,
+        )
+        return self._session.scalars(stmt).all()
+
+    def bar_ids_any_asset(self, after_id: int, upto_id: int) -> Sequence[int]:
+        stmt = select(MarketBarRecord.id).where(
+            MarketBarRecord.id > after_id, MarketBarRecord.id <= upto_id
+        )
+        return self._session.scalars(stmt).all()
+
+    def bars_by_ids(self, ids: Sequence[int]) -> Sequence[MarketBarRecord]:
+        if not ids:
+            return []
+        stmt = select(MarketBarRecord).where(MarketBarRecord.id.in_(list(ids)))
+        return self._session.scalars(stmt.order_by(MarketBarRecord.id)).all()
+
+    def latest_since(
+        self,
+        table: str,
+        after_id: int,
+        upto_id: int,
+        asset_ids: Sequence[uuid.UUID],
+        feed: str,
+        statuses: Sequence[DataQualityStatus],
+    ) -> list[tuple[MarketQuoteRecord | MarketTradeRecord, int]]:
+        """Per asset: the last row stored in (after_id, upto_id] and how many arrived."""
+        model = _UPDATE_TABLES[table]
+        stats = self._session.execute(
+            select(model.asset_id, func.max(model.id), func.count())
+            .where(
+                model.id > after_id,
+                model.id <= upto_id,
+                model.asset_id.in_(list(asset_ids)),
+                model.feed == feed,
+                model.quality_status.in_(list(statuses)),
+            )
+            .group_by(model.asset_id)
+        ).all()
+        if not stats:
+            return []
+        rows = {
+            row.id: row
+            for row in self._session.scalars(
+                select(model).where(model.id.in_([max_id for _, max_id, _ in stats]))
+            )
+        }
+        return [(rows[max_id], int(count)) for _, max_id, count in stats if max_id in rows]
+
+
+_UPDATE_TABLES: dict[str, Any] = {
+    "bars": MarketBarRecord,
+    "quotes": MarketQuoteRecord,
+    "trades": MarketTradeRecord,
+}
 
 
 class StreamRepository:

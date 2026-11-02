@@ -267,6 +267,42 @@ Alpaca's history (throw-away database):
 ATLAS_LIVE_PROVIDER_TESTS=1 ATLAS_TEST_DATABASE_URL=postgresql+psycopg://atlas:CHANGE_ME_LOCAL_ONLY@127.0.0.1:5432/postgres uv run pytest -m live -s backend/app/tests/live/test_alpaca_recovery_live.py
 ```
 
+## Market-data dashboard (Deliverable 2E)
+
+```bash
+docker compose up -d --build backend frontend
+```
+
+* Dashboard: <http://127.0.0.1:5173> (Overview). Asset pages: <http://127.0.0.1:5173/markets/AAPL>.
+* API documentation (OpenAPI): <http://127.0.0.1:8000/docs>.
+* Rebuild the `frontend` image whenever `frontend/package.json` or `pnpm-lock.yaml` changes
+  (2E added `lightweight-charts`); the container mounts `src/` and `public/` only.
+* Without containers: `uv run python -m app`, then `cd frontend && pnpm dev`.
+
+Live updates need the stream worker (`MARKET_DATA_STREAM_ENABLED=true`, off by default). The
+dashboard never opens a provider connection: the API's hub reads what the worker stored and
+pushes it over `GET /api/v1/market-data/live` (Server-Sent Events). Without a running worker
+the pages show the last stored data, labelled with its age and freshness; the header and
+Data Health show the stream as not running.
+
+What to expect outside trading hours: freshness `Closed`, chart labelled "provider stream is
+… : no new bars", IEX quotes often one-sided (shown as "no bid"/"no ask", never 0).
+
+Troubleshooting:
+
+| Symptom | Check |
+|---|---|
+| Header shows "API unreachable" | `docker compose ps`, `curl http://127.0.0.1:8000/ready` |
+| Pages show "The database is unavailable." (HTTP 503) | PostgreSQL container health |
+| Chart says "No stored … candles" | Request the range on the Ingestion page (or `historical-fetch`); 5Min/15Min/1Hour are not streamed |
+| "Live updates reconnecting" | API restarted or proxy dropped the stream; the page reloads its data when it reconnects |
+| Change shows "—" | No stored VALID daily bar for the previous session: retrieve 1Day history |
+
+Tests: `cd frontend && pnpm test` (mocked API, labelled fixtures); backend
+`backend/app/tests/integration/test_dashboard_api.py` (real PostgreSQL, SSE end to end, real
+stream worker against the fake Alpaca server); opt-in real-provider check:
+`ATLAS_LIVE_PROVIDER_TESTS=1 uv run pytest -m live -s backend/app/tests/live/test_dashboard_live.py`.
+
 ## Backup and restore
 
 ```bash

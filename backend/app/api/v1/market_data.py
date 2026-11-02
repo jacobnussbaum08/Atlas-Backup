@@ -202,6 +202,7 @@ def _market_asset(asset: Asset, provider: str, provider_symbol: str | None) -> M
     return MarketAsset(
         asset_id=asset.id,
         symbol=asset.symbol,
+        name=asset.name,
         asset_class=asset.asset_class,
         exchange_code=asset.exchange_code,
         quote_currency=asset.quote_currency,
@@ -271,16 +272,36 @@ def historical_fetch(
 def ingestion_jobs(
     ctx: Context,
     job_status: Annotated[list[IngestionJobStatus] | None, Query(alias="status")] = None,
+    symbol: Annotated[str | None, Query(description="Jobs that include this asset")] = None,
+    timeframe: Annotated[str | None, Query(description="e.g. 1Min; bar jobs only")] = None,
+    created_from: QueryTime | None = None,
+    created_to: QueryTime | None = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> list[DataIngestionJob]:
-    """Jobs, newest first. Filter `status=FAILED&status=PARTIALLY_COMPLETED` for failures."""
+    """Jobs, newest first. Filter `status=FAILED&status=PARTIALLY_COMPLETED` for failures;
+    `created_from`/`created_to` bound the creation time (half-open)."""
+    tf = None
+    if timeframe is not None:
+        try:
+            tf = str(Timeframe.parse(timeframe))
+        except ValueError as exc:
+            raise InvalidRequestError(str(exc)) from None
+    if created_from is not None and created_to is not None and created_to <= created_from:
+        raise InvalidRequestError("created_to must be after created_from")
     with session_scope(ctx.session_factory) as session:
+        asset_id = _find_asset(session, symbol.upper(), None).id if symbol else None
         repo = IngestionJobRepository(session)
-        return [
-            job_snapshot(job, repo.symbols(job.id))
-            for job in repo.list(statuses=job_status, limit=limit, offset=offset)
-        ]
+        jobs = repo.list(
+            statuses=job_status,
+            limit=limit,
+            offset=offset,
+            asset_id=asset_id,
+            timeframe=tf,
+            created_from=created_from,
+            created_to=created_to,
+        )
+        return [job_snapshot(job, repo.symbols(job.id)) for job in jobs]
 
 
 @router.get("/ingestion-jobs/{job_id}", response_model=DataIngestionJob)

@@ -17,7 +17,7 @@ const DOT_CLASSES: Record<StatusTone, string> = {
 export function StatusPill({ tone, label }: { tone: StatusTone; label: string }) {
   return (
     <span
-      className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-medium ${TONE_CLASSES[tone]}`}
+      className={`inline-flex items-center gap-1.5 rounded-sm border px-1.5 py-px text-2xs font-medium tracking-wide uppercase ${TONE_CLASSES[tone]}`}
     >
       <span aria-hidden className={`size-1.5 rounded-full ${DOT_CLASSES[tone]}`} />
       {label}

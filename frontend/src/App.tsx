@@ -1,29 +1,45 @@
+import { lazy, Suspense } from "react";
 import { Route, Routes } from "react-router";
 
+import { Loading } from "./components/ui";
 import { DashboardLayout } from "./layouts/DashboardLayout";
-import { NAV_SECTIONS } from "./navigation";
+import { UPCOMING_SECTIONS } from "./navigation";
+import { DataHealthPage } from "./pages/DataHealthPage";
+import { IngestionPage } from "./pages/IngestionPage";
+import { MarketsPage } from "./pages/MarketsPage";
+import { OverviewPage } from "./pages/OverviewPage";
 import { SectionPlaceholderPage } from "./pages/SectionPlaceholderPage";
+import { SettingsPage } from "./pages/SettingsPage";
 import { SystemHealthPage } from "./pages/SystemHealthPage";
+
+// The chart library is only needed on the asset page: load it with that page.
+const AssetDetailPage = lazy(() =>
+  import("./pages/AssetDetailPage").then((module) => ({ default: module.AssetDetailPage })),
+);
 
 export function App({ pollIntervalMs }: { pollIntervalMs?: number }) {
   return (
     <Routes>
       <Route element={<DashboardLayout {...(pollIntervalMs === undefined ? {} : { pollIntervalMs })} />}>
-        {NAV_SECTIONS.map((section) =>
-          section.path === "/system-health" ? (
-            <Route key={section.path} path={section.path} element={<SystemHealthPage />} />
-          ) : (
-            <Route
-              key={section.path}
-              path={section.path}
-              element={<SectionPlaceholderPage section={section} />}
-            />
-          ),
-        )}
+        <Route index element={<OverviewPage />} />
+        <Route path="/markets" element={<MarketsPage />} />
         <Route
-          path="*"
-          element={<p className="text-ink-muted text-sm">This page does not exist.</p>}
+          path="/markets/:symbol"
+          element={
+            <Suspense fallback={<Loading label="Loading chart…" />}>
+              <AssetDetailPage />
+            </Suspense>
+          }
         />
+        <Route path="/data-health" element={<DataHealthPage />} />
+        <Route path="/ingestion" element={<IngestionPage />} />
+        <Route path="/system-health" element={<SystemHealthPage />} />
+        <Route path="/settings" element={<SettingsPage />} />
+        {/* Not built yet: reachable by URL only, and say so explicitly. */}
+        {UPCOMING_SECTIONS.map((section) => (
+          <Route key={section.path} path={section.path} element={<SectionPlaceholderPage section={section} />} />
+        ))}
+        <Route path="*" element={<p className="text-ink-muted text-sm">This page does not exist.</p>} />
       </Route>
     </Routes>
   );
