@@ -15,6 +15,7 @@ from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, Field
 
 from app.api.v1.market_data import Context, _market_asset
+from app.core.exceptions import InvalidRequestError
 from app.core.security import TRADING_MODE
 from app.data_engine.calendar import VERIFIED_YEARS
 from app.data_engine.capabilities import FeedCoverage
@@ -25,6 +26,7 @@ from app.data_engine.market_overview import (
     SnapshotSettings,
     build_snapshot,
     market_status,
+    monitored_assets,
     open_gap_counts,
     quality_event_counts,
 )
@@ -36,6 +38,8 @@ router = APIRouter(prefix="/market-data", tags=["market-data"])
 
 AUDIT_PREFIX = "market_data."
 QUALITY_WINDOW = timedelta(hours=24)
+# Each snapshot costs several queries in the request's transaction: keep requests bounded.
+MAX_SNAPSHOT_SYMBOLS = 50
 # Timeframes the dashboard charts offer (all supported by the provider's history API).
 DASHBOARD_TIMEFRAMES = ("1Min", "5Min", "15Min", "1Hour", "1Day")
 
@@ -127,10 +131,16 @@ def get_market_status(ctx: Context, request: Request) -> MarketStatus:
 def snapshots(
     ctx: Context,
     request: Request,
-    symbol: Annotated[list[str] | None, Query(description="Limit to these symbols")] = None,
+    symbol: Annotated[
+        list[str] | None,
+        Query(description=f"These mapped assets (at most {MAX_SNAPSHOT_SYMBOLS})"),
+    ] = None,
 ) -> SnapshotsResponse:
     """Latest stored price, quote, bar, previous close and freshness per monitored asset
-    (assets with an active mapping at the configured provider)."""
+    (``MARKET_DATA_SYMBOLS`` plus the stream worker's symbols), or per requested symbol."""
+    wanted = {s.strip().upper() for s in symbol} if symbol else None
+    if wanted is not None and len(wanted) > MAX_SNAPSHOT_SYMBOLS:
+        raise InvalidRequestError(f"at most {MAX_SNAPSHOT_SYMBOLS} symbols per request")
     now = request.app.state.clock.now()
     provider = ctx.provider
     access = provider.feed_access()
@@ -144,9 +154,14 @@ def snapshots(
         hours=access.session_hours,
         stale_after=timedelta(seconds=ctx.settings.market_data_stream_stale_after),
     )
-    wanted = {s.strip().upper() for s in symbol} if symbol else None
     with session_scope(ctx.session_factory) as session:
-        mapped = AssetMappingRepository(session).current_assets(provider.provider_id)
+        mapped = (
+            AssetMappingRepository(session).current_assets(provider.provider_id, symbols=wanted)
+            if wanted is not None
+            else monitored_assets(
+                session, provider.provider_id, provider.feed, ctx.settings.market_data_symbols
+            )
+        )
         status_row = StreamRepository(session).get_status(provider.provider_id, provider.feed)
         subscription = status_row.confirmed_subscription if status_row is not None else {}
         confirmed = {s for values in (subscription or {}).values() for s in values}
@@ -163,7 +178,6 @@ def snapshots(
                 open_gaps=gaps.get(asset.id, 0),
             )
             for asset, mapping in mapped
-            if wanted is None or asset.symbol in wanted
         ]
     notes = [
         "Last price: the newest VALID trade, or the close of the newest VALID 1-minute bar "

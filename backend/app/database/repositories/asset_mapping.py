@@ -117,8 +117,19 @@ class AssetMappingRepository:
         )
         return self._session.scalars(stmt).all()
 
-    def current_assets(self, provider: str) -> Sequence[tuple[Asset, AssetIdentifier]]:
-        """Assets with a current, active mapping at ``provider``."""
+    def current_assets(
+        self,
+        provider: str,
+        *,
+        symbols: Iterable[str] | None = None,
+        provider_symbols: Iterable[str] | None = None,
+    ) -> Sequence[tuple[Asset, AssetIdentifier]]:
+        """Assets with a current, active mapping at ``provider``.
+
+        With ``symbols`` (Atlas symbols) and/or ``provider_symbols``, only assets matching
+        either are returned; passing only empty filters returns nothing. Without filters,
+        every mapped asset is returned (the whole discovered catalog since Phase 3A).
+        """
         stmt = (
             select(Asset, AssetIdentifier)
             .join(AssetIdentifier, and_(AssetIdentifier.asset_id == Asset.id))
@@ -129,4 +140,15 @@ class AssetMappingRepository:
             )
             .order_by(Asset.symbol)
         )
+        if symbols is not None or provider_symbols is not None:
+            wanted = sorted(set(symbols or ()))
+            wanted_provider = sorted(set(provider_symbols or ()))
+            if not wanted and not wanted_provider:
+                return []
+            stmt = stmt.where(
+                or_(
+                    Asset.symbol.in_(wanted),
+                    AssetIdentifier.provider_symbol.in_(wanted_provider),
+                )
+            )
         return [(asset, mapping) for asset, mapping in self._session.execute(stmt)]

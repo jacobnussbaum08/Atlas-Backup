@@ -27,6 +27,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, insert, select
 from sqlalchemy.orm import sessionmaker
 
+from app.api.v1.market_data_live import _resolve
+from app.api.v1.market_data_overview import MAX_SNAPSHOT_SYMBOLS
 from app.core.clocks import FixedClock, SystemClock
 from app.core.config import MarketDataSettings
 from app.data_engine.enums import (
@@ -74,6 +76,8 @@ def _asset_id(factory, symbol: str) -> uuid.UUID:
 
 
 def _context(factory, now: datetime, **settings: Any) -> MarketDataContext:
+    # The registered assets are the monitored ones (MARKET_DATA_SYMBOLS), as in a real setup.
+    settings.setdefault("market_data_symbols", ("AAPL", "SPY"))
     md_settings = MarketDataSettings(_env_file=None, **settings)
     provider = fake_provider(FakeAlpaca(), now=now)
     return MarketDataContext(
@@ -86,12 +90,14 @@ def _context(factory, now: datetime, **settings: Any) -> MarketDataContext:
 
 @pytest.fixture
 def make_client(factory, make_settings):
-    def build(now: datetime = NOW, **settings_overrides: Any) -> TestClient:
+    def build(
+        now: datetime = NOW, monitored: tuple[str, ...] = ("AAPL", "SPY"), **settings_overrides: Any
+    ) -> TestClient:
         app = create_app(
             make_settings(**settings_overrides),
             clock=FixedClock(now),
             health_checks={},
-            market_data=_context(factory, now),
+            market_data=_context(factory, now, market_data_symbols=monitored),
         )
         return TestClient(app)
 
@@ -277,6 +283,42 @@ def test_snapshot_symbol_filter_and_subscription_flag(factory, make_client):
     assert [s["asset"]["symbol"] for s in body["snapshots"]] == ["SPY"]
     assert body["snapshots"][0]["subscribed"] is True
     assert body["market"]["session"] == "REGULAR"
+
+
+def test_snapshots_cover_monitored_assets_not_every_mapped_asset(factory, make_client):
+    # Since Phase 3A discovery maps the whole provider directory; snapshotting all of it
+    # exhausted the API's connection pool. Here SPY is mapped but not configured.
+    with make_client(monitored=("AAPL",)) as client:
+        configured = client.get(f"{BASE}/snapshots").json()
+        explicit = client.get(f"{BASE}/snapshots", params={"symbol": "SPY"}).json()
+    assert [s["asset"]["symbol"] for s in configured["snapshots"]] == ["AAPL"]
+    assert [s["asset"]["symbol"] for s in explicit["snapshots"]] == ["SPY"]
+
+    # The stream worker may run with its own environment: its symbols are monitored too.
+    _stream_status(factory, requested_subscription={"trades": ["SPY"], "quotes": ["SPY"]})
+    with make_client(monitored=("AAPL",)) as client:
+        body = client.get(f"{BASE}/snapshots").json()
+    assert [s["asset"]["symbol"] for s in body["snapshots"]] == ["AAPL", "SPY"]
+
+
+def test_nothing_is_monitored_without_configured_or_streamed_symbols(make_client):
+    with make_client(monitored=()) as client:
+        body = client.get(f"{BASE}/snapshots").json()
+    assert body["snapshots"] == []
+
+
+def test_snapshots_refuse_more_symbols_than_the_bound(make_client):
+    symbols = [f"S{i}" for i in range(MAX_SNAPSHOT_SYMBOLS + 1)]
+    with make_client() as client:
+        response = client.get(f"{BASE}/snapshots", params={"symbol": symbols})
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "invalid_request"
+
+
+def test_live_defaults_to_the_monitored_assets(factory):
+    ctx = _context(factory, NOW, market_data_symbols=("SPY",))
+    assert set(_resolve(ctx, None).values()) == {"SPY"}
+    assert set(_resolve(ctx, ["aapl"]).values()) == {"AAPL"}  # explicit: any mapped asset
 
 
 # ------------------------------------------------------------------ configuration

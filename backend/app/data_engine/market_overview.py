@@ -13,11 +13,15 @@ provider and nothing is estimated:
   change, never a substitute.
 * **Freshness** classifies how current the newest observation is, given the feed's
   hours, its fixed delay and the stream's staleness threshold.
+* **Monitored assets** are the API's ``MARKET_DATA_SYMBOLS`` plus the symbols the stream
+  worker requested, never every mapped asset: since Phase 3A discovery maps the whole
+  REDACTED_FOR_GITHUB
 """
 
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
@@ -49,13 +53,21 @@ from app.data_engine.enums import (
 from app.data_engine.schemas import MarketAsset
 from app.data_engine.timeframes import US_EQUITY_TIMEZONE
 from app.database.models import (
+    Asset,
+    AssetIdentifier,
     DataQualityEventRecord,
     MarketBarRecord,
     MarketDataGapRecord,
     MarketQuoteRecord,
     MarketTradeRecord,
 )
-from app.database.repositories import LiveObservationRepository, MarketBarRepository, SeriesKey
+from app.database.repositories import (
+    AssetMappingRepository,
+    LiveObservationRepository,
+    MarketBarRepository,
+    SeriesKey,
+    StreamRepository,
+)
 
 # How far back the newest bar is looked for (covers long weekends and holidays).
 LATEST_BAR_LOOKBACK = timedelta(days=10)
@@ -416,6 +428,20 @@ def open_gap_counts(session: Session, provider: str, feed: str) -> dict[uuid.UUI
     return {asset_id: int(n) for asset_id, n in rows}
 
 
+def monitored_assets(
+    session: Session, provider: str, feed: str, configured_symbols: Iterable[str]
+) -> Sequence[tuple[Asset, AssetIdentifier]]:
+    """Mapped assets the dashboard monitors: ``configured_symbols`` (the API process's
+    ``MARKET_DATA_SYMBOLS``) plus the provider symbols the stream worker last requested,
+    which it may take from its own environment."""
+    status = StreamRepository(session).get_status(provider, feed)
+    requested = status.requested_subscription if status is not None else {}
+    streamed = {s for values in (requested or {}).values() for s in values}
+    return AssetMappingRepository(session).current_assets(
+        provider, symbols=configured_symbols, provider_symbols=streamed
+    )
+
+
 __all__ = [
     "AssetSnapshot",
     "Freshness",
@@ -425,6 +451,7 @@ __all__ = [
     "classify_freshness",
     "feed_open",
     "market_status",
+    "monitored_assets",
     "open_gap_counts",
     "percent_change",
     "quality_event_counts",

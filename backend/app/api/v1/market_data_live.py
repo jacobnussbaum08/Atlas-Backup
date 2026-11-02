@@ -23,6 +23,7 @@ from starlette.concurrency import run_in_threadpool
 from app.api.v1.market_data import Context
 from app.core.exceptions import DependencyUnavailableError, NotFoundError
 from app.data_engine.live_updates import LiveEvent, LiveUpdateHub, TooManyClientsError
+from app.data_engine.market_overview import monitored_assets
 from app.data_engine.runtime import MarketDataContext
 from app.database.repositories import AssetMappingRepository
 from app.database.sessions import session_scope
@@ -43,12 +44,16 @@ def live_hub(request: Request, ctx: MarketDataContext) -> LiveUpdateHub:
 
 def _resolve(ctx: MarketDataContext, symbols: list[str] | None) -> dict[uuid.UUID, str]:
     wanted = {s.strip().upper() for s in symbols} if symbols else None
+    provider = ctx.provider
     with session_scope(ctx.session_factory) as session:
-        mapped = {
-            asset.id: asset.symbol
-            for asset, _ in AssetMappingRepository(session).current_assets(ctx.provider.provider_id)
-            if wanted is None or asset.symbol in wanted
-        }
+        assets = (
+            AssetMappingRepository(session).current_assets(provider.provider_id, symbols=wanted)
+            if wanted is not None
+            else monitored_assets(
+                session, provider.provider_id, provider.feed, ctx.settings.market_data_symbols
+            )
+        )
+        mapped = {asset.id: asset.symbol for asset, _ in assets}
     if wanted is not None:
         unknown = wanted - set(mapped.values())
         if unknown:
