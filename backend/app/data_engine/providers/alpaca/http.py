@@ -122,8 +122,14 @@ class AlpacaHttp:
         self._sleep = sleep
 
     async def get(
-        self, client: httpx.AsyncClient, path: str, params: Mapping[str, str]
+        self,
+        client: httpx.AsyncClient,
+        path: str,
+        params: Mapping[str, str],
+        *,
+        accept: frozenset[int] = frozenset({200}),
     ) -> httpx.Response:
+        """GET with pacing and retries. Returns responses whose status is in ``accept``."""
         attempt = 0
         while True:
             wait = self._pacer.reserve()
@@ -141,7 +147,7 @@ class AlpacaHttp:
             else:
                 self._observe_quota(response)
                 status = response.status_code
-                if status == 200:
+                if status in accept:
                     return response
                 message = provider_message(response, self._scrub)
                 if status == 401:

@@ -169,6 +169,24 @@ def test_openapi_exposes_no_order_endpoints(build_client):
         "/api/v1/market-data/configuration",
         "/api/v1/market-data/audit-events",
         "/api/v1/market-data/live",
+        # 3A asset universe (read-only) and discovery operations
+        "/api/v1/assets",
+        "/api/v1/assets/discovery-pool",
+        "/api/v1/assets/qualified",
+        "/api/v1/assets/watchlist",
+        "/api/v1/assets/{asset_id}",
+        "/api/v1/assets/{asset_id}/qualification",
+        "/api/v1/assets/{asset_id}/history",
+        "/api/v1/discovery/jobs",
+        "/api/v1/discovery/jobs/{job_id}",
+        "/api/v1/discovery/rankings",
+        "/api/v1/discovery/summary",
+        "/api/v1/discovery/config",
+        "/api/v1/discovery/config/rule-set",
+        "/api/v1/discovery/config/scoring",
+        "/api/v1/discovery/run",
+        "/api/v1/discovery/refresh",
+        "/api/v1/market-sessions",
     }
     # Market trades (exchange prints) are read-only market data, not trading: the one
     # allowed path containing "trade" must expose GET only.
@@ -182,9 +200,14 @@ def test_openapi_exposes_no_order_endpoints(build_client):
     for path in market_data_reads:
         assert set(paths[path]) == {"get"}
     writes = {p for p, methods in paths.items() if set(methods) - {"get"}}
-    # Operator-gated market-data actions only: a historical fetch, and a request to verify
-    # a range (it records gaps; the recovery worker retrieves market data).
+    # Operator-gated actions only: a historical fetch, a request to verify a range (it
+    # records gaps; the recovery worker retrieves market data), starting discovery or a
+    # reference-data refresh, and new versions of the qualification/scoring configuration.
     assert writes == {
         "/api/v1/market-data/historical-fetch",
         "/api/v1/market-data/recovery-requests",
+        "/api/v1/discovery/run",
+        "/api/v1/discovery/refresh",
+        "/api/v1/discovery/config/rule-set",
+        "/api/v1/discovery/config/scoring",
     }

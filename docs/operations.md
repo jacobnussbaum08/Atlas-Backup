@@ -303,6 +303,84 @@ Tests: `cd frontend && pnpm test` (mocked API, labelled fixtures); backend
 stream worker against the fake Alpaca server); opt-in real-provider check:
 `ATLAS_LIVE_PROVIDER_TESTS=1 uv run pytest -m live -s backend/app/tests/live/test_dashboard_live.py`.
 
+## Asset discovery and universe (Phase 3A)
+
+Prerequisites: Alpaca **paper-account** keys in `.env` (the asset directory is read from
+`paper-api.alpaca.markets`, GET `/v2/assets` only, D-050), the database at head.
+
+Run from the repository root. Every command prints JSON on stdout and exits 0 only when every
+job it ran finished `COMPLETED`.
+
+1. First full catalog, then qualification, scoring and membership updates (~2 min for
+   ~33,500 records; history is prepared for at most `ASSET_DISCOVERY_HISTORY_PREP_MAX_ASSETS`
+   instruments per run):
+
+   ```bash
+   uv run python -m app.asset_discovery.cli discover --mode FULL
+   ```
+
+2. Later runs: an active-only listing (new listings and changes), or re-qualification
+   without downloading the directory:
+
+   ```bash
+   uv run python -m app.asset_discovery.cli discover --mode INCREMENTAL
+   ```
+
+   ```bash
+   uv run python -m app.asset_discovery.cli qualify
+   ```
+
+3. Counts and the newest job of each kind; refresh reference data for tracked assets:
+
+   ```bash
+   uv run python -m app.asset_discovery.cli status
+   ```
+
+   ```bash
+   uv run python -m app.asset_discovery.cli refresh --max 50
+   ```
+
+4. Point in time: which instruments a layer held at a past time, as Atlas knew it then
+   (`--known-at` defaults to `--at`). Layers: `DISCOVERY_POOL`, `QUALIFIED_UNIVERSE`,
+   `ACTIVE_WATCHLIST`. A historical qualification (`qualify --as-of ...`) never changes
+   membership.
+
+   ```bash
+   uv run python -m app.asset_discovery.cli members --layer QUALIFIED_UNIVERSE --at 2026-11-02T04:00:00Z
+   ```
+
+Through the API (operator token needed when `ATLAS_OPERATOR_TOKEN` is set; a repeated
+request while a job of that kind is active returns the existing job with `"created": false`):
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/discovery/run -H "Content-Type: application/json" -H "X-Atlas-Operator-Token: $ATLAS_OPERATOR_TOKEN" -d '{"mode":"INCREMENTAL"}'
+```
+
+```bash
+curl "http://127.0.0.1:8000/api/v1/discovery/jobs?limit=10"
+```
+
+Scheduled operation: set `ASSET_DISCOVERY_ENABLED=true` and start the worker (several may
+run; jobs are claimed with `SKIP LOCKED`). Intervals: `ASSET_DISCOVERY_*_INTERVAL_HOURS`.
+
+```bash
+docker compose up -d --build discovery-worker
+```
+
+Qualification thresholds and ranking weights are versioned in the database, not in `.env`.
+A change is a new version (audited): `POST /api/v1/discovery/config/rule-set` or
+`/config/scoring`; the current versions are shown on the Asset Discovery page
+(<http://127.0.0.1:5173/discovery>).
+
+| Symptom | Check |
+|---|---|
+| Most assets `INSUFFICIENT DATA` | Expected after the first runs: history is prepared in bounded batches (D-061). Run `qualify` again or raise the bound |
+| Job `FAILED` with an authentication error | The keys must be paper-account Trading API keys |
+| Job stuck `RUNNING` | A crashed worker's lease expires after `ASSET_DISCOVERY_JOB_LEASE_SECONDS`; the job is then retried |
+
+Opt-in real-provider test (throw-away database):
+`ATLAS_LIVE_PROVIDER_TESTS=1 uv run pytest -m live -s backend/app/tests/live/test_discovery_live.py`.
+
 ## Backup and restore
 
 ```bash

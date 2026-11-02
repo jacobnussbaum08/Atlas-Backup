@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from importlib.metadata import PackageNotFoundError, version
+from typing import TYPE_CHECKING
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,6 +26,9 @@ from app.core.redis_client import build_redis
 from app.core.security import TRADING_MODE
 from app.data_engine.historical import INTERRUPTED_REASON
 from app.data_engine.runtime import MarketDataContext, build_market_data_context
+
+if TYPE_CHECKING:
+    from app.asset_discovery.runtime import AssetDiscoveryContext
 from app.database.repositories import IngestionJobRepository
 from app.database.sessions import build_engine, build_session_factory, session_scope
 from app.monitoring.health import (
@@ -65,13 +69,14 @@ def create_app(
     clock: Clock | None = None,
     health_checks: Mapping[str, HealthCheck] | None = None,
     market_data: MarketDataContext | None = None,
+    asset_discovery: AssetDiscoveryContext | None = None,
 ) -> FastAPI:
     """Build the application.
 
     ``health_checks`` replaces the real dependency checks; when given, no
     database engine or Redis client is created (used by unit tests).
-    ``market_data`` injects the market-data context (tests); otherwise it is built
-    lazily from the environment on first use.
+    ``market_data`` and ``asset_discovery`` inject those contexts (tests); otherwise they
+    are built lazily from the environment on first use.
     """
     settings = settings or get_settings()
     clock = clock or SystemClock()
@@ -133,6 +138,7 @@ def create_app(
     app.state.settings = settings
     app.state.clock = clock
     app.state.market_data = market_data
+    app.state.asset_discovery = asset_discovery
     app.state.version = app.version
     app.state.started_at = clock.now()
 

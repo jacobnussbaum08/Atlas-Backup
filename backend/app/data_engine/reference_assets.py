@@ -1,7 +1,9 @@
 """Load instrument reference data and register assets + provider mappings idempotently.
 
 The reference file (``config/market_data/reference_assets.toml`` by default) is the
-operator-maintained source of instrument identity until asset discovery (Phase 3).
+operator-maintained source of instrument identity. Since Phase 3A asset discovery catalogs
+instruments from the provider directory; it adopts assets registered here (same current
+provider symbol) instead of duplicating them.
 Registration never re-maps silently: if an asset already has a different current
 symbol at a provider, registration fails and the operator decides.
 """
@@ -21,7 +23,7 @@ from sqlalchemy.orm import Session
 from app.core.config.settings import describe_validation_error
 from app.data_engine.errors import MarketDataError
 from app.data_engine.schemas import UtcDatetime
-from app.database.models import ActorType, Asset, AssetClass
+from app.database.models import ActorType, Asset, AssetClass, AssetStatus
 from app.database.repositories import AssetMappingRepository, AuditLogRepository
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -115,11 +117,14 @@ def register_assets(
         if listing is None:
             raise ReferenceDataError(f"'{symbol}' has no '{provider}' listing in reference data")
 
+        # Only active assets: providers reuse symbols, so an inactive instrument with the
+        # same symbol is a different asset (Phase 3A).
         asset = session.scalars(
             select(Asset).where(
                 Asset.symbol == ref.symbol,
                 Asset.asset_class == ref.asset_class,
                 Asset.exchange_code.is_not_distinct_from(ref.exchange_code),
+                Asset.status == AssetStatus.ACTIVE,
             )
         ).one_or_none()
         asset_created = asset is None

@@ -13,14 +13,17 @@ Contract rules every adapter must follow:
 * Never fabricate data. Empty or partial provider responses are returned as such.
 * Never include credential values in exceptions, logs, ``repr`` or status output.
 * Convert provider timestamps to timezone-aware UTC, and provider numbers to ``Decimal``.
-* Market data only: adapters never call brokerage or order endpoints.
+* Market data only: adapters never call brokerage or order endpoints. The single
+  exception is read-only instrument reference data (Phase 3A, decision D-050): an adapter
+  may read its provider's asset directory, through a client that can issue nothing but
+  ``GET`` requests to an explicit allowlist of reference paths.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
-from typing import Any, ClassVar, Protocol, Self
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -45,6 +48,14 @@ from app.data_engine.schemas import (
     UtcDatetime,
 )
 from app.data_engine.timeframes import TimeframeField
+
+if TYPE_CHECKING:
+    from app.data_engine.reference import (
+        InstrumentDirectory,
+        InstrumentDirectoryRequest,
+        ReferenceDataCapabilities,
+        ReferenceInstrument,
+    )
 
 
 # ------------------------------------------------------------------ requests and results
@@ -375,6 +386,19 @@ class MarketDataProvider(ABC):
     def streaming_channels(self) -> frozenset[StreamChannel]:
         """Live channels this adapter implements on the configured feed."""
         return frozenset()
+
+    # ------------------------------------------------------------ reference data (3A)
+    def reference_capabilities(self) -> ReferenceDataCapabilities | None:
+        """The adapter's instrument directory, or None if it has none."""
+        return None
+
+    async def list_instruments(self, request: InstrumentDirectoryRequest) -> InstrumentDirectory:
+        """The provider's complete directory for one asset class (optionally one status)."""
+        raise UnsupportedCapabilityError(f"{self.display_name} adapter has no asset directory")
+
+    async def get_instrument(self, provider_asset_id: str) -> ReferenceInstrument | None:
+        """One instrument by the provider's own identifier; None if the provider has none."""
+        raise UnsupportedCapabilityError(f"{self.display_name} adapter has no asset directory")
 
     async def aclose(self) -> None:  # noqa: B027  # optional hook; default has nothing to release
         """Release network resources."""

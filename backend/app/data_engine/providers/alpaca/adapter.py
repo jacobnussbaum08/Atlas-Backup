@@ -6,9 +6,12 @@
   pacing, retries, and an authentication check (``GET /v2/stocks/meta/exchanges``).
 * 2C: live streaming over WebSocket (``stream.py``): bars, updated bars, daily bars,
   trades and quotes on the configured feed.
+* 3A: the instrument directory (``reference.py``), read-only from the paper Trading API's
+  asset paths (decision D-050).
 
-Only Alpaca's market-data hosts are used. Trading and brokerage endpoints are
-never contacted. Nothing here returns placeholder or fabricated data.
+Market data comes only from Alpaca's market-data hosts. Of the Trading API, only the
+paper host's ``GET /v2/assets`` paths are read; order, account and position endpoints
+are never contacted. Nothing here returns placeholder or fabricated data.
 """
 
 from __future__ import annotations
@@ -54,6 +57,10 @@ from app.data_engine.providers.alpaca.normalize import (
     normalize_quote,
     normalize_trade,
 )
+from app.data_engine.providers.alpaca.reference import (
+    REFERENCE_CAPABILITIES,
+    AlpacaReferenceClient,
+)
 from app.data_engine.providers.alpaca.stream import AlpacaMarketDataStream
 from app.data_engine.providers.base import (
     AuthenticationResult,
@@ -65,6 +72,12 @@ from app.data_engine.providers.base import (
     MarketDataProvider,
     ObservationPage,
     ProviderConfigurationReport,
+)
+from app.data_engine.reference import (
+    InstrumentDirectory,
+    InstrumentDirectoryRequest,
+    ReferenceDataCapabilities,
+    ReferenceInstrument,
 )
 from app.data_engine.schemas import CredentialStatus, MarketDataEvent, Severity
 from app.data_engine.timeframes import Timeframe
@@ -87,6 +100,9 @@ _STREAM_PATHS = {
 }
 KEY_HEADER = "APCA-API-KEY-ID"
 SECRET_HEADER = "APCA-API-SECRET-KEY"  # noqa: S105  # header name, not a credential
+
+# The Trading API's documented account rate limit; its own budget, separate from data.
+REFERENCE_REQUESTS_PER_MINUTE = 200
 
 # US equity/ETF symbols as Alpaca writes them, e.g. AAPL, BRK.B.
 _SYMBOL = re.compile(r"^[A-Z0-9]{1,10}(\.[A-Z0-9]{1,4})?$")
@@ -123,16 +139,24 @@ class AlpacaMarketDataProvider(MarketDataProvider):
         # Injectable so tests can use httpx.MockTransport; production uses the network.
         self._transport = transport
         access = feed_access(settings.data_feed, settings.data_plan)
+        scrub = tuple(
+            secret.get_secret_value()
+            for secret in (settings.api_key, settings.secret_key)
+            if secret is not None
+        )
         self._http = AlpacaHttp(
             clock=self._clock,
             pacer=RequestPacer(access.requests_per_minute, monotonic),
             max_retries=max_retries,
             sleep=sleep,
-            scrub=tuple(
-                secret.get_secret_value()
-                for secret in (settings.api_key, settings.secret_key)
-                if secret is not None
-            ),
+            scrub=scrub,
+        )
+        self._reference_http = AlpacaHttp(
+            clock=self._clock,
+            pacer=RequestPacer(REFERENCE_REQUESTS_PER_MINUTE, monotonic),
+            max_retries=max_retries,
+            sleep=sleep,
+            scrub=scrub,
         )
 
     @classmethod
@@ -329,6 +353,24 @@ class AlpacaMarketDataProvider(MarketDataProvider):
         if not self.feed_access().streaming:
             return frozenset()
         return STREAMING_CHANNELS
+
+    # ------------------------------------------------------------ reference data (3A)
+    def reference_capabilities(self) -> ReferenceDataCapabilities:
+        return REFERENCE_CAPABILITIES
+
+    def _reference(self) -> AlpacaReferenceClient:
+        return AlpacaReferenceClient(
+            headers=self.authentication_headers(),
+            http=self._reference_http,
+            clock=self._clock,
+            transport=self._transport,
+        )
+
+    async def list_instruments(self, request: InstrumentDirectoryRequest) -> InstrumentDirectory:
+        return await self._reference().list_instruments(request)
+
+    async def get_instrument(self, provider_asset_id: str) -> ReferenceInstrument | None:
+        return await self._reference().get_instrument(provider_asset_id)
 
     # ------------------------------------------------------------ network operations
     def _client(self) -> httpx.AsyncClient:

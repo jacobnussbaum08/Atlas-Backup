@@ -18,6 +18,8 @@ dependencies = [
     "structlog>=24.4",
     "httpx>=0.28",
     "websockets>=15.0",
+    # Columnar analytics for asset qualification metrics (Phase 3A, decision D-056).
+    "polars>=1.40,<2",
 ]
 
 [dependency-groups]

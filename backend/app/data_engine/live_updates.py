@@ -158,6 +158,9 @@ class LiveUpdateHub:
         self._subscriptions: set[Subscription] = set()
         self._cursor: _Cursor | None = None
         self._task: asyncio.Task[None] | None = None
+        # Polls share the cursor: two at once (the loop and a direct call) would both send
+        # the same late-committed bar.
+        self._poll_lock = asyncio.Lock()
         self.last_poll_at: datetime | None = None
         self.last_error: str | None = None
 
@@ -221,6 +224,10 @@ class LiveUpdateHub:
 
     async def poll_once(self) -> int:
         """Read rows stored since the cursor and queue them for clients; returns events."""
+        async with self._poll_lock:
+            return await self._poll()
+
+    async def _poll(self) -> int:
         subscriptions = list(self._subscriptions)
         cursor = self._cursor
         if not subscriptions or cursor is None:

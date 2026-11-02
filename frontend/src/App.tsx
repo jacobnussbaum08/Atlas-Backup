@@ -5,6 +5,8 @@ import { Loading } from "./components/ui";
 import { DashboardLayout } from "./layouts/DashboardLayout";
 import { UPCOMING_SECTIONS } from "./navigation";
 import { DataHealthPage } from "./pages/DataHealthPage";
+import { DiscoveryAssetPage } from "./pages/DiscoveryAssetPage";
+import { DiscoveryPage } from "./pages/DiscoveryPage";
 import { IngestionPage } from "./pages/IngestionPage";
 import { MarketsPage } from "./pages/MarketsPage";
 import { OverviewPage } from "./pages/OverviewPage";
@@ -31,6 +33,8 @@ export function App({ pollIntervalMs }: { pollIntervalMs?: number }) {
             </Suspense>
           }
         />
+        <Route path="/discovery" element={<DiscoveryPage />} />
+        <Route path="/discovery/assets/:assetId" element={<DiscoveryAssetPage />} />
         <Route path="/data-health" element={<DataHealthPage />} />
         <Route path="/ingestion" element={<IngestionPage />} />
         <Route path="/system-health" element={<SystemHealthPage />} />

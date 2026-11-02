@@ -611,3 +611,166 @@ already treated the subscription as inactive. The dashboard made the inconsisten
 attribution logo stays enabled, which satisfies the licence's attribution requirement. The
 asset page (and with it the library) is loaded on demand, so the initial bundle is 367 kB
 (110 kB gzipped) instead of 561 kB.
+
+## Phase 3A — dynamic asset discovery and universe management
+
+### D-050 Read-only asset directory on Alpaca's paper Trading API (partly supersedes D-019, D-026)
+
+**Context:** Phase 3A requires instrument discovery through the existing Alpaca adapter.
+Alpaca publishes its asset directory only on the Trading API (`GET /v2/assets`); the
+market-data hosts have none. D-019 kept the adapter on market-data hosts only, and D-026
+kept instrument identity in an operator file for that reason. The user approved this
+exception on 2026-11-01.
+
+**Decision:** `providers/alpaca/reference.py` reads `GET /v2/assets` and
+`GET /v2/assets/{id}` from `https://paper-api.alpaca.markets`, and nothing else:
+* the host is a constant (the live Trading API host appears nowhere in the code; a unit test
+  scans the code base for it) and there is no setting that could change it;
+* `check_reference_request` refuses every method but GET and every path but the two asset
+  paths, both before the request and again in an httpx request hook, so a future code change
+  cannot route an order, account or position request through this client;
+* the client has its own request pacer (the Trading API's 200/min budget);
+* the opt-in live test records every HTTP request and asserts the fence held.
+
+**Unchanged:** market data still comes only from `data.alpaca.markets` and the stream host.
+Atlas has no order, account or position code. The keys must be paper-account keys (the live
+host is never contacted).
+
+### D-051 Instrument identity: provider IDs, and symbol uniqueness among active assets only
+
+[REDACTED_FOR_GITHUB] The Phase 1 constraint `UNIQUE (symbol, asset_class, exchange_code)` on
+`assets` cannot represent that.
+
+**Decision:**
+* `provider_assets` maps a provider's permanent instrument ID (Alpaca's asset UUID) one-to-one
+  to an Atlas asset; the link never changes. A renamed ticker stays the same asset; a reused
+  ticker is a different asset.
+* The `assets` uniqueness now applies to `ACTIVE` rows only (partial unique index
+  `uq_assets_active_listing`). Downgrading 0006 fails if two assets share a symbol.
+* On first sight, an instrument active under a symbol an operator already registered (D-026)
+  is **adopted** (same asset, the operator mapping kept), never duplicated.
+* `assets.exchange_code` now references the new `exchanges` table (MIC). Alpaca's exchange
+  codes are mapped through `provider_exchange_codes`; `TXSE` has no verified MIC and stays
+  unmapped (the asset keeps the provider code; qualification rejects the venue).
+
+### D-052 Versioned reference data and observed lifecycle events
+
+**Decision:** every distinct provider record is stored verbatim (`raw_json`, canonical key
+order, exact numbers) and normalized, as a new row of the append-only
+`asset_reference_versions`. Identical re-observations only refresh `last_seen_at`. Changes
+become append-only `asset_lifecycle_events`: deactivation, delisting (Alpaca's `_DELISTED`
+symbol suffix: an observed, undocumented convention, recorded as such), reactivation, symbol,
+exchange and name changes, tradability changes, other metadata changes, and absence from or
+reappearance in a complete listing. Alpaca reports no effective dates, so `effective_at` is
+Atlas's observation time (`effective_at_basis = OBSERVED`). Absence from a listing is never
+interpreted as a delisting: the status changes only when the provider reports it.
+
+The `assets` row is the current state only (materialised from the newest version); history
+lives in the versions and events.
+
+### D-053 Mapping start dates say what they are based on
+
+**Decision:** `asset_identifiers.valid_from_basis`:
+* `OPERATOR_REFERENCE`: the reference file (existing rows);
+* `PROVIDER_HISTORY_ASSUMED`: instruments active in the *initial* catalog whose symbol no
+  other known instrument uses start at `ASSET_DISCOVERY_ASSUMED_HISTORY_START` (2016-01-01,
+  as D-026), because Alpaca resolves history to today's instrument (D-021);
+* `OBSERVED`: everything else (new listings, reactivations, symbol changes, shared symbols)
+  starts when Atlas saw it.
+
+Inactive instruments found in the initial catalog get no mapping (their validity period is
+unknown). The 2B check that rejects bars outside a mapping's period (D-021) is unchanged, so
+history cannot be attributed to an `OBSERVED` mapping before its start; history preparation
+skips such instruments.
+
+### D-054 Universe membership as an event chain, reconstructable at any time
+
+**Decision:** `universe_membership_events` is append-only: ADDED/REMOVED per asset and layer
+(discovery pool, qualified universe, active watchlist), with `effective_at`, `recorded_at`,
+reason code and text, and the evaluation or score behind it. Each event names its predecessor;
+a unique constraint on `(asset, layer, previous_event_id)` (NULLs not distinct) makes two
+concurrent transitions from one state impossible. `members_at(T, known_at)` returns the newest
+event effective at or before T *and recorded by* `known_at` (default T): today's membership
+never leaks into the past, and a delisted asset is still a member of every period it belonged
+to. Back-dating before the previous event is refused. Historical qualification runs
+(`--as-of`) never change membership.
+
+### D-055 Feed-specific, versioned qualification rule sets; missing data is not failure
+
+**Decision:** rule sets (`qualification_rule_sets`) and scoring versions (`scoring_versions`)
+are immutable; a change is a new version, written to the audit log (also when created through
+`POST /api/v1/discovery/config/*`, operator token required). A rule set names the feed its
+volumes are calibrated for (`us-equity-iex`, `us-equity-sip`) and is refused for another feed:
+IEX volume is one venue's share of trading, so consolidated thresholds would be wrong.
+Mandatory rules decide qualification; a mandatory rule without input is `UNAVAILABLE`
+(outcome `INSUFFICIENT_DATA`), never `FAIL`. Spread, quote quality and a volatility cap are
+optional and apply only where their data exists. The defaults are starting points, not
+validated thresholds (see the Phase 3A report).
+
+### D-056 Polars for qualification measurements (supersedes D-028 for this module)
+
+**Decision:** daily-bar measurements are computed in Polars over one frame per evaluation
+(assets x expected sessions). Expected sessions come from the venue calendar (closures never
+count as missing), and each is classified first (traded, zero volume, missing volume,
+quarantined, no reported activity, provider gap, missing), so that zero volume, missing volume
+and missing data are never confused. Floats are used inside Polars; persisted values are
+`NUMERIC` rounded to stated places, with window, as-of time, source range and
+`feature_version` (`daily-liquidity-v1`). Only bars ingested and available by `as_of` are read.
+Polars is pinned to the 1.x line (`>=1.40,<2`; 1.44.2 locked).
+
+### D-057 Watchlist ranking is explained analytical priority, never a signal
+
+**Decision:** factor scores are cross-sectional percentiles, or a band score for volatility so
+that higher volatility is not "better"; momentum and relative strength use magnitudes, with
+direction ignored. Missing factors are excluded and the weights renormalized; below 60%
+computable weight an asset is unranked. Every score row stores its factors, version and an
+explanation ending in a fixed disclaimer. Selection: top N, plus current members within a
+retention buffer. Nothing consumes it as a trade input.
+
+### D-058 Durable jobs without a task system (D-006 still open)
+
+**Decision:** `discovery_jobs` is the queue: one PENDING/RUNNING job per kind (partial unique
+index; repeated requests return the active job), claims with `FOR UPDATE SKIP LOCKED`, leases
+renewed by heartbeat, expired leases returned to PENDING (or FAILED after
+`ASSET_DISCOVERY_JOB_MAX_ATTEMPTS`), transient failures retried with backoff, permanent ones
+(credentials, capability) failed at once. API requests run in a background thread (as in 2B);
+the optional `discovery-worker` schedules and runs jobs. Directory chunks are one transaction
+each under a provider-wide advisory lock; first sightings are inserted in batches (one INSERT
+per table per chunk, with a per-record fallback if a constraint trips); a qualification job's
+measurements and evaluations commit in one transaction.
+
+[REDACTED_FOR_GITHUB]
+
+### D-059 Exchange-aware sessions built on the 2D calendar (extends D-036)
+
+**Decision:** `app.asset_discovery.sessions` gives each venue (`exchanges.calendar_code`) its
+own calendar object with its time zone and hours. The five supported US venues currently use
+NYSE's published holiday and early-close rules (verified 2025-2027) and say so explicitly; a
+diverging venue gets its own entry. Extended hours are the generic 04:00-20:00 ET window;
+halts are not known (no halt feed) and overnight sessions are not modelled. OTC and unmapped
+venues have no calendar and are unsupported for qualification.
+
+### D-060 Instrument type is UNCLASSIFIED unless a source says otherwise
+
+**Decision:** Alpaca's `us_equity` class covers stocks, ETFs, preferreds, warrants, units and
+rights alike. Discovered instruments are `asset_class = EQUITY`, `instrument_type =
+UNCLASSIFIED`, `classification_source = NONE`; Atlas never infers the type from names or
+ticker suffixes. Assets the operator file lists as ETF are `ETF` (migration 0006). The default
+rule sets accept UNCLASSIFIED; the price and liquidity rules exclude most warrants and rights,
+which is a side effect, not a classification.
+
+### D-061 History for qualification is prepared in bounded batches
+
+**Decision:** a qualification job retrieves daily bars (through the unchanged 2B path) for at
+most `ASSET_DISCOVERY_HISTORY_PREP_MAX_ASSETS` (default 200) instruments that pass the metadata
+rules but lack history: the benchmark first, then instruments with listed options, then a
+stable hash of the asset ID (not alphabetical, which would bias the early universe). The rest
+stay `INSUFFICIENT_DATA` until later runs. The ~13,000 eligible instruments therefore need many
+runs (or a larger bound) before the qualified universe reflects the whole pool.
+
+### D-062 Observed: IEX daily bars with VWAP 0 are quarantined by 2B validation
+
+[REDACTED_FOR_GITHUB] Such instruments fail the invalid-observation and coverage rules.
+
+**Decision:** unchanged. The validator is not weakened for qualification; the effect is
+reported in the Phase 3A report.

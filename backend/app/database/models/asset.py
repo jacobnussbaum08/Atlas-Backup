@@ -4,8 +4,17 @@
 Provider-specific symbols live separately in ``asset_identifiers`` so that a
 provider change never rewrites an Atlas asset ID.
 
-Instrument precision (tick/lot sizes), exchanges, sessions, and universe
-membership are separate tables introduced in later phases.
+Phase 3A (asset discovery) adds the current-state reference columns below. They are a
+materialised view of the newest provider reference version
+(``asset_reference_versions``); history lives in that append-only table and in
+``asset_lifecycle_events``, never in these columns.
+
+* Symbols are reused (Alpaca lists an inactive and an active instrument with the same
+  symbol on the same exchange), so ``(symbol, asset_class, exchange_code)`` is unique only
+  among ``ACTIVE`` assets. The asset ID is the identity.
+* ``asset_class`` ``EQUITY`` means an exchange-listed equity security. Directories that do
+  not separate ETFs from stocks (Alpaca ``us_equity``) produce ``EQUITY`` with
+  ``instrument_type = UNCLASSIFIED``; ``ETF`` is used only where a source confirms it.
 """
 
 from __future__ import annotations
@@ -17,6 +26,7 @@ from enum import StrEnum
 from sqlalchemy import CheckConstraint, ForeignKey, Index, String, UniqueConstraint, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from app.asset_discovery.enums import ClassificationSource, InstrumentType, ValidFromBasis
 from app.database.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin, str_enum
 
 
@@ -36,9 +46,17 @@ class AssetStatus(StrEnum):
 class Asset(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "assets"
     __table_args__ = (
-        UniqueConstraint(
-            "symbol", "asset_class", "exchange_code", postgresql_nulls_not_distinct=True
+        # One active listing per symbol/class/exchange; inactive instruments may share it.
+        Index(
+            "uq_assets_active_listing",
+            "symbol",
+            "asset_class",
+            "exchange_code",
+            unique=True,
+            postgresql_nulls_not_distinct=True,
+            postgresql_where=text("status = 'ACTIVE'"),
         ),
+        Index(None, "symbol"),
         CheckConstraint("symbol = upper(symbol) AND length(symbol) > 0", name="symbol_upper"),
         CheckConstraint("quote_currency = upper(quote_currency)", name="quote_currency_upper"),
         CheckConstraint(
@@ -55,14 +73,35 @@ class Asset(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     symbol: Mapped[str] = mapped_column(String(64))
     asset_class: Mapped[AssetClass] = mapped_column(str_enum(AssetClass, "asset_class"))
     name: Mapped[str | None] = mapped_column(String(255))
-    # MIC or Atlas exchange code; NULL for OTC markets such as spot forex.
-    exchange_code: Mapped[str | None] = mapped_column(String(32))
+    # MIC (``exchanges.mic``); NULL for OTC markets such as spot forex, or when a provider's
+    # exchange code has no verified MIC.
+    exchange_code: Mapped[str | None] = mapped_column(
+        String(32), ForeignKey("exchanges.mic", ondelete="RESTRICT")
+    )
     quote_currency: Mapped[str] = mapped_column(String(16))
     # For pairs (forex, crypto) the base currency/asset, e.g. EUR in EUR/USD.
     base_currency: Mapped[str | None] = mapped_column(String(16))
     status: Mapped[AssetStatus] = mapped_column(
         str_enum(AssetStatus, "asset_status"), default=AssetStatus.ACTIVE, server_default="ACTIVE"
     )
+    instrument_type: Mapped[InstrumentType] = mapped_column(
+        str_enum(InstrumentType, "instrument_type"),
+        default=InstrumentType.UNCLASSIFIED,
+        server_default="UNCLASSIFIED",
+    )
+    classification_source: Mapped[ClassificationSource] = mapped_column(
+        str_enum(ClassificationSource, "classification_source"),
+        default=ClassificationSource.NONE,
+        server_default="NONE",
+    )
+    # ISO 3166-1 alpha-2 country of the issuer, when a source reports it (Alpaca does not:
+    # a US listing does not make the issuer American).
+    country: Mapped[str | None] = mapped_column(String(2))
+    # When a provider directory first reported the instrument, and last confirmed it.
+    first_discovered_at: Mapped[datetime | None]
+    last_verified_at: Mapped[datetime | None]
+    # Where the current metadata comes from, e.g. "alpaca:/v2/assets" or "operator_reference".
+    metadata_source: Mapped[str | None] = mapped_column(String(64))
 
     identifiers: Mapped[list[AssetIdentifier]] = relationship(back_populates="asset")
 
@@ -112,6 +151,11 @@ class AssetIdentifier(UUIDPrimaryKeyMixin, Base):
     )
     valid_from: Mapped[datetime] = mapped_column(server_default=func.now())
     valid_to: Mapped[datetime | None]
+    valid_from_basis: Mapped[ValidFromBasis] = mapped_column(
+        str_enum(ValidFromBasis, "valid_from_basis"),
+        default=ValidFromBasis.OPERATOR_REFERENCE,
+        server_default="OPERATOR_REFERENCE",
+    )
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
     asset: Mapped[Asset] = relationship(back_populates="identifiers")

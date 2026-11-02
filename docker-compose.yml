@@ -117,6 +117,23 @@ services:
     restart: on-failure
     stop_grace_period: 30s
 
+  # Asset discovery (Phase 3A): scheduled directory discovery, metadata refresh,
+  # qualification and watchlist scoring. Off by default (ASSET_DISCOVERY_ENABLED=false):
+  # it then exits 0 and is not restarted. Several may run safely (jobs are claimed with
+  # SKIP LOCKED, one active job per kind). Status: GET /api/v1/discovery/jobs.
+  discovery-worker:
+    image: atlas-backend:dev
+    env_file: .env
+    environment: *backend-env
+    command: ["python", "-m", "app.workers.asset_discovery"]
+    healthcheck:
+      disable: true
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: on-failure
+    stop_grace_period: 30s
+
   frontend:
     build:
       context: ./frontend

@@ -25,8 +25,9 @@ T0 = datetime(2020, 1, 1, tzinfo=UTC)
 
 
 def _asset(session, symbol: str, asset_class=AssetClass.EQUITY) -> Asset:
+    # Any seeded MIC: assets.exchange_code references exchanges (Phase 3A).
     asset = Asset(
-        symbol=symbol, asset_class=asset_class, exchange_code="XTST", quote_currency="USD"
+        symbol=symbol, asset_class=asset_class, exchange_code="XNAS", quote_currency="USD"
     )
     session.add(asset)
     session.flush()

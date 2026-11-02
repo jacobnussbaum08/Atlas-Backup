@@ -10,6 +10,7 @@ import {
   ServerCog,
   Settings,
   ShieldAlert,
+  Telescope,
   Wallet,
 } from "lucide-react";
 
@@ -24,7 +25,7 @@ export interface NavSection {
   summary: string;
 }
 
-/** Pages backed by real backend data (Phase 1 and the Phase 2 market-data engine). */
+/** Pages backed by real backend data (Phase 1, the Phase 2 market-data engine, Phase 3A). */
 export const NAV_SECTIONS: readonly NavSection[] = [
   {
     path: "/",
@@ -41,6 +42,14 @@ export const NAV_SECTIONS: readonly NavSection[] = [
     specSection: "22.2",
     phase: 2,
     summary: "Monitored assets, prices, charts and data freshness.",
+  },
+  {
+    path: "/discovery",
+    title: "Asset Discovery",
+    icon: Telescope,
+    specSection: "8",
+    phase: 3,
+    summary: "Discovery pool, qualified universe and active watchlist, with reasons and history.",
   },
   {
     path: "/data-health",

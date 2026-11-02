@@ -2,7 +2,7 @@
 
 Unit tests never read the developer's real environment or ``.env`` file (which
 may hold real provider credentials): ``clean_env`` removes ``ATLAS_*``,
-``ALPACA_*``, ``MARKET_DATA_*`` and ``HISTORICAL_DATA_*`` variables (except
+``ALPACA_*``, ``MARKET_DATA_*``, ``HISTORICAL_DATA_*`` and ``ASSET_DISCOVERY_*`` variables (except
 ``ATLAS_TEST_*``), settings are built with ``_env_file=None``, and tests that use
 the real loaders first ``chdir`` to an empty temporary directory.
 """
@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 
+from app.asset_discovery.config import get_asset_discovery_settings
 from app.core.clocks import FixedClock
 from app.core.config import Settings, get_market_data_settings, get_settings
 from app.data_engine.providers.alpaca.config import get_alpaca_settings
@@ -38,6 +39,7 @@ def _clear_settings_caches() -> None:
     get_settings.cache_clear()
     get_market_data_settings.cache_clear()
     get_alpaca_settings.cache_clear()
+    get_asset_discovery_settings.cache_clear()
 
 
 @pytest.fixture(autouse=True)
@@ -47,7 +49,13 @@ def _isolate_settings_cache() -> Iterator[None]:
     _clear_settings_caches()
 
 
-_APPLICATION_PREFIXES = ("ATLAS_", "ALPACA_", "MARKET_DATA_", "HISTORICAL_DATA_")
+_APPLICATION_PREFIXES = (
+    "ATLAS_",
+    "ALPACA_",
+    "MARKET_DATA_",
+    "HISTORICAL_DATA_",
+    "ASSET_DISCOVERY_",
+)
 
 
 @pytest.fixture

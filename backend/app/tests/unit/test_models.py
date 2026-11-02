@@ -37,6 +37,20 @@ def test_expected_tables_exist():
         "market_data_gaps",
         "market_data_recovery_jobs",
         "market_data_recovery_status",
+        # Phase 3A asset discovery and universe
+        "exchanges",
+        "provider_exchange_codes",
+        "provider_assets",
+        "asset_reference_versions",
+        "asset_lifecycle_events",
+        "discovery_jobs",
+        "discovery_results",
+        "qualification_rule_sets",
+        "scoring_versions",
+        "asset_metric_values",
+        "qualification_evaluations",
+        "watchlist_scores",
+        "universe_membership_events",
     }
 
 
