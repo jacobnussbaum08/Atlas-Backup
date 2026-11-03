@@ -907,3 +907,142 @@ written in one transaction that first checks, under a row lock, that the run is 
 RUNNING, so a run reclaimed meanwhile commits nothing (as D-064/D-065). Runs start from the
 CLI or the operator-gated API (in a background thread of the API process, D-006 still
 open); there is no scheduled worker yet.
+
+---
+
+## Phase 3C — news and event intelligence
+
+### D-072 News is a separate subsystem with its own provider contract
+
+**Decision:** `app/news/` holds a provider-independent engine: `providers/base.NewsProvider`
+(historical retrieval with pagination, a live `NewsStream`, authentication check,
+capabilities) and `economic_calendar.EconomicCalendarProvider`. `providers/registry.py` is
+the only place mapping a provider ID to an adapter (`NEWS_PROVIDER`, default `alpaca`).
+Adapters return sanitized `ProviderNewsArticle` observations; storage, mapping,
+classification and relevance never see provider payloads.
+
+**Alpaca adapter** (`news/providers/alpaca/`), verified against the documentation and real
+responses on 2026-11-02: `GET https://data.alpaca.markets/v1beta1/news` (`start`/`end`
+inclusive, `symbols`, `limit` <= 50, `sort`, `include_content`, `page_token` ->
+`next_page_token`) and `wss://stream.data.alpaca.markets/v1beta1/news` (same protocol as
+the stock stream; `{"action":"subscribe","news":["*"]}`). It reuses the market-data
+credentials, HTTP transport (pacing, retries, redaction) and, after a refactor that moved
+connect/auth/control handling into `AlpacaStreamConnection`, the WebSocket protocol code;
+the stock stream's behaviour is unchanged (its tests pass unmodified).
+
+### D-073 Article identity, revisions and deduplication
+
+**Decision:** `news_articles` is identity plus current state (as `assets`, D-052);
+`news_article_revisions` is append-only. An observation is a duplicate when a stored
+revision has the same stored fields (`content_sha256`: headline, summary, author, source,
+URL, sorted symbols), the same provider `updated_at`, and the same body hash where both
+carry a body. Otherwise it is a new revision: `PROVIDER_UPDATE`, `CONTENT_CHANGED` or
+`LATE_EARLIER_VERSION` (stored but never made current). Writers take a per-article advisory
+transaction lock in sorted order, so the stream worker and a backfill job never race.
+
+**Why the body is compared only when both sides have one:** REST retrievals without content
+must not contradict a stream observation that carried a body.
+
+### D-074 Article bodies are not retained by default
+
+**Context:** Alpaca relays partner content (observed sources: `benzinga`, `fiscal.ai`). Its
+documentation states no retention or redistribution terms for article bodies, and the
+Phase 3C prompt forbids retaining full content unless permitted.
+
+**Decision:** `NEWS_STORE_CONTENT=false` (default): REST requests send
+`include_content=false`; stream bodies are dropped after hashing (`body_sha256`, so a body
+correction is still detected); `provider_payload` never contains the body. Headline,
+summary, URL, author, symbols and images (URLs only) are kept. Atlas never fetches linked
+pages. An operator who confirms the licence terms may enable retention; stored bodies are
+plain text (HTML removed).
+
+### D-075 Publication, receipt and availability are different timestamps
+
+**Decision:** per revision: `published_at` and `provider_updated_at` (provider's),
+`received_at` (Atlas obtained the observation), `processed_at` = `available_at` (stored),
+and `original_available_at` = receipt time for stream observations only. A CHECK enforces
+`original_available_at IS NULL` for every `HISTORICAL_REST` revision (as D-022 for bars):
+a backfill never claims Atlas knew the article at its publication time. Articles record
+`first_received_at`, `first_available_at`, `first_origin` and `first_live_received_at`.
+
+Reads offer a point-in-time view (`known_at`): the newest revision and newest event stored by
+then. An article published at T but retrieved at T+3 days does not exist for a decision at
+T+1 day. Strategies and backtests must use this view.
+
+### D-076 Deterministic, versioned event taxonomy; labels are unverified estimates
+
+**Decision:** taxonomy `news-taxonomy-v1` (17 categories, including `OTHER`) and keyword
+rules in `news/classification.py`: named regular expressions per category, headline match
+2 points, summary match 1, assigned at >= 1; several categories per article; primary =
+provider label where known (Alpaca supplies none), else highest score, ties by taxonomy
+order. Crypto pairs among the symbols add `CRYPTOCURRENCY` by symbol rule. Confidence is
+evidence strength (`MEDIUM`/`LOW`/`NONE`), never a probability. Atlas labels are always
+`UNVERIFIED` (database CHECK); provider labels are `PROVIDER_ASSERTED`. Each event stores
+taxonomy, classifier version and the rules' SHA-256; reclassification under a new version
+adds events available from the time they were computed (`python -m app.news.cli
+reclassify`), so earlier decisions keep seeing the labels that existed then.
+
+**Version history:** `keyword-rules-v1` was run on 3 days of real articles on 2026-11-02;
+reviewing samples showed misses ("Reports Fiscal Year ... Financial Results", "Executive
+Departure at ...", trading halts, "Agrees To Sell Its ... Division", staff cuts, share
+issuance). `keyword-rules-v2` adds those rules; the stored v1 events remain.
+
+Classification says what an article is about. It does not rate importance, surprise,
+sentiment or impact.
+
+### D-077 No economic calendar is claimed
+
+**Decision:** schema `economic_events` / `economic_event_revisions` (name, country, currency,
+scheduled time, previous/forecast/actual as number + unit + verbatim text, the source's own
+importance label, revisions with availability) and the `EconomicCalendarProvider` interface
+exist; the registry is empty and `GET /api/v1/news/economic-calendar` reports
+`NOT_CONFIGURED`. Alpaca's news feed is not a calendar and is never presented as one.
+Choosing a calendar provider (and any subscription) is a separate decision.
+
+### D-078 Relevance is an explained ordering heuristic
+
+**Decision:** `relevance-v1`: static relevance per article-asset link = 0.40 (direct provider
+tag) + 0.30 x 1/(tagged symbols) + 0.30 x (headline names the symbol or issuer name), stored
+with its factors; recency = 0.5^(age / `NEWS_RELEVANCE_HALF_LIFE_HOURS`) computed at query
+time (never stored). Source reliability is recorded as `NOT_ASSESSED` with weight 0. The
+weights are documented starting points, not fitted; relevance is not sentiment or impact.
+
+### D-079 Symbol mapping is effective-dated at publication and never forced
+
+**Decision:** method `effective-dated-symbol-v1` (`news/mapping.py`) resolves each article
+symbol in its provider's symbol namespace (`alpaca`) with `asset_identifiers` valid at the
+article's publication time: `MAPPED` (also for now-inactive assets, status recorded),
+`AMBIGUOUS` (the symbol changed hands within `NEWS_MAPPING_AMBIGUITY_WINDOW_HOURS`),
+`NOT_EFFECTIVE` (mappings exist but none covered publication, e.g. only observed later,
+D-053), `UNKNOWN_SYMBOL`, `INVALID_SYMBOL` (not a symbol form of the namespace; observed:
+`TSX:CPX`, `PCG$A`). Each outcome is stored with reason and candidates; unmapped articles
+are kept with scope `MARKET` (macro categories) or `UNLINKED`.
+
+### D-080 One news stream worker; recovery by overlapping REST retrieval
+
+**Decision:** `python -m app.workers.news_stream` (compose `news-worker`, off unless
+`NEWS_STREAM_ENABLED=true`) holds the only news connection (advisory lock per provider),
+separate from the stock stream worker. It persists each frame inline and idempotently;
+while PostgreSQL is down it stops reading (the provider eventually drops the connection).
+After every (re)subscription it runs a `STREAM_RECOVERY` job over
+`[interruption start - NEWS_STREAM_RECOVERY_OVERLAP_SECONDS, now]` (first start: the
+previous session's end; capped at `NEWS_STREAM_RECOVERY_MAX_HOURS`, with an error recorded
+when capped). Duplicates from the overlap are recognised (D-073). Permanent failures
+(rejected credentials, entitlement) report `FAILED` and are not retried.
+
+**Observed (2026-11-02):** Alpaca accepts one news stream connection per account; a second is
+refused with `406 connection limit exceeded` during authentication. The worker treats 406
+as recoverable (backoff, as the stock stream) and the advisory lock keeps Atlas itself to
+one connection; the news and stock streams are separate endpoints and coexist.
+
+**Limitation:** Alpaca does not document whether `start`/`end` filter on creation or update
+time; an article updated during an outage but created before the window may be missed until
+it is seen again.
+
+### D-081 Untrusted text is sanitized on ingestion and rendered only as text
+
+**Decision:** adapters strip HTML with a parser (script/style bodies dropped), decode
+entities once, remove control and bidirectional-format characters, cap lengths, and keep
+URLs only when absolute http(s) without credentials (`javascript:`/`data:` rejected). The
+dashboard renders every field as React text and links out only to http(s) URLs with
+`rel="noopener noreferrer nofollow"`. Missing fields stay `null`.

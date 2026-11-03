@@ -33,6 +33,7 @@ from app.data_engine.runtime import MarketDataContext, build_market_data_context
 if TYPE_CHECKING:
     from app.asset_discovery.runtime import AssetDiscoveryContext
     from app.market_intelligence.runtime import IntelligenceContext
+    from app.news.runtime import NewsContext
 from app.database.repositories import IngestionJobRepository
 from app.database.sessions import build_engine, build_session_factory, session_scope
 from app.monitoring.health import (
@@ -81,6 +82,12 @@ async def _sweep_interrupted_jobs(session_factory: sessionmaker[Session], clock:
         await asyncio.to_thread(_recover_interrupted_jobs, session_factory, clock)
 
 
+def _build_news_context(session_factory: sessionmaker[Session], clock: Clock) -> NewsContext:
+    from app.news.runtime import build_news_context
+
+    return build_news_context(session_factory, clock)
+
+
 def create_app(
     settings: Settings | None = None,
     *,
@@ -89,13 +96,14 @@ def create_app(
     market_data: MarketDataContext | None = None,
     asset_discovery: AssetDiscoveryContext | None = None,
     market_intelligence: IntelligenceContext | None = None,
+    news: NewsContext | None = None,
 ) -> FastAPI:
     """Build the application.
 
     ``health_checks`` replaces the real dependency checks; when given, no
     database engine or Redis client is created (used by unit tests).
-    ``market_data``, ``asset_discovery`` and ``market_intelligence`` inject those contexts
-    (tests); otherwise they are built lazily from the environment on first use.
+    ``market_data``, ``asset_discovery``, ``market_intelligence`` and ``news`` inject those
+    contexts (tests); otherwise they are built lazily from the environment on first use.
     """
     settings = settings or get_settings()
     clock = clock or SystemClock()
@@ -126,6 +134,7 @@ def create_app(
             app.state.market_data_factory = lambda: build_market_data_context(
                 session_factory, clock
             )
+            app.state.news_factory = lambda: _build_news_context(session_factory, clock)
             _recover_interrupted_jobs(session_factory, clock)
             sweeper = asyncio.create_task(_sweep_interrupted_jobs(session_factory, clock))
         else:
@@ -165,6 +174,7 @@ def create_app(
     app.state.market_data = market_data
     app.state.asset_discovery = asset_discovery
     app.state.market_intelligence = market_intelligence
+    app.state.news = news
     app.state.version = app.version
     app.state.started_at = clock.now()
 

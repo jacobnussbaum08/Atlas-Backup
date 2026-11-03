@@ -2,8 +2,8 @@
 
 Unit tests never read the developer's real environment or ``.env`` file (which
 may hold real provider credentials): ``clean_env`` removes ``ATLAS_*``,
-``ALPACA_*``, ``MARKET_DATA_*``, ``HISTORICAL_DATA_*``, ``ASSET_DISCOVERY_*`` and
-``MARKET_INTELLIGENCE_*`` variables (except
+``ALPACA_*``, ``MARKET_DATA_*``, ``HISTORICAL_DATA_*``, ``ASSET_DISCOVERY_*``,
+``MARKET_INTELLIGENCE_*`` and ``NEWS_*`` variables (except
 ``ATLAS_TEST_*``), settings are built with ``_env_file=None``, and tests that use
 the real loaders first ``chdir`` to an empty temporary directory.
 """
@@ -22,6 +22,7 @@ from app.core.clocks import FixedClock
 from app.core.config import Settings, get_market_data_settings, get_settings
 from app.data_engine.providers.alpaca.config import get_alpaca_settings
 from app.market_intelligence.config import get_market_intelligence_settings
+from app.news.config import get_news_settings
 
 FIXED_NOW = datetime(2026, 1, 2, 14, 30, tzinfo=UTC)
 
@@ -43,6 +44,7 @@ def _clear_settings_caches() -> None:
     get_alpaca_settings.cache_clear()
     get_asset_discovery_settings.cache_clear()
     get_market_intelligence_settings.cache_clear()
+    get_news_settings.cache_clear()
 
 
 @pytest.fixture(autouse=True)
@@ -59,6 +61,7 @@ _APPLICATION_PREFIXES = (
     "HISTORICAL_DATA_",
     "ASSET_DISCOVERY_",
     "MARKET_INTELLIGENCE_",
+    "NEWS_",
 )
 
 

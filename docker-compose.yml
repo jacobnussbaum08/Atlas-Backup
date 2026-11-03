@@ -134,6 +134,23 @@ services:
     restart: on-failure
     stop_grace_period: 30s
 
+  # Real-time news (Phase 3C): one connection per news provider (advisory lock), separate
+  # from the market-data stream-worker. With NEWS_STREAM_ENABLED=false (the default) it
+  # records DISABLED and exits 0. After every (re)connection it recovers an overlapping
+  # window over REST. Status: GET /api/v1/news/stream.
+  news-worker:
+    image: atlas-backend:dev
+    env_file: .env
+    environment: *backend-env
+    command: ["python", "-m", "app.workers.news_stream"]
+    healthcheck:
+      disable: true
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: on-failure
+    stop_grace_period: 45s
+
   frontend:
     build:
       context: ./frontend

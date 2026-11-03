@@ -154,9 +154,12 @@ def parse_subscription(item: dict[str, Any]) -> tuple[StreamSubscription, dict[s
     return StreamSubscription(**channels), other
 
 
-class AlpacaMarketDataStream:
-    """One Alpaca stream connection. Not reusable after ``close``; the worker makes a new one
-    for every reconnect and restores the subscription."""
+class AlpacaStreamConnection:
+    """Transport, authentication and control-message handling shared by Alpaca's WebSocket
+    endpoints (market data, Deliverable 2C; news, Phase 3C), which use the same protocol.
+    Subclasses add their subscription format and decoding. Not reusable after ``close``."""
+
+    user_agent = "atlas-ai-trader (read-only data)"
 
     def __init__(
         self,
@@ -186,13 +189,11 @@ class AlpacaMarketDataStream:
         self._state = ConnectionState.DISCONNECTED
         self._auth_state = StreamAuthState.NOT_ATTEMPTED
         self._subscription_state = StreamSubscriptionState.NONE
-        self._subscription = StreamSubscription()
-        self.extra_subscriptions: dict[str, list[str]] = {}
         self.authenticated_at: datetime | None = None
         self.subscribed_at: datetime | None = None
 
     def __repr__(self) -> str:
-        return f"AlpacaMarketDataStream(url={self._url!r}, state={self._state.value})"
+        return f"{type(self).__name__}(url={self._url!r}, state={self._state.value})"
 
     # ------------------------------------------------------------ state
     @property
@@ -206,10 +207,6 @@ class AlpacaMarketDataStream:
     @property
     def subscription_state(self) -> StreamSubscriptionState:
         return self._subscription_state
-
-    @property
-    def subscription(self) -> StreamSubscription:
-        return self._subscription
 
     @property
     def url(self) -> str:
@@ -231,7 +228,7 @@ class AlpacaMarketDataStream:
                 max_size=MAX_FRAME_BYTES,
                 max_queue=64,
                 logger=_WS_LOGGER,
-                user_agent_header="atlas-ai-trader (market data only)",
+                user_agent_header=self.user_agent,
             )
         except (OSError, TimeoutError, InvalidHandshake, InvalidURI) as exc:
             self._state = ConnectionState.DISCONNECTED
@@ -269,6 +266,97 @@ class AlpacaMarketDataStream:
         self.authenticated_at = self._clock.now()
         self._state = ConnectionState.CONNECTED
         logger.info("alpaca.stream_authenticated", feed=self._feed)
+
+    async def close(self) -> None:
+        self._closing = True
+        ws, self._ws = self._ws, None
+        if ws is not None:
+            try:
+                await ws.close()
+            except Exception:  # closing a broken socket must not fail shutdown
+                logger.debug("alpaca.stream_close_failed")
+        self._state = ConnectionState.STOPPED
+        self._subscription_state = StreamSubscriptionState.NONE
+
+    # ------------------------------------------------------------ transport
+    async def _send(self, message: dict[str, Any]) -> None:
+        if self._ws is None:
+            raise StreamConnectionError("stream is not connected")
+        try:
+            await self._ws.send(json.dumps(message, separators=(",", ":")))
+        except ConnectionClosed as exc:
+            raise self._closed_error(exc) from None
+
+    async def _receive(self) -> tuple[str | bytes | None, datetime]:
+        if self._ws is None:
+            if self._closing:
+                return None, self._clock.now()
+            raise StreamConnectionError("stream is not connected")
+        try:
+            frame = await self._ws.recv()
+        except ConnectionClosed as exc:
+            if self._closing:
+                return None, self._clock.now()
+            self._state = ConnectionState.DISCONNECTED
+            self._subscription_state = StreamSubscriptionState.NONE
+            raise self._closed_error(exc) from None
+        return frame, self._clock.now()
+
+    async def _control(self, during: str) -> dict[str, Any]:
+        """Wait for the next control message; data frames meanwhile are kept for ``events``."""
+        try:
+            async with asyncio.timeout(self._reply_timeout):
+                while True:
+                    frame, received_at = await self._receive()
+                    if frame is None:
+                        raise StreamConnectionError(f"stream closed during {during}")
+                    control = _control_item(frame)
+                    if control is None:
+                        self._pending.append((frame, received_at))
+                        continue
+                    if control.get("T") == "error":
+                        raise _error(control, during)
+                    return control
+        except TimeoutError:
+            raise StreamProtocolError(
+                f"no reply from Alpaca within {self._reply_timeout}s during {during}"
+            ) from None
+
+    async def _abort(self, state: ConnectionState) -> None:
+        ws, self._ws = self._ws, None
+        if ws is not None:
+            try:
+                await ws.close()
+            except Exception:
+                logger.debug("alpaca.stream_abort_close_failed")
+        self._state = state
+
+    def _closed_error(self, exc: ConnectionClosed) -> StreamConnectionError:
+        close = exc.rcvd or exc.sent
+        if close is None:
+            return StreamConnectionError(
+                "Alpaca stream closed unexpectedly (connection lost without a close frame)"
+            )
+        reason = f": {redact_text(close.reason)}" if close.reason else ""
+        return StreamConnectionError(
+            f"Alpaca stream closed unexpectedly (code {close.code}{reason})"
+        )
+
+
+class AlpacaMarketDataStream(AlpacaStreamConnection):
+    """One Alpaca market-data stream connection. Not reusable after ``close``; the worker
+    makes a new one for every reconnect and restores the subscription."""
+
+    user_agent = "atlas-ai-trader (market data only)"
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._subscription = StreamSubscription()
+        self.extra_subscriptions: dict[str, list[str]] = {}
+
+    @property
+    def subscription(self) -> StreamSubscription:
+        return self._subscription
 
     async def subscribe(self, subscription: StreamSubscription) -> StreamSubscription:
         return await self._change_subscription("subscribe", subscription)
@@ -333,17 +421,6 @@ class AlpacaMarketDataStream:
             if received is None:
                 return
             yield self.decode(received, at)
-
-    async def close(self) -> None:
-        self._closing = True
-        ws, self._ws = self._ws, None
-        if ws is not None:
-            try:
-                await ws.close()
-            except Exception:  # closing a broken socket must not fail shutdown
-                logger.debug("alpaca.stream_close_failed")
-        self._state = ConnectionState.STOPPED
-        self._subscription_state = StreamSubscriptionState.NONE
 
     # ------------------------------------------------------------ decoding
     def decode(self, frame: str | bytes, received_at: datetime) -> StreamBatch:
@@ -474,70 +551,6 @@ class AlpacaMarketDataStream:
             self._subscription, self.extra_subscriptions = parse_subscription(item)
         return StreamNotice(kind=f"control:{item.get('T')}", details=_jsonable(item))
 
-    # ------------------------------------------------------------ transport
-    async def _send(self, message: dict[str, Any]) -> None:
-        if self._ws is None:
-            raise StreamConnectionError("stream is not connected")
-        try:
-            await self._ws.send(json.dumps(message, separators=(",", ":")))
-        except ConnectionClosed as exc:
-            raise self._closed_error(exc) from None
-
-    async def _receive(self) -> tuple[str | bytes | None, datetime]:
-        if self._ws is None:
-            if self._closing:
-                return None, self._clock.now()
-            raise StreamConnectionError("stream is not connected")
-        try:
-            frame = await self._ws.recv()
-        except ConnectionClosed as exc:
-            if self._closing:
-                return None, self._clock.now()
-            self._state = ConnectionState.DISCONNECTED
-            self._subscription_state = StreamSubscriptionState.NONE
-            raise self._closed_error(exc) from None
-        return frame, self._clock.now()
-
-    async def _control(self, during: str) -> dict[str, Any]:
-        """Wait for the next control message; data frames meanwhile are kept for ``events``."""
-        try:
-            async with asyncio.timeout(self._reply_timeout):
-                while True:
-                    frame, received_at = await self._receive()
-                    if frame is None:
-                        raise StreamConnectionError(f"stream closed during {during}")
-                    control = _control_item(frame)
-                    if control is None:
-                        self._pending.append((frame, received_at))
-                        continue
-                    if control.get("T") == "error":
-                        raise _error(control, during)
-                    return control
-        except TimeoutError:
-            raise StreamProtocolError(
-                f"no reply from Alpaca within {self._reply_timeout}s during {during}"
-            ) from None
-
-    async def _abort(self, state: ConnectionState) -> None:
-        ws, self._ws = self._ws, None
-        if ws is not None:
-            try:
-                await ws.close()
-            except Exception:
-                logger.debug("alpaca.stream_abort_close_failed")
-        self._state = state
-
-    def _closed_error(self, exc: ConnectionClosed) -> StreamConnectionError:
-        close = exc.rcvd or exc.sent
-        if close is None:
-            return StreamConnectionError(
-                "Alpaca stream closed unexpectedly (connection lost without a close frame)"
-            )
-        reason = f": {redact_text(close.reason)}" if close.reason else ""
-        return StreamConnectionError(
-            f"Alpaca stream closed unexpectedly (code {close.code}{reason})"
-        )
-
 
 def _control_item(frame: str | bytes) -> dict[str, Any] | None:
     """The control object if ``frame`` is a single control message, else ``None``."""
@@ -578,6 +591,7 @@ __all__ = [
     "CHANNEL_KEYS",
     "ERROR_CODES",
     "AlpacaMarketDataStream",
+    "AlpacaStreamConnection",
     "parse_subscription",
     "subscription_message",
 ]

@@ -196,6 +196,21 @@ def test_openapi_exposes_no_order_endpoints(build_client):
         "/api/v1/intelligence/runs",
         "/api/v1/intelligence/runs/{run_id}",
         "/api/v1/intelligence/config",
+        # 3C news and events (read-only; historical retrieval is operator-gated)
+        "/api/v1/news/articles",
+        "/api/v1/news/articles/{article_id}",
+        "/api/v1/news/assets/{asset_id}",
+        "/api/v1/news/assets/{asset_id}/events",
+        "/api/v1/news/events",
+        "/api/v1/news/taxonomy",
+        "/api/v1/news/summary",
+        "/api/v1/news/sources",
+        "/api/v1/news/ingestion-jobs",
+        "/api/v1/news/ingestion-jobs/{job_id}",
+        "/api/v1/news/providers",
+        "/api/v1/news/stream",
+        "/api/v1/news/stream/sessions",
+        "/api/v1/news/economic-calendar",
     }
     # Market trades (exchange prints) are read-only market data, not trading: the one
     # allowed path containing "trade" must expose GET only.
@@ -211,8 +226,8 @@ def test_openapi_exposes_no_order_endpoints(build_client):
     writes = {p for p, methods in paths.items() if set(methods) - {"get"}}
     # Operator-gated actions only: a historical fetch, a request to verify a range (it
     # records gaps; the recovery worker retrieves market data), starting discovery or a
-    # reference-data refresh, new versions of the qualification/scoring configuration, and
-    # starting a market intelligence run.
+    # reference-data refresh, new versions of the qualification/scoring configuration,
+    # starting a market intelligence run, and a historical news retrieval.
     assert writes == {
         "/api/v1/market-data/historical-fetch",
         "/api/v1/market-data/recovery-requests",
@@ -221,4 +236,5 @@ def test_openapi_exposes_no_order_endpoints(build_client):
         "/api/v1/discovery/config/rule-set",
         "/api/v1/discovery/config/scoring",
         "/api/v1/intelligence/runs",
+        "/api/v1/news/ingestion-jobs",
     }

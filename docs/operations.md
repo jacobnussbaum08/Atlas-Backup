@@ -421,6 +421,52 @@ whose process died is failed as interrupted after 5 minutes without a heartbeat.
 are append-only; thresholds and windows are versioned configuration
 (`GET /api/v1/intelligence/config`, decisions D-066 to D-071).
 
+## News and events (Phase 3C)
+
+Prerequisites: the database at head (migration 0008) and Alpaca credentials in `.env` (the
+market-data keys; news is read-only). Settings: `NEWS_*` in `.env.example` (decisions D-072
+to D-081). Article bodies are not stored unless `NEWS_STORE_CONTENT=true` (D-074).
+
+1. Historical retrieval (all news, or `--symbols AAPL,MSFT`; `--start/--end` or `--days`).
+   Re-running a range stores nothing twice; articles are labelled *retrieved later* and are
+   available to simulations only from their retrieval time:
+
+   ```bash
+   uv run python -m app.news.cli backfill --days 3
+   ```
+
+2. The real-time worker (one connection per provider, separate from the stock stream). Set
+   `NEWS_STREAM_ENABLED=true` in `.env`, then:
+
+   ```bash
+   docker compose up -d news-worker
+   ```
+
+   With the flag off it records `DISABLED` and exits 0. After every (re)connection it
+   retrieves an overlapping window over REST (`STREAM_RECOVERY` jobs). Health:
+   `GET /api/v1/news/stream` (`STREAMING`, `CONNECTING`, `DEGRADED`, `FAILED`,
+   `NOT_RUNNING` after `NEWS_STREAM_STALE_AFTER` seconds without a heartbeat). Minutes
+   without articles are normal; health comes from the heartbeat and subscription.
+
+3. Verify credentials against the news endpoint:
+
+   ```bash
+   uv run python -m app.news.cli auth
+   ```
+
+4. After a change to the keyword rules (a new classifier version), add events under the new
+   version for stored revisions (earlier events are kept; the new ones are available from
+   now):
+
+   ```bash
+   uv run python -m app.news.cli reclassify
+   ```
+
+The dashboard's **News & Events** page shows the feed with filters, provider, stream and
+economic-calendar status (no calendar provider is connected, D-077), category counts and a
+historical-retrieval form (operator token outside development). Point-in-time reads:
+`GET /api/v1/news/articles?known_at=...`.
+
 ## Backup and restore
 
 ```bash

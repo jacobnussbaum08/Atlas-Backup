@@ -58,6 +58,20 @@ def test_expected_tables_exist():
         "regime_classifications",
         "market_summaries",
         "cross_asset_relationships",
+        # Phase 3C news and event intelligence
+        "news_providers",
+        "news_sources",
+        "news_articles",
+        "news_article_revisions",
+        "news_asset_mappings",
+        "news_ingestion_jobs",
+        "news_stream_sessions",
+        "news_stream_status",
+        "news_events",
+        "event_classifications",
+        "event_asset_relationships",
+        "economic_events",
+        "economic_event_revisions",
     }
 
 

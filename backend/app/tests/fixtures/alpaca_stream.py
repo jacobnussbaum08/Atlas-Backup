@@ -26,7 +26,7 @@ _QUIET.setLevel(logging.WARNING)
 FAKE_STREAM_KEY = "TESTKEYFIXTURE0001"
 FAKE_STREAM_SECRET = "TestSecretFixtureNotReal0001"
 
-_KEYS = ("trades", "quotes", "bars", "updatedBars", "dailyBars")
+_KEYS = ("trades", "quotes", "bars", "updatedBars", "dailyBars", "news")
 
 
 def bar_msg(
