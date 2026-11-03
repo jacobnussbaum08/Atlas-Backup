@@ -225,6 +225,37 @@ def test_openapi_exposes_no_order_endpoints(build_client):
         "/api/v1/strategies/{strategy_id}/versions",
         "/api/v1/strategies/{strategy_id}/configurations",
         "/api/v1/strategies/{strategy_id}/status",
+        # 5A machine learning (read-only, plus an operator-gated lifecycle transition;
+        # predictions are analytical records, nothing is submitted)
+        "/api/v1/ml/overview",
+        "/api/v1/ml/datasets",
+        "/api/v1/ml/datasets/{version_id}",
+        "/api/v1/ml/runs",
+        "/api/v1/ml/runs/{run_id}",
+        "/api/v1/ml/compare",
+        "/api/v1/ml/models",
+        "/api/v1/ml/models/{model_id}",
+        "/api/v1/ml/models/{model_id}/status",
+        "/api/v1/ml/predictions",
+        "/api/v1/ml/predictions/{prediction_id}",
+        "/api/v1/ml/predictions/{prediction_id}/replay",
+        # Phase 5B: read-only decision and LLM records (no endpoint runs, approves or sends)
+        "/api/v1/ai/overview",
+        "/api/v1/ai/policies",
+        "/api/v1/ai/runs",
+        "/api/v1/ai/runs/{run_id}",
+        "/api/v1/ai/runs/{run_id}/replay",
+        "/api/v1/ai/rankings",
+        "/api/v1/ai/decisions",
+        "/api/v1/ai/decisions/{decision_id}",
+        "/api/v1/ai/decisions/{decision_id}/evidence",
+        "/api/v1/ai/decisions/{decision_id}/models",
+        "/api/v1/ai/conflicts",
+        "/api/v1/ai/llm/analyses",
+        "/api/v1/ai/llm/analyses/{analysis_id}",
+        "/api/v1/ai/llm/requests",
+        "/api/v1/ai/llm/usage",
+        "/api/v1/ai/evaluations",
     }
     # Market trades (exchange prints) are read-only market data, not trading: the one
     # allowed path containing "trade" must expose GET only.
@@ -242,7 +273,8 @@ def test_openapi_exposes_no_order_endpoints(build_client):
     # records gaps; the recovery worker retrieves market data), starting discovery or a
     # reference-data refresh, new versions of the qualification/scoring configuration,
     # starting a market intelligence run, a historical news retrieval, and a new strategy
-    # parameter version or enable/disable (no endpoint approves or submits a proposal).
+    # parameter version or enable/disable (no endpoint approves or submits a proposal), and
+    # an explicit model lifecycle transition (Phase 5A; nothing is promoted automatically).
     assert writes == {
         "/api/v1/market-data/historical-fetch",
         "/api/v1/market-data/recovery-requests",
@@ -254,4 +286,5 @@ def test_openapi_exposes_no_order_endpoints(build_client):
         "/api/v1/news/ingestion-jobs",
         "/api/v1/strategies/{strategy_id}/versions",
         "/api/v1/strategies/{strategy_id}/status",
+        "/api/v1/ml/models/{model_id}/status",
     }

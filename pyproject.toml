@@ -20,6 +20,12 @@ dependencies = [
     "websockets>=15.0",
     # Columnar analytics for asset qualification metrics (Phase 3A, decision D-056).
     "polars>=1.40,<2",
+    # Locally trained ML models (Phase 5A, decision D-099). xgboost-cpu is the CPU-only
+    # XGBoost build: no CUDA libraries in the image.
+    "numpy>=2.2,<3",
+    "scikit-learn>=1.6,<2",
+    "xgboost-cpu>=3.0,<4",
+    "joblib>=1.4,<2",
 ]
 
 [dependency-groups]
@@ -83,6 +89,11 @@ mypy_path = "backend"
 packages = ["app"]
 strict = true
 plugins = ["pydantic.mypy"]
+
+# scikit-learn, XGBoost, joblib and SciPy ship no type information (Phase 5A).
+[[tool.mypy.overrides]]
+module = ["sklearn.*", "xgboost.*", "joblib.*", "scipy.*"]
+ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["app.tests.*"]

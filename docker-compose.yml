@@ -76,6 +76,10 @@ services:
       ATLAS_API_PORT: "8000"
     ports:
       - "127.0.0.1:${API_HOST_PORT:-8000}:8000"
+    # ML model artifacts (Phase 5A): written by `docker compose run --rm backend python -m
+    # app.ml_engine.cli train ...`, read (sha256-checked) by inference and replay.
+    volumes:
+      - ml-artifacts:/srv/atlas/data/ml/artifacts
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -165,6 +169,24 @@ services:
     restart: on-failure
     stop_grace_period: 75s
 
+  # Decision coordinator and asynchronous LLM analysis (Phase 5B; no orders). Each loop is
+  # off unless AI_DECISIONS_ENABLED / AI_NEWS_ANALYSIS_ENABLED /
+  # AI_CONFLICT_EXPLANATIONS_ENABLED; with all off it exits 0.
+  ai-worker:
+    image: atlas-backend:dev
+    env_file: .env
+    environment: *backend-env
+    command: ["python", "-m", "app.workers.ai_engine"]
+    volumes:
+      - ml-artifacts:/srv/atlas/data/ml/artifacts:ro
+    healthcheck:
+      disable: true
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: on-failure
+    stop_grace_period: 75s
+
   frontend:
     build:
       context: ./frontend
@@ -202,3 +224,4 @@ services:
 
 volumes:
   postgres-data:
+  ml-artifacts:

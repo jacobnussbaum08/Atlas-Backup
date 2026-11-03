@@ -4,12 +4,14 @@ import { Route, Routes } from "react-router";
 import { Loading } from "./components/ui";
 import { DashboardLayout } from "./layouts/DashboardLayout";
 import { UPCOMING_SECTIONS } from "./navigation";
+import { AIActivityPage } from "./pages/AIActivityPage";
 import { DataHealthPage } from "./pages/DataHealthPage";
 import { DiscoveryAssetPage } from "./pages/DiscoveryAssetPage";
 import { DiscoveryPage } from "./pages/DiscoveryPage";
 import { IngestionPage } from "./pages/IngestionPage";
 import { IntelligencePage } from "./pages/IntelligencePage";
 import { MarketsPage } from "./pages/MarketsPage";
+import { MLPage } from "./pages/MLPage";
 import { NewsArticlePage } from "./pages/NewsArticlePage";
 import { NewsPage } from "./pages/NewsPage";
 import { OverviewPage } from "./pages/OverviewPage";
@@ -45,6 +47,8 @@ export function App({ pollIntervalMs }: { pollIntervalMs?: number }) {
         <Route path="/news/articles/:articleId" element={<NewsArticlePage />} />
         <Route path="/strategies" element={<StrategiesPage />} />
         <Route path="/strategies/:strategyId" element={<StrategyDetailPage />} />
+        <Route path="/ml" element={<MLPage />} />
+        <Route path="/ai" element={<AIActivityPage />} />
         <Route path="/data-health" element={<DataHealthPage />} />
         <Route path="/ingestion" element={<IngestionPage />} />
         <Route path="/system-health" element={<SystemHealthPage />} />

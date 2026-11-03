@@ -17,6 +17,7 @@ from typing import Any
 
 import pytest
 
+from app.ai_engine.config import get_ai_settings
 from app.asset_discovery.config import get_asset_discovery_settings
 from app.core.clocks import FixedClock
 from app.core.config import Settings, get_market_data_settings, get_settings
@@ -47,6 +48,7 @@ def _clear_settings_caches() -> None:
     get_market_intelligence_settings.cache_clear()
     get_news_settings.cache_clear()
     get_strategy_settings.cache_clear()
+    get_ai_settings.cache_clear()
 
 
 @pytest.fixture(autouse=True)
@@ -65,6 +67,8 @@ _APPLICATION_PREFIXES = (
     "MARKET_INTELLIGENCE_",
     "NEWS_",
     "STRATEGY_",
+    "ML_",
+    "AI_",
 )
 
 

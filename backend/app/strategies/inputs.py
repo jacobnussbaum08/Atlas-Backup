@@ -23,13 +23,14 @@ import uuid
 from collections.abc import Callable, Hashable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import Any
+from typing import Any, Protocol
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from app.asset_discovery.sessions import ExchangeCalendar
+from app.asset_discovery.metrics import DailyBar
+from app.asset_discovery.sessions import ExchangeCalendar, SessionDay
 from app.data_engine.enums import PriceAdjustment
 from app.database.models import Asset, AssetClass, AssetStatus, StrategyFeatureSnapshotRecord
 from app.database.repositories import universe as reads
@@ -101,20 +102,33 @@ def knowledge_time(basis: KnowledgeBasis, data_cutoff: datetime, now: datetime) 
     return data_cutoff if basis is KnowledgeBasis.RECORDED else max(now, data_cutoff)
 
 
-def _history(
+class DailyBarSource(Protocol):
+    """Reads the daily bars of ``sessions`` as ``reads.daily_bars`` does (newest revision
+    known at ``known_at``). The default queries the database; the ML dataset builder
+    (Phase 5A) passes a source that serves the same rows from one preloaded read."""
+
+    def __call__(
+        self,
+        session: Session,
+        asset_id: uuid.UUID,
+        sessions: Sequence[SessionDay],
+        *,
+        data_cutoff: datetime,
+        known_at: datetime,
+        series: BarSeries,
+    ) -> Sequence[DailyBar]: ...
+
+
+def query_daily_bars(
     session: Session,
     asset_id: uuid.UUID,
-    timeframe: str,
-    periods: int,
+    sessions: Sequence[SessionDay],
     *,
     data_cutoff: datetime,
     known_at: datetime,
     series: BarSeries,
-) -> BarHistory:
-    sessions = completed_daily(
-        series.calendar, data_cutoff, sessions_for(timeframe, periods), series.settle
-    )
-    rows = reads.daily_bars(
+) -> Sequence[DailyBar]:
+    return reads.daily_bars(
         session,
         [asset_id],
         provider=series.provider,
@@ -124,6 +138,25 @@ def _history(
         calendar=series.calendar,
         as_of=data_cutoff,
         known_at=known_at,
+    )
+
+
+def _history(
+    session: Session,
+    asset_id: uuid.UUID,
+    timeframe: str,
+    periods: int,
+    *,
+    data_cutoff: datetime,
+    known_at: datetime,
+    series: BarSeries,
+    source: DailyBarSource = query_daily_bars,
+) -> BarHistory:
+    sessions = completed_daily(
+        series.calendar, data_cutoff, sessions_for(timeframe, periods), series.settle
+    )
+    rows = source(
+        session, asset_id, sessions, data_cutoff=data_cutoff, known_at=known_at, series=series
     )
     daily: dict[date, Bar] = {}
     for row in rows:
@@ -178,6 +211,7 @@ def compute_features(
     known_at: datetime,
     basis: KnowledgeBasis,
     series: BarSeries,
+    bar_source: DailyBarSource = query_daily_bars,
 ) -> FeatureInputs:
     if known_at < data_cutoff:
         raise ValueError("the knowledge time cannot precede the data cutoff")
@@ -206,6 +240,7 @@ def compute_features(
             data_cutoff=data_cutoff,
             known_at=known_at,
             series=series,
+            source=bar_source,
         )
 
     history = load(asset_id)
@@ -279,8 +314,10 @@ def store_snapshot(session: Session, inputs: FeatureInputs) -> uuid.UUID:
 
 __all__ = [
     "BarSeries",
+    "DailyBarSource",
     "FeatureInputs",
     "compute_features",
     "knowledge_time",
+    "query_daily_bars",
     "store_snapshot",
 ]

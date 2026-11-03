@@ -1,5 +1,21 @@
 """ORM models. Importing this package registers every table on ``Base.metadata``."""
 
+from app.database.models.ai import (
+    AIDecisionRecord,
+    DecisionConflictRecord,
+    DecisionEvaluationRecord,
+    DecisionEvidenceRecord,
+    DecisionInputRecord,
+    DecisionPolicyRecord,
+    DecisionPolicyVersionRecord,
+    DecisionRunRecord,
+    DecisionScoringComponentRecord,
+    LLMAnalysisRecord,
+    LLMCostRecord,
+    LLMRequestRecord,
+    LLMResponseRecord,
+    LLMTokenUsageRecord,
+)
 from app.database.models.asset import (
     Asset,
     AssetClass,
@@ -34,6 +50,18 @@ from app.database.models.market_data import (
     StreamGapRecord,
     StreamSessionRecord,
     StreamStatusRecord,
+)
+from app.database.models.ml import (
+    MLCalibrationResultRecord,
+    MLDatasetObservationRecord,
+    MLDatasetRecord,
+    MLDatasetVersionRecord,
+    MLModelArtifactRecord,
+    MLModelEvaluationRecord,
+    MLModelStatusEventRecord,
+    MLModelVersionRecord,
+    MLPredictionRecord,
+    MLTrainingRunRecord,
 )
 from app.database.models.news import (
     EconomicEventRecord,
@@ -88,6 +116,7 @@ from app.database.models.universe import (
 )
 
 __all__ = [
+    "AIDecisionRecord",
     "ActorType",
     "Asset",
     "AssetClass",
@@ -101,6 +130,14 @@ __all__ = [
     "CoverageRecord",
     "CrossAssetRelationshipRecord",
     "DataQualityEventRecord",
+    "DecisionConflictRecord",
+    "DecisionEvaluationRecord",
+    "DecisionEvidenceRecord",
+    "DecisionInputRecord",
+    "DecisionPolicyRecord",
+    "DecisionPolicyVersionRecord",
+    "DecisionRunRecord",
+    "DecisionScoringComponentRecord",
     "DiscoveryJobRecord",
     "DiscoveryResultRecord",
     "EconomicEventRecord",
@@ -113,6 +150,21 @@ __all__ = [
     "IngestionJobSymbolRecord",
     "IntelligenceConfigRecord",
     "IntelligenceRunRecord",
+    "LLMAnalysisRecord",
+    "LLMCostRecord",
+    "LLMRequestRecord",
+    "LLMResponseRecord",
+    "LLMTokenUsageRecord",
+    "MLCalibrationResultRecord",
+    "MLDatasetObservationRecord",
+    "MLDatasetRecord",
+    "MLDatasetVersionRecord",
+    "MLModelArtifactRecord",
+    "MLModelEvaluationRecord",
+    "MLModelStatusEventRecord",
+    "MLModelVersionRecord",
+    "MLPredictionRecord",
+    "MLTrainingRunRecord",
     "MappingStatus",
     "MarketBarRecord",
     "MarketDataFeedRecord",

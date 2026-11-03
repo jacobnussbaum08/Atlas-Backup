@@ -1272,3 +1272,356 @@ an ADX guard rejected nearly every genuine setup; a longer regression measures a
 configuration that keeps every stored value and writes the new fields' defaults explicitly;
 the version's reason names the added fields. Renamed or removed fields still make sync
 report a problem instead of guessing. All six families kept every Phase 4A parameter name.
+
+## Phase 5A — machine-learning infrastructure
+
+### D-099 scikit-learn, XGBoost (CPU build), NumPy and joblib are dependencies
+
+**Decision:** Phase 5A adds `numpy`, `scikit-learn`, `xgboost-cpu` and `joblib` (SciPy comes
+with scikit-learn). `xgboost-cpu` is the CPU-only XGBoost wheel: the default `xgboost` wheel
+pulls in CUDA libraries the image does not need. `uv.lock` was regenerated with the pinned uv
+0.13.6 inside the backend image. Polars (D-056) holds dataset frames; models receive NumPy
+arrays. Phase 3B analytics stay in plain Python (D-066 unchanged). No neural-network library
+is added (spec 12.2: complexity must earn its place).
+
+### D-100 The ML engine reuses the strategy feature pipeline; datasets are RECONSTRUCTED
+
+**Decision:** dataset features are computed by `app.strategies.inputs.compute_features`, the
+code path strategies use, at each historical decision time (the close of a completed period
+plus the settle delay). A dataset fixes one `data_known_at`: bars and stored features are
+read as Atlas knew them then (RECONSTRUCTED basis, D-068), so rebuilding the same
+specification reproduces the same content hash.
+
+`compute_features` gained an optional `bar_source` (default: the database query). The builder
+passes a preloaded source that returns exactly the rows the query would, for one knowledge
+time only. `last_input_period_at <= decision_at` is a database constraint, and an
+integration test checks the builder's values against direct `compute_features` calls.
+
+### D-101 Observations: period closes, strategy replay and recorded proposals
+
+**Decision:** three observation sources.
+
+* **PERIOD_CLOSE:** every completed period of every listed asset, in each requested
+  direction.
+* **STRATEGY_REPLAY:** the Phase 4B strategies evaluated in process at every completed
+  period. Nothing is stored as a proposal. An observation is a proposal a strategy would
+  have made, with its version (`id@logic#parameters-hash`) and levels. Strategy parameters
+  are the newest version registered by `data_known_at`, else the code defaults (recorded).
+* **STRATEGY_PROPOSALS:** proposals the laboratory recorded.
+
+Rows whose required features are not VALID are rejected at build time and counted by reason.
+
+### D-102 Targets are net of a stated cost assumption and direction-adjusted
+
+**Decision:** every target is computed from the realized path after the decision:
+
+* entry at the next period's open (default) or the decision close;
+* exit at the horizon's close or a barrier;
+* direction-adjusted (SHORT gains when price falls);
+* minus an assumed round-trip cost (default 10 bps). Atlas has no execution cost model
+  before Phase 7, and borrow fees are not modelled.
+
+Kinds:
+
+* FORWARD_RETURN;
+* DIRECTION: net return above a threshold. This means "would have made money after costs",
+  not "price went up";
+* VOL_ADJUSTED_RETURN and VOL_ADJUSTED_DIRECTION, in units of the ATR known at the decision;
+* BARRIER: profit barrier before stop, set by ATR multiples or the strategy's own levels.
+  When one bar crosses both, the stop counts first (spec 18.1); gaps exit at the open.
+
+Each definition and its documentation are stored with the dataset. A label whose horizon had
+not settled by `data_known_at` is IMMATURE; a label with a missing bar on its path is
+UNDEFINED. Neither is ever trained on or evaluated.
+
+### D-103 Splits are chronological, purged and embargoed; the test period is evaluated once
+
+**Decision:**
+
+* Splits are defined on decision times (train / validation / test fractions of the distinct
+  times, default 60/20/20) and are never shuffled.
+* Earlier observations whose labels end after a later segment begins are purged.
+* The first `embargo` decision times of each later segment are skipped (default: the longest
+  label horizon).
+* Hyperparameters are selected by expanding-window walk-forward folds on the development
+  period only. A grid is capped at 12 candidates and the number tried is recorded.
+* Purged k-fold and CPCV run on the development period as supplementary robustness.
+* Every split is re-checked by `assert_disjoint` before use.
+* Runs on a dataset version record how many earlier runs evaluated the same test period
+  (`test_period_reuse`).
+
+### D-104 Preprocessing is fitted on training rows and stored as data
+
+**Decision:** the following are all fitted on the training period:
+
+* feature selection: missing share, constant, near-duplicate correlation, and an optional
+  mutual-information top-k;
+* clipping;
+* median imputation with missing indicators;
+* standard scaling (linear models);
+* one-hot encoding of categorical features and context.
+
+The fitted state is stored as plain JSON with the run. Evaluation and inference rows are
+transformed, never refitted. Row rejection judges each row alone.
+
+### D-105 Direction interactions and normalized uniqueness weights
+
+**Decision:**
+
+* When training holds both LONG and SHORT observations, preprocessing adds each numeric input
+  multiplied by the direction's sign.
+* Overlapping labels are down-weighted by 1 / label concurrency, normalized to mean 1 within
+  each training set.
+
+**Why:** found on the planted-signal test fixture.
+
+* The same move means opposite outcomes for the two directions. With only a direction
+  indicator, models learned the pooled effect and were *anti*-predictive for SHORT (test
+  AUC 0.34).
+* Unnormalized weights (mean about 0.2) made XGBoost's `min_child_weight` five times
+  stricter than intended.
+
+With both fixes the fixture's test AUC is 0.79, and pure-noise fixtures are still never
+validated.
+
+### D-106 Probabilities need calibration evidence; the test period can only withdraw the claim
+
+**Decision:** classifier outputs are UNCALIBRATED_SCOREs unless a calibration fitted on
+validation data passes on a held-out half of the validation period. Passing means:
+
+* at least 100 observations;
+* ECE at most 0.05;
+* Brier no worse than the base rate.
+
+Sigmoid and isotonic are compared there. The test period never fits or selects a calibration,
+but a calibration whose test ECE exceeds 0.05 is not exposed as a probability.
+[REDACTED_FOR_GITHUB] Reliability tables are stored.
+
+### D-107 The evidence verdict is recorded; promotion is always an explicit decision
+
+**Decision:** each run records a `validation_status`. PASSED requires all of the following on
+the untouched test period (at least 200 observations):
+
+* the model beats its constant baseline (log loss or RMSE);
+* AUC (or directional accuracy) is above 0.5;
+* the observations it selects have a positive mean net return, above that of taking every
+  observation.
+
+In addition, at least half of the walk-forward folds must beat their baselines.
+
+The verdict is evidence, not a promotion. Every version starts as CANDIDATE and changes
+status only through the operator API or the CLI.
+
+### D-108 Registry lifecycle and immutability
+
+**Decision:**
+
+* The lifecycle is CANDIDATE → VALIDATED → SHADOW → APPROVED; REJECTED and RETIRED are final.
+* VALIDATED and APPROVED need a PASSED verdict, and APPROVED needs SHADOW first.
+* A second APPROVED version of the same model name is refused until the operator retires the
+  first. Nothing is replaced implicitly.
+* Status is an append-only event chain (one successor per event). Transitions are serialized
+  per model name and audited.
+* Model versions, artifacts, datasets, observations, evaluations, calibration results and
+  predictions are append-only. A training run's outcome is written once.
+
+### D-109 Artifacts are joblib files verified by sha256 before loading
+
+**Decision:** an artifact holds the fitted model, the preprocessing description, the
+calibrator and the input schema. Files are:
+
+* created exclusively (never overwritten) under `ML_ARTIFACT_DIR`;
+* recorded with their sha256;
+* loaded only from inside that directory, and only after the hash matches, because joblib
+  files are pickles that can execute code.
+
+Library versions are recorded with each artifact. The compose backend mounts a named volume
+at the default directory.
+
+### D-110 Inference validates schemas strictly and records every request
+
+**Decision:**
+
+* APPROVED-mode inference serves only the APPROVED version; SHADOW mode serves only SHADOW
+  versions.
+* Features are matched by full canonical key (version, parameters, timeframe). Missing,
+  incompatible, non-finite or later-than-decision inputs reject the request.
+* Every request, valid or rejected, is stored with its inputs, their hash, the artifact hash
+  and the model status.
+* `replay` recomputes a stored prediction.
+* The ML engine imports nothing from execution, risk, portfolio or accounting, and a test
+  enforces this.
+
+### D-111 Analytical values are NUMERIC columns
+
+**Decision:** labels, Brier and ECE values are stored as `NUMERIC` (written from exact
+decimal representations, read as floats). This keeps the schema rule that no column is a
+floating-point type (`test_no_floating_point_columns`).
+
+### D-112 Market-context features and evaluation segments
+
+**Decision:** two benchmark features were added under new names (D-091): `benchmark_return`
+and `benchmark_realized_volatility`.
+
+Evaluation segments are descriptive and point in time:
+
+* market trend: the sign of the benchmark's 60-period return;
+* volatility: the asset's realized-volatility percentile, in thirds.
+
+They are not Phase 3B regime classifications. Those are mostly unavailable historically: the
+stored `regime_label` feature was dropped by preprocessing for having one category in
+training.
+
+## Phase 5B — central AI decision engine and LLM integration
+
+### D-113 The coordinator is a pure function of stored inputs and a versioned policy
+
+**Decision:** `app/ai_engine/coordinator/` splits a decision run into three steps:
+
+* `gather`: point-in-time reads into an `InputBundle` (proposals, recorded conflicts, market
+  and asset regimes, Phase 3B asset features, Phase 3A liquidity, pair correlations, Phase 3C
+  news events, stored LLM analyses, recorded ML predictions, strategy track records);
+* `evaluate`: a pure function of the bundle and the policy (no database, clock or LLM);
+* `service`: claims the run, stores every bundle item in `decision_inputs` with its exact
+  payload and sha256, and writes the decisions, components, evidence and conflicts and the
+  run's outcome in one transaction.
+
+`replay(run_id)` rebuilds the bundle from `decision_inputs` alone and re-evaluates it with the
+stored policy parameters; identical decision hashes are the reproducibility check. No data is
+re-read and no provider is called.
+
+**Why:** a decision must be reconstructable from what Atlas knew then, not from a fresh query
+that may see corrected or later data, and not from a new LLM call that may answer differently.
+
+### D-114 Decision policies are data, content-addressed and versioned
+
+**Decision:** every weight, threshold and rule is a field of `DecisionPolicy` (strict pydantic,
+`extra="forbid"`), stored in `decision_policy_versions` by sha256 (a new version only when the
+parameters change) and named by every run. `AI_DECISION_POLICY_FILE` or `--policy FILE` selects
+a JSON policy; the default is documented in code.
+
+**The defaults are not optimal and were not fitted.** There are no traded or backtested outcomes
+to fit them on (Phases 7-8), and the Phase 5A models showed no out-of-sample value. Weights:
+signal quality 0.15, ML support 0.15, agreement 0.10, track record 0.10, regime suitability
+0.10, reward/risk 0.10, trend alignment 0.08, volatility 0.05, liquidity 0.05, cost efficiency
+0.05, data reliability 0.05, news 0.02 (sum 1). News is lowest because LLM labels are
+unverified; ML and signal quality are highest because they are the only direct assessments of
+the opportunity, and ML only counts when an APPROVED model exists.
+
+### D-115 Scores are heuristics; probabilities only from approved, calibrated models
+
+**Decision:** each component is a documented [0, 1] heuristic, or UNAVAILABLE / EXCLUDED with
+its reason; nothing missing is filled with a neutral value. The **heuristic score** is the
+weighted mean over available components (weights renormalized; coverage = available weight /
+total weight). The **ranking score** discounts it by an uncertainty index (coverage gap,
+component dispersion, ML disagreement, reconstructed inputs) and a conflict penalty. Decision
+records keep apart the raw model score, the calibrated probability (only from an APPROVED model
+with CALIBRATED_PROBABILITY output, labelled with its target), the heuristic score and the
+ranking score, and every record carries the note that the scores are not probabilities.
+
+### D-116 Outcomes, rule order and conflicts
+
+**Decision:** proposals are grouped per asset and direction. One strategy counts once (its
+strongest proposal leads); different strategies with entries within 1% are recorded as
+DUPLICATE_PROPOSALS and counted once for capacity. Rules apply in order; the first decides and
+every rule that fires is recorded as a reason:
+
+1. INSUFFICIENT_DATA: coverage below 50 %, or data reliability below 0.5;
+2. REJECT: net reward/risk below 1.0 after costs; a supported expected value <= 0; a market
+   trend regime opposing the strategy family (policy table);
+3. DEFER: inputs older than the timeframe's maximum age; a deferring market volatility regime
+   (EXTREME); uncertainty above 0.6; disagreeing approved models;
+4. opposite-direction opportunities on one asset within 0.15 ranking score of each other both
+   DEFER; otherwise the weaker is DEPRIORITIZED and the stronger keeps a conflict penalty;
+5. PRIORITIZE_FOR_REVIEW at ranking score >= 0.55, unless a higher-ranked opportunity with the
+   same exposure is correlated at |rho| >= 0.8 (CORRELATED_CAPACITY, DEPRIORITIZE) or five
+   are already prioritized; otherwise DEPRIORITIZE.
+
+A run with nothing prioritized also records a NO_OPPORTUNITY decision. Conflicts (opposing
+directions, duplicates, ML disagreement, regime conflict, news contradicting price action,
+correlated capacity) are stored in `decision_conflicts` with how they were handled; consensus
+is never forced. PRIORITIZE_FOR_REVIEW is a candidate for the Phase 6 risk engine, never an
+approval; the records hold no quantity, order or approval field.
+
+### D-117 Expected value only where a validated probability means the right thing
+
+**Decision:** potential reward and adverse move are the distances to the lead proposal's own
+target and invalidation, net of the assumed 10 bps round trip (ASSUMPTION; borrow fees not
+modelled). An **expected value** is SUPPORTED only from an APPROVED model with a calibrated
+probability on a BARRIER target with STRATEGY_LEVELS barriers for the same strategy
+(`p * reward - (1 - p) * adverse`, with a range from the test ECE), or from an approved
+FORWARD_RETURN regression on the same horizon (its estimate, +/- test RMSE). Everything else
+is NOT_SUPPORTED. A direction probability is never turned into a profit estimate.
+
+### D-118 Point-in-time rules for decision inputs
+
+**Decision:** RECORDED runs (`knowledge_at = decision_at`, the only basis of LIVE runs) read a
+row only if it was stored by the decision time: proposals by `created_at` and RECORDED basis;
+supersessions by `recorded_at`; regimes, asset features and correlations by `available_at` and
+RECORDED basis; liquidity by `created_at`; LLM analyses by `available_at`; ML predictions by
+`predicted_at`, model status from events stored by then, and never a model created after the
+decision time. RECONSTRUCTED runs admit rows stored later about periods completed by the
+decision time and are labelled. Context older than `max_context_age_hours` (120) is not used.
+
+### D-119 ML authority rules
+
+**Decision:** only predictions whose model was APPROVED at the decision time, with validation
+PASSED and a test metric not worse than its baseline, contribute. SHADOW predictions are
+recorded as context and never scored; other statuses are excluded with the reason.
+Uncalibrated scores and regression estimates carry half the authority of a calibrated
+probability (`uncalibrated_authority = 0.5`). LIVE runs ask the inference engine for
+point-in-time predictions of APPROVED (and SHADOW) models before fixing the decision time.
+No model is APPROVED today (Phase 5A), so the ML component is UNAVAILABLE in every run.
+
+### D-120 LLM providers over httpx; no SDK dependency
+
+**Decision:** `ai_engine/llm/providers.py` implements Anthropic's Messages API (one tool whose
+`input_schema` is the output schema, forced with `tool_choice`) and OpenAI-compatible chat
+completions (`response_format: json_schema`, strict) over the existing `httpx` dependency. A
+FIXTURE provider exists for tests and cannot be configured. The default is
+`AI_LLM_PROVIDER=none`: nothing is sent and analyses are UNAVAILABLE. The configured model is
+the only model called (no silent fallback). Schemas sent to providers omit keywords some
+structured-output modes reject (lengths, patterns); the full strict pydantic models validate
+every answer locally.
+
+**Why no SDK:** two small, documented HTTP calls do not justify two vendor dependencies.
+
+### D-121 LLM outputs are stored features; untrusted text is data
+
+**Decision:** LLMs run only in asynchronous jobs (CLI, `app.workers.ai_engine`); the
+coordinator imports nothing from `ai_engine.llm` (an AST test enforces it) and reads only
+stored, usable `llm_analyses` available by its decision time. Article text travels as escaped
+JSON inside a delimited data block that the versioned system prompt declares untrusted;
+instruction-like patterns are flagged before sending and the model is asked to report embedded
+instructions; flagged analyses are stored with `usable = false` and never read. Symbols the
+model adds are dropped and flagged. Schemas have no price, size, order or configuration field.
+Labels are `UNVERIFIED_LLM_ESTIMATE`. Conflict explanations are written after a run is final
+and are reading material, never evidence.
+
+### D-122 Spending is bounded, priced and recorded before anything is sent
+
+**Decision:** every call goes through `LLMService`:
+
+1. content-hash cache (task, prompt hash, schema hash, provider, model, input hash);
+2. cool-down after consecutive failures;
+3. admission under an advisory lock (daily and monthly USD budgets including running
+   reservations, a daily request limit, an input-token bound), in the same transaction that
+   records the RUNNING request and its worst-case reservation;
+4. bounded concurrency, a timeout, and retries of rate limits, timeouts and unavailability only
+   (honouring `retry-after`);
+5. strict validation;
+6. response, token-usage and cost records.
+
+Without configured prices every call is refused (UNPRICED). Revisions whose content hash was
+already analysed reuse that analysis; revisions with two invalid answers are skipped. Defaults:
+$0.50 per day, $5 per month, 200 requests per day, batches of 5 articles.
+
+### D-123 Baseline comparison on realized outcomes
+
+**Decision:** `evaluate` compares opportunities the coordinator prioritized with take-all,
+strongest-signal-per-run and not-prioritized groups on realized net outcomes (next open to the
+lead proposal's horizon close, Phase 5A label code, cost assumption), each lead proposal once.
+Below 30 matured coordinator outcomes the verdict is INSUFFICIENT_EVIDENCE; above it, a Welch
+t of at least 2 against take-all (with a positive mean) is reported as
+INCREMENTAL_VALUE_OBSERVED: an observation on overlapping, unsized returns, not proof of an
+edge.

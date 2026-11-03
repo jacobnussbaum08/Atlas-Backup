@@ -3,6 +3,7 @@
 from fastapi import APIRouter
 
 from app.api.v1 import (
+    ai,
     assets,
     discovery,
     intelligence,
@@ -11,6 +12,7 @@ from app.api.v1 import (
     market_data_overview,
     market_data_recovery,
     market_data_stream,
+    ml,
     news,
     strategies,
 )
@@ -26,5 +28,7 @@ router.include_router(discovery.router)
 router.include_router(intelligence.router)
 router.include_router(news.router)
 router.include_router(strategies.router)
+router.include_router(ml.router)
+router.include_router(ai.router)
 
 __all__ = ["router"]

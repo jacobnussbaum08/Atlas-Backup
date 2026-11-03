@@ -2,6 +2,7 @@ import {
   Activity,
   BrainCircuit,
   CandlestickChart,
+  Cpu,
   DatabaseZap,
   FlaskConical,
   HeartPulse,
@@ -27,7 +28,7 @@ export interface NavSection {
   summary: string;
 }
 
-/** Pages backed by real backend data (Phase 1, the Phase 2 market-data engine, Phases 3A-3C, 4A). */
+/** Pages backed by real backend data (Phase 1, the Phase 2 market-data engine, Phases 3A-3C, 4A-4B, 5A-5B). */
 export const NAV_SECTIONS: readonly NavSection[] = [
   {
     path: "/",
@@ -78,6 +79,22 @@ export const NAV_SECTIONS: readonly NavSection[] = [
     summary: "Strategy catalog, immutable versions, parameters, proposals and evaluation history.",
   },
   {
+    path: "/ml",
+    title: "Machine Learning",
+    icon: Cpu,
+    specSection: "12.2",
+    phase: 5,
+    summary: "Point-in-time datasets, walk-forward training runs, calibration evidence, the model registry and predictions.",
+  },
+  {
+    path: "/ai",
+    title: "Central AI Activity",
+    icon: BrainCircuit,
+    specSection: "22.3",
+    phase: 5,
+    summary: "Evaluated and ranked opportunities, rejections and their reasons, conflicts, model and news inputs, and LLM usage and cost.",
+  },
+  {
     path: "/data-health",
     title: "Data Health",
     icon: DatabaseZap,
@@ -116,14 +133,6 @@ export const NAV_SECTIONS: readonly NavSection[] = [
  * phase; their URLs render an explicit "not built" page with no numbers.
  */
 export const UPCOMING_SECTIONS: readonly NavSection[] = [
-  {
-    path: "/ai",
-    title: "AI Intelligence",
-    icon: BrainCircuit,
-    specSection: "22.3",
-    phase: 5,
-    summary: "Proposals, decisions, evidence, model predictions and news analysis.",
-  },
   {
     path: "/portfolio",
     title: "Portfolio",

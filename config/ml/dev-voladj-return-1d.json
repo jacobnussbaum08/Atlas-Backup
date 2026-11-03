@@ -1,0 +1,29 @@
+{
+  "name": "dev-voladj-return-1d",
+  "description": "REDACTED_FOR_GITHUB",
+  "source": "PERIOD_CLOSE",
+  "universe": "FIXED_ASSETS",
+  "symbols": ["REDACTED_FOR_GITHUB"],
+  "timeframes": ["1Day"],
+  "directions": ["LONG", "SHORT"],
+  "decision_start": "2025-12-01T00:00:00Z",
+  "decision_end": "2026-10-30T23:59:00Z",
+  "data_known_at": "2026-11-03T06:00:00Z",
+  "features": [
+    {"name": "return", "params": {"periods": 5}},
+    {"name": "return", "params": {"periods": 20}},
+    {"name": "rsi", "params": {"length": 14}},
+    {"name": "atr_pct", "params": {"length": 14}},
+    {"name": "zscore", "params": {"length": 20}},
+    {"name": "bollinger_percent_b", "params": {"length": 20, "k": 2.0}},
+    {"name": "realized_volatility", "params": {"length": 20}},
+    {"name": "log_slope_tstat", "params": {"length": 20}},
+    {"name": "close_location", "params": {}},
+    {"name": "volume_ratio", "params": {"short": 5, "long": 20}, "optional": true},
+    {"name": "relative_return", "params": {"periods": 20, "benchmark": "SPY"}, "optional": true},
+    {"name": "benchmark_return", "params": {"periods": 20, "benchmark": "SPY"}, "optional": true},
+    {"name": "benchmark_realized_volatility", "params": {"length": 20, "benchmark": "SPY"}, "optional": true},
+    {"name": "regime_label", "params": {"dimension": "TREND", "scope": "MARKET"}, "optional": true}
+  ],
+  "target": {"kind": "VOL_ADJUSTED_RETURN", "horizon_periods": 5, "entry": "NEXT_OPEN", "round_trip_cost_bps": 10}
+}

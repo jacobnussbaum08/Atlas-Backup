@@ -557,6 +557,16 @@ def _relative_return(asset: BarWindow, benchmark: BarWindow, p: Params) -> float
     return None if mine is None or theirs is None else mine - theirs
 
 
+def _benchmark_return(asset: BarWindow, benchmark: BarWindow, p: Params) -> float | None:
+    return ind.roc(benchmark.close, _int(p, "periods"))[-1]
+
+
+def _benchmark_volatility(asset: BarWindow, benchmark: BarWindow, p: Params) -> float | None:
+    return _last(
+        ind.rolling_volatility(benchmark.close, _int(p, "length"), benchmark.periods_per_year)
+    )
+
+
 def _symbol(p: Params) -> str | None:
     value = str(p["benchmark"])
     return None if SYMBOL_PATTERN.match(value) else "benchmark must be an upper-case ticker"
@@ -1007,7 +1017,48 @@ def _benchmark_definitions() -> list[FeatureDefinition]:
             window=lambda p: _int(p, "periods") + 1,
             pair_compute=_relative_return,
             check=_symbol,
-        )
+        ),
+        # --- Phase 5A additions (new names): broad-market context for ML datasets -------
+        FeatureDefinition(
+            name="benchmark_return",
+            version=V1,
+            source=FeatureSource.BENCHMARK,
+            description="The benchmark's own simple return over `periods` completed periods "
+            "(broad-market direction, measured on the asset's periods).",
+            method="roc(benchmark close, periods) (indicators.roc); the benchmark's bars must "
+            "cover exactly the asset's completed, settled periods",
+            parameters=(
+                Parameter("periods", int, 20, "periods in the return", 1, 260),
+                Parameter("benchmark", str, "SPY", "benchmark symbol (an Atlas asset)"),
+            ),
+            timeframes=BAR_TIMEFRAMES,
+            required_data=("bars.close", "benchmark bars.close"),
+            availability="the newest availability among the completed bars of both windows",
+            window_rule="periods + 1",
+            window=lambda p: _int(p, "periods") + 1,
+            pair_compute=_benchmark_return,
+            check=_symbol,
+        ),
+        FeatureDefinition(
+            name="benchmark_realized_volatility",
+            version=V1,
+            source=FeatureSource.BENCHMARK,
+            description="Annualized realized volatility of the benchmark's log returns "
+            "(broad-market volatility, measured on the asset's periods).",
+            method="sample stdev (ddof 1) of the benchmark's last `length` log returns * "
+            "sqrt(periods per year) (indicators.rolling_volatility)",
+            parameters=(
+                Parameter("length", int, 20, "returns in the calculation", 2, 260),
+                Parameter("benchmark", str, "SPY", "benchmark symbol (an Atlas asset)"),
+            ),
+            timeframes=BAR_TIMEFRAMES,
+            required_data=("bars.close", "benchmark bars.close"),
+            availability="the newest availability among the completed bars of both windows",
+            window_rule="length + 1",
+            window=lambda p: _int(p, "length") + 1,
+            pair_compute=_benchmark_volatility,
+            check=_symbol,
+        ),
     ]
 
 

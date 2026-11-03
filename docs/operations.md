@@ -563,6 +563,181 @@ Inspect results: `GET /api/v1/strategies/evaluations?signal_state=NO_SIGNAL` (an
 states), `GET /api/v1/strategies/proposals/{id}` (levels, evidence, conflicts) and
 `GET /api/v1/strategies/conflicts`. The dashboard's Strategy Laboratory page shows the same.
 
+## Machine learning (Phase 5A)
+
+Prerequisites: the database at head (migration 0011), and the ML dependencies installed
+(`uv sync`). Decisions D-099 to D-112.
+
+Everything runs through the CLI from the repository root (it reads `.env` there). Nothing here
+sizes, approves or submits a trade, and no model is ever promoted automatically.
+
+**1. Build a dataset version** from a JSON specification. `config/ml/` holds the specifications
+used for the Phase 5A real-data runs. The command prints the version id, counts and warnings:
+
+```bash
+uv run python -m app.ml_engine.cli build-dataset --spec config/ml/dev-direction-1d.json
+```
+
+Fix `data_known_at` in the specification: a rebuild of the same specification against the
+same stored data then reproduces it exactly. Check that with:
+
+```bash
+uv run python -m app.ml_engine.cli verify-dataset --version <dataset-version-id>
+```
+
+**2. Train.** Either the defaults:
+
+```bash
+uv run python -m app.ml_engine.cli train --dataset-version <id> --model XGBOOST
+```
+
+or a JSON `TrainingSpec`, with hyperparameters or a grid of at most 12 candidates, splits,
+CPCV, preprocessing and filters:
+
+```bash
+uv run python -m app.ml_engine.cli train --spec my-run.json
+```
+
+Every run registers a CANDIDATE model version and records:
+
+* its periods;
+* its walk-forward folds;
+* its test metrics against baselines;
+* calibration evidence;
+* the evidence verdict (`validation_status`).
+
+`test_period_reuse` counts earlier runs that already looked at the same test period. Treat a
+growing count as erosion of that period's independence.
+
+**3. Lifecycle.** Each step is an explicit, audited decision:
+
+```bash
+uv run python -m app.ml_engine.cli transition --model <id> --status VALIDATED --reason "..."
+```
+
+The API equivalent needs the operator token outside development:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/ml/models/<id>/status -H 'Content-Type: application/json' -H "X-Atlas-Operator-Token: $ATLAS_OPERATOR_TOKEN" -d '{"status": "VALIDATED", "reason": "..."}'
+```
+
+* VALIDATED and APPROVED need a PASSED evidence verdict.
+* APPROVED needs SHADOW first.
+* A second APPROVED version of the same name is refused until the first is RETIRED.
+
+**4. Predict** point in time (RECORDED inputs, recorded in `ml_predictions`):
+
+```bash
+uv run python -m app.ml_engine.cli predict --model <id> --symbol SPY --at 2026-10-30T22:00:00Z --mode SHADOW
+```
+
+`APPROVED` mode serves only the approved version, and `SHADOW` only shadow versions. Other
+requests are recorded as REJECTED_MODEL_STATUS. Check a stored prediction with:
+
+```bash
+uv run python -m app.ml_engine.cli replay --prediction <id>
+```
+
+**Artifacts** are written to `ML_ARTIFACT_DIR` (default `data/ml/artifacts`, git-ignored) and
+are loaded only if their sha256 matches the registry.
+
+* The compose `backend` mounts the volume `ml-artifacts` there. Train inside the container
+  (`docker compose run --rm backend python -m app.ml_engine.cli train ...`) when the API
+  should serve the model.
+* Artifacts trained on the host are not visible to the container: replay and inference
+  report REJECTED_ARTIFACT for them.
+* Back the directory or volume up together with the database: an artifact cannot be
+  recreated bit for bit without the same library versions.
+
+Inspect: the dashboard's **Machine Learning** page, or `GET /api/v1/ml/overview`, `/runs`,
+`/runs/{id}`, `/models`, `/models/{id}`, `/compare?run_ids=...`, `/datasets` and `/predictions`.
+
+## AI decision engine and LLM (Phase 5B)
+
+Prerequisites: the database at head (migration 0012) and the strategy catalog synced
+(`python -m app.strategies.cli sync`; the strategy worker does this on start). Decisions D-113
+to D-123. Nothing here sizes, approves or submits a trade: a PRIORITIZE_FOR_REVIEW decision is
+a candidate for the future risk engine (Phase 6).
+
+Everything runs from the repository root (it reads `.env` there).
+
+**Decision runs.** A LIVE run decides now from RECORDED information; it first asks the ML
+engine for point-in-time predictions of APPROVED (used) and SHADOW (context only) models:
+
+```bash
+uv run python -m app.ai_engine.cli decide
+```
+
+A historical run at one decision time, strictly RECORDED (only rows stored by then) or
+RECONSTRUCTED (rows stored later about periods completed by then; labelled):
+
+```bash
+uv run python -m app.ai_engine.cli decide --at 2026-10-30T21:00:00Z --basis RECORDED
+```
+
+Every session close plus the settle delay in a range (repeats return the existing run):
+
+```bash
+uv run python -m app.ai_engine.cli decide-range --start 2026-09-01T00:00:00Z --end 2026-10-30T23:59:00Z --basis RECONSTRUCTED
+```
+
+**Replay** re-evaluates a stored run from its stored inputs (no re-read, no LLM call) and
+compares hashes; `result_identical: true` is the reproducibility check:
+
+```bash
+uv run python -m app.ai_engine.cli replay --run <run-id>
+```
+
+**Baselines.** Compare prioritized decisions with take-all and strongest-signal baselines on
+realized net outcomes known now (stored in `decision_evaluations`):
+
+```bash
+uv run python -m app.ai_engine.cli evaluate --start 2026-08-01T00:00:00Z
+```
+
+**Policy.** `python -m app.ai_engine.cli policy` prints the current policy and its sha256.
+Pass `--policy FILE` (before the command) or set `AI_DECISION_POLICY_FILE` to use a JSON
+policy; a changed policy is registered as a new version on first use.
+
+**LLM analysis** is off and costs nothing by default (`AI_LLM_PROVIDER=none`). To enable it, set
+in `.env` (never commit a key):
+
+```
+AI_LLM_PROVIDER=anthropic            # or openai_compatible (+ AI_LLM_BASE_URL)
+AI_LLM_MODEL=<exact model id>
+AI_LLM_API_KEY=<key>
+AI_LLM_INPUT_USD_PER_MTOK=<price>    # from the provider's price list
+AI_LLM_OUTPUT_USD_PER_MTOK=<price>
+AI_LLM_PRICING_SOURCE=<where the prices came from, and when>
+```
+
+Without both prices every call is refused (UNPRICED). Budgets: `AI_LLM_DAILY_BUDGET_USD`
+(0.50), `AI_LLM_MONTHLY_BUDGET_USD` (5.00), `AI_LLM_MAX_REQUESTS_PER_DAY` (200). Then:
+
+```bash
+uv run python -m app.ai_engine.cli analyze-news
+uv run python -m app.ai_engine.cli explain-conflicts
+uv run python -m app.ai_engine.cli research --symbol SPY
+uv run python -m app.ai_engine.cli usage
+```
+
+**Worker.** `python -m app.workers.ai_engine` (compose `ai-worker`) runs three independent
+loops, each off unless enabled: `AI_DECISIONS_ENABLED` (a LIVE run every
+`AI_DECISIONS_INTERVAL_SECONDS`), `AI_NEWS_ANALYSIS_ENABLED` and
+`AI_CONFLICT_EXPLANATIONS_ENABLED`. With all off it exits 0. A slow or unavailable LLM never
+delays a decision run.
+
+**Real-provider smoke test** (one small request, a fraction of a cent at small-model prices):
+
+```bash
+ATLAS_LIVE_PROVIDER_TESTS=1 ATLAS_TEST_DATABASE_URL=... uv run pytest -m live backend/app/tests/live/test_llm_live.py
+```
+
+**API** (read-only): `/api/v1/ai/overview`, `/runs`, `/runs/{id}`, `/runs/{id}/replay`,
+`/rankings`, `/decisions`, `/decisions/{id}`, `/decisions/{id}/evidence`,
+`/decisions/{id}/models`, `/conflicts`, `/policies`, `/llm/analyses`, `/llm/requests`,
+`/llm/usage`, `/evaluations`. Dashboard: **Central AI Activity** (`/ai`).
+
 ## Backup and restore
 
 ```bash

@@ -85,6 +85,30 @@ def test_expected_tables_exist():
         "strategy_proposals",
         "strategy_proposal_events",
         "strategy_proposal_conflicts",  # Phase 4B
+        "ml_datasets",  # Phase 5A
+        "ml_dataset_versions",
+        "ml_dataset_observations",
+        "ml_training_runs",
+        "ml_model_artifacts",
+        "ml_model_versions",
+        "ml_model_status_events",
+        "ml_model_evaluations",
+        "ml_calibration_results",
+        "ml_predictions",
+        "decision_policies",  # Phase 5B
+        "decision_policy_versions",
+        "decision_runs",
+        "decision_inputs",
+        "ai_decisions",
+        "decision_evidence",
+        "decision_scoring_components",
+        "decision_conflicts",
+        "decision_evaluations",
+        "llm_requests",
+        "llm_responses",
+        "llm_token_usage",
+        "llm_cost_records",
+        "llm_analyses",
     }
 
 
