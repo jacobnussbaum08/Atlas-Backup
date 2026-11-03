@@ -1,4 +1,5 @@
-"""Technical indicators (Phase 3B): pure, causal functions over oldest-first series.
+"""Technical indicators (Phase 3B; RSI, MACD, Bollinger bands, volume ratio and prior
+extremes added in Phase 4A): pure, causal functions over oldest-first series.
 
 Every function returns a list aligned with its input. Position ``i`` uses inputs ``0..i``
 only (nothing looks ahead), and is ``None`` where there is not enough history or the value
@@ -15,6 +16,8 @@ Definitions follow their original authors so values can be checked against refer
   deviations (Bollinger), i.e. ``2 k sigma / mu``.
 * Realized volatility: sample standard deviation (ddof 1) of log returns, annualized with
   the square root of the periods per year.
+* RSI: Wilder (1978), Wilder-smoothed gains and losses.
+* MACD: Appel, EMA(fast) - EMA(slow), signal EMA of the line, histogram the difference.
 
 Floats are used here (analytics); persisted values are rounded ``Decimal`` (spec 3.5).
 """
@@ -193,6 +196,96 @@ def bollinger_width(values: Values, n: int, k: float = 2.0) -> Optional:
     return out
 
 
+def rsi(values: Values, n: int) -> Optional:
+    """Relative strength index, Wilder (1978): ``100 - 100 / (1 + avg_gain / avg_loss)``
+    with Wilder-smoothed gains and losses of the close-to-close changes. The first value is
+    at index ``n``. A window without losses is 100; one without any change is undefined."""
+    _check(n)
+    gains: list[float | None] = [None] * len(values)
+    losses: list[float | None] = [None] * len(values)
+    for i in range(1, len(values)):
+        change = values[i] - values[i - 1]
+        gains[i], losses[i] = max(change, 0.0), max(-change, 0.0)
+    avg_gain, avg_loss = wilder(gains, n), wilder(losses, n)
+    out: Optional = [None] * len(values)
+    for i in range(len(values)):
+        gain, loss = avg_gain[i], avg_loss[i]
+        if gain is None or loss is None:
+            continue
+        if loss == 0:
+            out[i] = None if gain == 0 else 100.0
+        else:
+            out[i] = 100.0 - 100.0 / (1.0 + gain / loss)
+    return out
+
+
+def macd(values: Values, fast: int, slow: int, signal: int) -> tuple[Optional, Optional, Optional]:
+    """(MACD line, signal line, histogram), Appel: ``EMA_fast - EMA_slow``, its EMA over
+    ``signal`` values, and their difference. The first line value is at ``slow - 1``, the
+    first signal and histogram at ``slow + signal - 2``."""
+    _check(fast)
+    _check(signal)
+    if fast >= slow:
+        raise ValueError("the fast period must be shorter than the slow period")
+    fast_ema, slow_ema = ema(values, fast), ema(values, slow)
+    line: Optional = [
+        None if f is None or s is None else f - s for f, s in zip(fast_ema, slow_ema, strict=True)
+    ]
+    start = slow - 1
+    signal_line: Optional = [None] * len(values)
+    if len(values) > start:
+        defined = [v for v in line[start:] if v is not None]
+        signal_line[start:] = ema(defined, signal)
+    histogram: Optional = [
+        None if m is None or s is None else m - s for m, s in zip(line, signal_line, strict=True)
+    ]
+    return line, signal_line, histogram
+
+
+def bollinger_bands(values: Values, n: int, k: float = 2.0) -> tuple[Optional, Optional, Optional]:
+    """(middle, upper, lower): SMA ``n`` and ``k`` population standard deviations around it
+    (Bollinger). ``bollinger_width`` is the matching relative width."""
+    _check(n)
+    middle: Optional = [None] * len(values)
+    upper: Optional = [None] * len(values)
+    lower: Optional = [None] * len(values)
+    for i in range(n - 1, len(values)):
+        window = values[i - n + 1 : i + 1]
+        mean = sum(window) / n
+        sd = stdev(window, ddof=0)
+        if sd is None:
+            continue
+        middle[i], upper[i], lower[i] = mean, mean + k * sd, mean - k * sd
+    return middle, upper, lower
+
+
+def volume_ratio(volumes: Sequence[float | None], short: int, long: int) -> float | None:
+    """Mean of the newest ``short`` volumes over the mean of the newest ``long`` (which
+    include them). ``None`` if fewer than ``long`` values, any value is missing (missing
+    volume is never zero) or the long mean is not positive."""
+    _check(short)
+    if short > long:
+        raise ValueError("the short window must not exceed the long window")
+    window = volumes[-long:]
+    if len(window) < long or any(v is None for v in window):
+        return None
+    present = [v for v in window if v is not None]
+    average = sum(present) / long
+    if average <= 0:
+        return None
+    return sum(present[-short:]) / short / average
+
+
+def prior_extreme(values: Values, n: int, *, highest: bool) -> float | None:
+    """Highest (or lowest) of the ``n`` values *before* the newest one, so the newest bar can
+    be compared with a level that was already known when it started."""
+    _check(n)
+    if len(values) < n + 1:
+        return None
+    window = values[-n - 1 : -1]
+    return max(window) if highest else min(window)
+
+
 def percentile_rank(history: Values, value: float) -> float | None:
     """Mid-rank percentile of ``value`` within ``history`` (0..1); ties count half."""
     if not history:
@@ -279,18 +372,23 @@ def _same_length(*series: Sequence[float]) -> None:
 
 __all__ = [
     "atr",
+    "bollinger_bands",
     "bollinger_width",
     "directional_movement",
     "ema",
     "log_returns",
     "log_slope",
+    "macd",
     "pearson",
     "percentile_rank",
+    "prior_extreme",
     "roc",
     "rolling_volatility",
+    "rsi",
     "sma",
     "stdev",
     "swing_structure",
     "true_range",
+    "volume_ratio",
     "wilder",
 ]

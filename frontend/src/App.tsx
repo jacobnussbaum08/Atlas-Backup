@@ -15,6 +15,8 @@ import { NewsPage } from "./pages/NewsPage";
 import { OverviewPage } from "./pages/OverviewPage";
 import { SectionPlaceholderPage } from "./pages/SectionPlaceholderPage";
 import { SettingsPage } from "./pages/SettingsPage";
+import { StrategiesPage } from "./pages/StrategiesPage";
+import { StrategyDetailPage } from "./pages/StrategyDetailPage";
 import { SystemHealthPage } from "./pages/SystemHealthPage";
 
 // The chart library is only needed on the asset page: load it with that page.
@@ -41,6 +43,8 @@ export function App({ pollIntervalMs }: { pollIntervalMs?: number }) {
         <Route path="/intelligence" element={<IntelligencePage />} />
         <Route path="/news" element={<NewsPage />} />
         <Route path="/news/articles/:articleId" element={<NewsArticlePage />} />
+        <Route path="/strategies" element={<StrategiesPage />} />
+        <Route path="/strategies/:strategyId" element={<StrategyDetailPage />} />
         <Route path="/data-health" element={<DataHealthPage />} />
         <Route path="/ingestion" element={<IngestionPage />} />
         <Route path="/system-health" element={<SystemHealthPage />} />

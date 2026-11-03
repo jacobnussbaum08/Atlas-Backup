@@ -33,7 +33,8 @@ It supersedes all earlier specifications.
 | 1 — Foundation | Repo, config, logging, DB + migrations, Redis, API health/readiness, dashboard shell, tests | Implemented. See [docs/phase-reports/phase-1-report.md](docs/phase-reports/phase-1-report.md) |
 | 2 — Market data | 2A provider architecture ✅. 2B historical retrieval ✅ (live-verified for AAPL and SPY on IEX). 2C live streaming ✅ (stream worker; live-verified: real IEX quotes, trades and bars for AAPL and SPY persisted). 2D reliability and recovery ✅ (completeness evidence, gap detection, recovery worker; live-verified recovery of real outages from Alpaca's IEX history). 2E market-data dashboard ✅ (overview, markets, asset charts, data health, ingestion, settings on real stored data; live chart updates over SSE verified end to end with a mock provider stream, not yet during a real trading session) | Implemented; real-session live-update check outstanding. Reports in [docs/phase-reports/](docs/phase-reports/) |
 | 3 — Discovery, intelligence, news | 3A asset discovery and universe ✅. 3B market intelligence ✅ (descriptive regimes, participation, correlation). 3C news and event intelligence ✅ (Alpaca news REST + real-time stream live-verified; append-only revisions, effective-dated asset mapping, versioned keyword classification; no economic-calendar provider) | Implemented. Reports in [docs/phase-reports/](docs/phase-reports/) |
-| 4–11 | Strategy laboratory → autonomous paper trading | Not started |
+| 4 — Strategy laboratory | 4A foundation ✅ (strategy interface, six family modules with parameter schemas and feature dependencies but no logic yet, central feature registry, immutable versions, point-in-time feature snapshots, idempotent evaluation engine and worker, standardized proposals, Strategy Laboratory page). 4B strategy logic: not started | 4A implemented. Report in [docs/phase-reports/](docs/phase-reports/) |
+| 5–11 | AI/ML engine → autonomous paper trading | Not started |
 
 ## Stack
 
@@ -133,7 +134,9 @@ backend/
                           NYSE calendar, completeness and recovery
     database/             ORM models, repositories, engine/session management
     workers/              background processes (market_data_stream: live stream worker;
-                          market_data_recovery: gap detection and backfill)
+                          market_data_recovery: gap detection and backfill; news_stream;
+                          strategy_evaluation: proposals only)
+    strategies/           strategy interface, six family modules, versions, evaluation engine
     monitoring/           dependency health checks
     <future modules>/     documented placeholders (data_engine, risk, accounting, …)
     tests/                unit/ (no services) and integration/ (real PostgreSQL/Redis)

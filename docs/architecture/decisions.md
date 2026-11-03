@@ -1046,3 +1046,126 @@ entities once, remove control and bidirectional-format characters, cap lengths, 
 URLs only when absolute http(s) without credentials (`javascript:`/`data:` rejected). The
 dashboard renders every field as React text and links out only to http(s) URLs with
 `rel="noopener noreferrer nofollow"`. Missing fields stay `null`.
+
+## Phase 4A — strategy laboratory foundation
+
+### D-082 Strategies are self-describing modules; Phase 4A families have no logic
+
+**Decision:** a strategy is a `Strategy` subclass (`app/strategies/base.py`) with declarative
+metadata (`strategy_id`, family, name, description, `logic_version`, supported asset classes
+and timeframes, evaluation schedule, a frozen pydantic `Parameters` class) and two methods:
+`required_features(params, timeframe)` and `evaluate(ctx, params) -> StrategyOutcome`. Each
+family is one module in `app/strategies/families/` exposing `STRATEGY`; the registry
+discovers them (`pkgutil`), so adding a strategy touches no other strategy module. A strategy
+is validated when registered: id format, metadata, default parameters, data-backed
+timeframes, and every required feature resolving in the feature registry.
+
+The six families (momentum, trend following, mean reversion, breakout, volatility, event
+driven) ship as `InterfaceOnlyStrategy` (`implemented = False`): parameter schemas and
+feature dependencies, no trading logic (Phase 4B). The engine never plans them and
+enabling them is refused (409). The engine is exercised by TEST FIXTURE strategies only.
+
+**Why:** the prompt reserves strategy logic for Phase 4B; an "enabled" strategy that cannot
+evaluate would be a misleading state.
+
+### D-083 Versions are immutable (logic version + configuration); status is an event log
+
+**Decision:** `strategy_configurations` are content-addressed parameter sets (every field
+explicit, decimals as strings, sha256 per strategy). `strategy_versions` number the pairs
+(logic version, configuration) together with the metadata the code declared then
+(description, timeframes, schedule, resolved feature keys, registry version); the newest is
+current. A new version is created when an operator posts new parameters (partial updates
+merge onto the current version's values; identical parameters return the current version) or
+when a catalog sync finds the code's logic version or metadata changed (same configuration).
+If the stored configuration no longer validates against the code's schema, sync reports a
+problem and creates nothing: parameters are never changed silently. Enable/disable is
+`strategy_status_events` (append-only, newest wins, no event = disabled). All of these tables
+are append-only (migration 0009 triggers); changes are audited (`audit_logs`).
+
+### D-084 One feature registry over the existing indicators; fixed windows
+
+**Decision:** `app/feature_engine/registry.py` describes every feature (name, version, source,
+method, typed parameters with bounds, timeframes, required data, availability rule, value
+kind, window rule) and gives each resolved feature a canonical key, e.g.
+`ema.v1(length=20)@1Day`. Bar features call `app/feature_engine/indicators.py`: the Phase 3B
+functions (SMA, EMA, Wilder ATR/DMI/ADX, ROC, realized volatility, Bollinger width,
+percentile rank) plus new RSI (Wilder), MACD (Appel), Bollinger bands, volume ratio and prior
+extremes. Phase 3B's private volume-ratio helper now delegates to `indicators.volume_ratio`
+(identical formula; `features-v1` values unchanged, tested). Each value uses exactly the
+newest `window(params)` completed periods (EMA/Wilder seeded inside a window that is a
+multiple of the period), so more stored history cannot change it. Definitions are registered
+in `feature_definitions` with a sha256; a changed definition under an existing version is
+refused at sync.
+
+### D-085 Strategy inputs are point in time; completed periods only
+
+**Decision:** an evaluation has a data cutoff and a knowledge time. Periods are those whose
+regular close plus `STRATEGY_SETTLE_SECONDS` passed by the cutoff (`completed_sessions`; weekly
+periods are complete ISO weeks with every session's bar); bars are the newest revision stored
+by the knowledge time (`reads.daily_bars`, as Phase 3B), VALID only. `RECORDED` (live and
+strict historical) uses `known_at = cutoff`; `RECONSTRUCTED` re-evaluates a past cutoff with
+data retrieved later and is labelled. A missing period inside a window is `MISSING_INPUTS`,
+too little history `INSUFFICIENT_DATA`, a zero denominator `UNDEFINED`; nothing is filled. The
+values, statuses, reasons and availability times are stored in a content-addressed
+`strategy_feature_snapshots` row (CHECKs: `RECORDED` inputs available by the cutoff, no period
+after it). The engine calls a strategy only when every required feature is VALID; otherwise
+the evaluation is `SKIPPED` with the reasons.
+
+### D-086 News and regime features never invent information
+
+**Decision:** news features (`news_event_count`, `news_hours_since_latest`) count articles
+directly related to the asset (Phase 3C relationships, newest event per article known at the
+knowledge time, optional category and minimum relevance) only when completed retrieval jobs
+or subscribed stream sessions covered the whole look-back window as known then; otherwise
+they are `UNAVAILABLE` ("absence of articles is unknown"), never zero. Regime features read
+the newest stored Phase 3B classification with `as_of <= cutoff` (RECORDED evaluations use
+only RECORDED classifications) and are `UNAVAILABLE` beyond `max_age_hours`. The event-driven
+family requires its news counts (not optional), so missing coverage blocks it.
+
+**Limitation:** coverage is inferred from job ranges and stream sessions; a stream session
+still running counts up to the knowledge time only while its status heartbeat is fresh.
+
+### D-087 The standardized proposal is a hypothesis
+
+**Decision:** `strategy_proposals` holds the spec 11.7 / prompt fields: id, strategy and
+version, asset, market (asset class), direction (LONG/SHORT), timeframe, signal time, data
+cutoff, feature snapshot ids, reference entry, optional invalidation and target (CHECKed to
+the correct side), holding horizon in periods, signal strength in [0, 1] with
+`strength_kind = UNCALIBRATED_SCORE`, evidence, reasoning, expiry. No quantity, order type or
+approval state exists. Every evidence item must name a VALID feature of the evaluation's
+snapshot (the engine copies its value and availability). Expiry is the close of the
+`signal_ttl_periods`-th period ending after the signal on the exchange calendar. Status is
+derived at read time (ACTIVE, EXPIRED, SUPERSEDED); `strategy_proposal_events` records expiry
+(when Atlas noticed) and supersession by a newer LIVE proposal of the same strategy, asset,
+timeframe and direction. Expected transaction costs (spec 11.7) are left to the risk and
+execution phases, which own cost models.
+
+### D-088 Evaluation engine: idempotent claims, leases, outcome written once
+
+**Decision:** an evaluation's idempotency key hashes (version, asset, timeframe, mode, basis,
+trigger, trigger reference: the completed period or news event). A claim runs under an
+advisory lock on the key; a partial unique index allows one non-failed evaluation per key.
+Duplicates and in-progress claims return without work; a RUNNING evaluation whose lease
+expired is failed as `INTERRUPTED` and retried; after `STRATEGY_MAX_ATTEMPTS` failures the
+update is given up. The outcome is written in one transaction only if the evaluation is still
+RUNNING and owned by this worker; a trigger (`atlas_strategy_evaluation_guard`) allows the
+single RUNNING -> outcome transition and nothing else. Failures are recorded by stage
+(INPUTS, STRATEGY, VALIDATION, TIMEOUT, PERSISTENCE, INTERRUPTED; messages redacted).
+`evaluate_many` bounds concurrency (`STRATEGY_MAX_CONCURRENCY`) and time
+(`STRATEGY_EVALUATION_TIMEOUT_SECONDS`); a timed-out strategy thread cannot be killed, so its
+late result is discarded by the ownership check.
+
+Updates are detected by polling (`app/strategies/triggers.py`): the newest completed session
+with a VALID stored bar per qualified-universe member (and the week when it ends one), and
+news events since the previous check. Re-detection is harmless because of the keys, so no
+cursor needs to be durable.
+
+**Why polling:** PostgreSQL is the source of truth; LISTEN/NOTIFY or Redis streams would add
+a second delivery path for little gain at daily granularity.
+
+### D-089 The Strategy Laboratory page is read-only and shows no performance
+
+**Decision:** the dashboard shows the catalog, versions, parameters, required features,
+status history, proposals and evaluation history, and the feature registry. It has no
+enable, parameter or execution controls (those are operator API calls) and shows no
+performance statistics: none exist until strategies trade or are backtested (Phases 7-8).

@@ -268,13 +268,9 @@ def _relative_strength(
 
 
 def _volume_ratio(recent: Sequence[float | None], window: Sequence[float | None]) -> float | None:
-    if any(v is None for v in window) or not recent:
-        return None  # missing volume is never treated as zero
-    total = [v for v in window if v is not None]
-    average = sum(total) / len(total) if total else 0.0
-    if average <= 0:
+    if not recent or not window:
         return None
-    return sum(v for v in recent if v is not None) / len(recent) / average
+    return ind.volume_ratio(window, len(recent), len(window))  # missing volume stays missing
 
 
 def weekly_bars(

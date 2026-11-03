@@ -467,6 +467,60 @@ economic-calendar status (no calendar provider is connected, D-077), category co
 historical-retrieval form (operator token outside development). Point-in-time reads:
 `GET /api/v1/news/articles?known_at=...`.
 
+## Strategy laboratory (Phase 4A)
+
+Prerequisites: the database at head (migration 0009). Settings: `STRATEGY_*` in
+`.env.example` (decisions D-082 to D-089). Strategy parameters are not settings: they are
+immutable versions in PostgreSQL.
+
+Phase 4A ships six strategy families with interfaces, parameter schemas and feature
+dependencies but no evaluation logic (Phase 4B): none is evaluated, none can be enabled, and
+no proposals exist yet. Nothing here sizes, approves or submits a trade.
+
+1. Register the catalog (feature definitions, strategies, version 1 of each). The API and
+   the worker also do this on first use; it is idempotent:
+
+   ```bash
+   uv run python -m app.strategies.cli sync
+   uv run python -m app.strategies.cli list
+   ```
+
+2. Inspect the point-in-time features a strategy would receive for an asset (computed,
+   not stored; `--at` for a past cutoff, `--basis reconstructed` to use data retrieved
+   later). Missing or unsettled periods show as `MISSING_INPUTS`, never as values:
+
+   ```bash
+   uv run python -m app.strategies.cli features --strategy mean_reversion --symbol SPY --at 2026-11-02T08:00:00Z
+   ```
+
+3. New parameters create a new immutable version (operator token outside development;
+   unspecified parameters keep their current values):
+
+   ```bash
+   curl -X POST http://127.0.0.1:8000/api/v1/strategies/breakout/versions \
+     -H 'Content-Type: application/json' -H "X-Atlas-Operator-Token: $ATLAS_OPERATOR_TOKEN" \
+     -d '{"parameters": {"channel_length": 55}, "reason": "longer range"}'
+   ```
+
+   `POST /api/v1/strategies/{id}/status` enables or disables a strategy; strategies without
+   logic are refused (409).
+
+4. The evaluation worker (proposals only). Set `STRATEGY_WORKER_ENABLED=true`, then:
+
+   ```bash
+   docker compose up -d strategy-worker
+   ```
+
+   Every `STRATEGY_WORKER_INTERVAL_SECONDS` it records proposal expiry, detects completed
+   periods (a VALID stored daily bar for the newest settled session, per qualified-universe
+   member) and news events, and evaluates enabled strategies with logic. Duplicates are
+   skipped by idempotency key; failures are recorded per evaluation and retried up to
+   `STRATEGY_MAX_ATTEMPTS`. With the flag off it exits 0.
+
+The dashboard's **Strategy Laboratory** page shows the catalog, versions, parameters,
+required features, status history, proposals and evaluation history (read-only; no
+performance statistics exist).
+
 ## Backup and restore
 
 ```bash

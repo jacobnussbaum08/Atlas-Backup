@@ -151,6 +151,20 @@ services:
     restart: on-failure
     stop_grace_period: 45s
 
+  # Strategy evaluation (proposals only; no orders). Off unless STRATEGY_WORKER_ENABLED=true.
+  strategy-worker:
+    image: atlas-backend:dev
+    env_file: .env
+    environment: *backend-env
+    command: ["python", "-m", "app.workers.strategy_evaluation"]
+    healthcheck:
+      disable: true
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: on-failure
+    stop_grace_period: 75s
+
   frontend:
     build:
       context: ./frontend

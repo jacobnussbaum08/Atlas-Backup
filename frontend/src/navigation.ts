@@ -27,7 +27,7 @@ export interface NavSection {
   summary: string;
 }
 
-/** Pages backed by real backend data (Phase 1, the Phase 2 market-data engine, Phases 3A-3C). */
+/** Pages backed by real backend data (Phase 1, the Phase 2 market-data engine, Phases 3A-3C, 4A). */
 export const NAV_SECTIONS: readonly NavSection[] = [
   {
     path: "/",
@@ -70,6 +70,14 @@ export const NAV_SECTIONS: readonly NavSection[] = [
     summary: "Headlines as received, mapped to assets and classified by versioned rules; provider and stream status.",
   },
   {
+    path: "/strategies",
+    title: "Strategy Laboratory",
+    icon: Activity,
+    specSection: "11",
+    phase: 4,
+    summary: "Strategy catalog, immutable versions, parameters, proposals and evaluation history.",
+  },
+  {
     path: "/data-health",
     title: "Data Health",
     icon: DatabaseZap,
@@ -108,14 +116,6 @@ export const NAV_SECTIONS: readonly NavSection[] = [
  * phase; their URLs render an explicit "not built" page with no numbers.
  */
 export const UPCOMING_SECTIONS: readonly NavSection[] = [
-  {
-    path: "/strategies",
-    title: "Strategies",
-    icon: Activity,
-    specSection: "22.5",
-    phase: 4,
-    summary: "Strategy status, versions and regime-specific performance.",
-  },
   {
     path: "/ai",
     title: "AI Intelligence",

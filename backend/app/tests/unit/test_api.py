@@ -211,6 +211,19 @@ def test_openapi_exposes_no_order_endpoints(build_client):
         "/api/v1/news/stream",
         "/api/v1/news/stream/sessions",
         "/api/v1/news/economic-calendar",
+        # 4A strategy laboratory (proposals are read-only; parameter versions and
+        # enable/disable are operator-gated)
+        "/api/v1/strategies",
+        "/api/v1/strategies/features",
+        "/api/v1/strategies/evaluations",
+        "/api/v1/strategies/evaluations/{evaluation_id}",
+        "/api/v1/strategies/feature-snapshots/{snapshot_id}",
+        "/api/v1/strategies/proposals",
+        "/api/v1/strategies/proposals/{proposal_id}",
+        "/api/v1/strategies/{strategy_id}",
+        "/api/v1/strategies/{strategy_id}/versions",
+        "/api/v1/strategies/{strategy_id}/configurations",
+        "/api/v1/strategies/{strategy_id}/status",
     }
     # Market trades (exchange prints) are read-only market data, not trading: the one
     # allowed path containing "trade" must expose GET only.
@@ -227,7 +240,8 @@ def test_openapi_exposes_no_order_endpoints(build_client):
     # Operator-gated actions only: a historical fetch, a request to verify a range (it
     # records gaps; the recovery worker retrieves market data), starting discovery or a
     # reference-data refresh, new versions of the qualification/scoring configuration,
-    # starting a market intelligence run, and a historical news retrieval.
+    # starting a market intelligence run, a historical news retrieval, and a new strategy
+    # parameter version or enable/disable (no endpoint approves or submits a proposal).
     assert writes == {
         "/api/v1/market-data/historical-fetch",
         "/api/v1/market-data/recovery-requests",
@@ -237,4 +251,6 @@ def test_openapi_exposes_no_order_endpoints(build_client):
         "/api/v1/discovery/config/scoring",
         "/api/v1/intelligence/runs",
         "/api/v1/news/ingestion-jobs",
+        "/api/v1/strategies/{strategy_id}/versions",
+        "/api/v1/strategies/{strategy_id}/status",
     }

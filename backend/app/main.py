@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from app.asset_discovery.runtime import AssetDiscoveryContext
     from app.market_intelligence.runtime import IntelligenceContext
     from app.news.runtime import NewsContext
+    from app.strategies.runtime import StrategyContext
 from app.database.repositories import IngestionJobRepository
 from app.database.sessions import build_engine, build_session_factory, session_scope
 from app.monitoring.health import (
@@ -88,6 +89,14 @@ def _build_news_context(session_factory: sessionmaker[Session], clock: Clock) ->
     return build_news_context(session_factory, clock)
 
 
+def _build_strategy_context(
+    session_factory: sessionmaker[Session], clock: Clock, provider: str, feed: str
+) -> StrategyContext:
+    from app.strategies.runtime import build_strategy_context
+
+    return build_strategy_context(session_factory, clock, provider=provider, feed=feed)
+
+
 def create_app(
     settings: Settings | None = None,
     *,
@@ -97,13 +106,15 @@ def create_app(
     asset_discovery: AssetDiscoveryContext | None = None,
     market_intelligence: IntelligenceContext | None = None,
     news: NewsContext | None = None,
+    strategies: StrategyContext | None = None,
 ) -> FastAPI:
     """Build the application.
 
     ``health_checks`` replaces the real dependency checks; when given, no
     database engine or Redis client is created (used by unit tests).
-    ``market_data``, ``asset_discovery``, ``market_intelligence`` and ``news`` inject those
-    contexts (tests); otherwise they are built lazily from the environment on first use.
+    ``market_data``, ``asset_discovery``, ``market_intelligence``, ``news`` and
+    ``strategies`` inject those contexts (tests); otherwise they are built lazily from the
+    environment on first use.
     """
     settings = settings or get_settings()
     clock = clock or SystemClock()
@@ -135,6 +146,9 @@ def create_app(
                 session_factory, clock
             )
             app.state.news_factory = lambda: _build_news_context(session_factory, clock)
+            app.state.strategies_factory = lambda provider, feed: _build_strategy_context(
+                session_factory, clock, provider, feed
+            )
             _recover_interrupted_jobs(session_factory, clock)
             sweeper = asyncio.create_task(_sweep_interrupted_jobs(session_factory, clock))
         else:
@@ -175,6 +189,8 @@ def create_app(
     app.state.asset_discovery = asset_discovery
     app.state.market_intelligence = market_intelligence
     app.state.news = news
+    app.state.strategies = strategies
+    app.state.strategies_sync = None
     app.state.version = app.version
     app.state.started_at = clock.now()
 

@@ -72,6 +72,18 @@ def test_expected_tables_exist():
         "event_asset_relationships",
         "economic_events",
         "economic_event_revisions",
+        # Phase 4A strategy laboratory
+        "feature_definitions",
+        "strategies",
+        "strategy_configurations",
+        "strategy_versions",
+        "strategy_status_events",
+        "strategy_feature_snapshots",
+        "strategy_evaluations",
+        "strategy_evaluation_snapshots",
+        "strategy_evaluation_errors",
+        "strategy_proposals",
+        "strategy_proposal_events",
     }
 
 

@@ -12,6 +12,7 @@ from app.api.v1 import (
     market_data_recovery,
     market_data_stream,
     news,
+    strategies,
 )
 
 router = APIRouter(prefix="/api/v1")
@@ -24,5 +25,6 @@ router.include_router(assets.router)
 router.include_router(discovery.router)
 router.include_router(intelligence.router)
 router.include_router(news.router)
+router.include_router(strategies.router)
 
 __all__ = ["router"]
