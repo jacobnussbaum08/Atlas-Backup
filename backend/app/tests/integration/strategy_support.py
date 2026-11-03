@@ -21,9 +21,10 @@ from datetime import time as clock_time
 from decimal import Decimal
 from typing import Any, ClassVar
 
-from sqlalchemy import Engine, insert
+from sqlalchemy import Engine, insert, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.asset_discovery.enums import ProviderAssetStatus, ReferenceSource
 from app.asset_discovery.sessions import CALENDARS, SessionDay, completed_sessions
 from app.core.clocks import FixedClock
 from app.data_engine.enums import (
@@ -32,7 +33,14 @@ from app.data_engine.enums import (
     DataSource,
     PriceAdjustment,
 )
-from app.database.models import Asset, AssetClass, AssetStatus, MarketBarRecord
+from app.database.models import (
+    Asset,
+    AssetClass,
+    AssetReferenceVersionRecord,
+    AssetStatus,
+    MarketBarRecord,
+    ProviderAssetRecord,
+)
 from app.database.sessions import session_scope
 from app.feature_engine.registry import FeatureRequest
 from app.strategies import catalog
@@ -40,6 +48,7 @@ from app.strategies.base import (
     EvaluationContext,
     EvaluationSchedule,
     Evidence,
+    InterfaceOnlyStrategy,
     ProposalDraft,
     Strategy,
     StrategyOutcome,
@@ -65,9 +74,22 @@ def midnight(day: SessionDay) -> datetime:
     return datetime.combine(day.day, clock_time(0), tzinfo=CAL.zone).astimezone(UTC)
 
 
+REFERENCE_OBSERVED_AT = datetime(2020, 1, 2, tzinfo=UTC)
+
+
 def make_asset(
-    factory: sessionmaker[Session], symbol: str, asset_class: AssetClass = AssetClass.EQUITY
+    factory: sessionmaker[Session],
+    symbol: str,
+    asset_class: AssetClass = AssetClass.EQUITY,
+    *,
+    reference: bool = True,
+    tradable: bool | None = True,
+    shortable: bool | None = True,
+    easy_to_borrow: bool | None = True,
+    observed_at: datetime = REFERENCE_OBSERVED_AT,
 ) -> uuid.UUID:
+    """A TEST FIXTURE asset and, unless ``reference`` is False, one FIXTURE provider
+    reference version (the point-in-time eligibility source, Phase 4B)."""
     with session_scope(factory) as session:
         asset = Asset(
             id=uuid.uuid4(),
@@ -80,7 +102,75 @@ def make_asset(
         )
         session.add(asset)
         session.flush()
+        if reference:
+            add_reference(
+                session,
+                asset.id,
+                symbol,
+                tradable=tradable,
+                shortable=shortable,
+                easy_to_borrow=easy_to_borrow,
+                observed_at=observed_at,
+            )
         return asset.id
+
+
+def add_reference(
+    session: Session,
+    asset_id: uuid.UUID,
+    symbol: str,
+    *,
+    tradable: bool | None = True,
+    shortable: bool | None = True,
+    easy_to_borrow: bool | None = True,
+    observed_at: datetime = REFERENCE_OBSERVED_AT,
+    status: ProviderAssetStatus = ProviderAssetStatus.ACTIVE,
+) -> None:
+    """A FIXTURE provider reference version (a new version if the instrument exists)."""
+    provider_asset = session.scalar(
+        select(ProviderAssetRecord).where(
+            ProviderAssetRecord.asset_id == asset_id, ProviderAssetRecord.provider == "alpaca"
+        )
+    )
+    if provider_asset is None:
+        provider_asset = ProviderAssetRecord(
+            provider="alpaca",
+            provider_asset_id=f"fixture-{asset_id}",
+            asset_id=asset_id,
+            provider_asset_class="us_equity",
+            provider_status=status,
+            current_symbol=symbol,
+            current_version=1,
+            current_content_sha256="0" * 64,
+            first_seen_at=observed_at,
+            last_seen_at=observed_at,
+        )
+        session.add(provider_asset)
+        session.flush()
+        version = 1
+    else:
+        version = provider_asset.current_version + 1
+    session.add(
+        AssetReferenceVersionRecord(
+            provider_asset_ref=provider_asset.id,
+            asset_id=asset_id,
+            provider="alpaca",
+            provider_asset_id=provider_asset.provider_asset_id,
+            version=version,
+            observed_at=observed_at,
+            source=ReferenceSource.SINGLE_LOOKUP,
+            symbol=symbol,
+            provider_symbol=symbol,
+            provider_asset_class="us_equity",
+            status=status,
+            tradable=tradable,
+            shortable=shortable,
+            easy_to_borrow=easy_to_borrow,
+            raw_json="{}",
+            content_sha256=f"{version:064d}",
+        )
+    )
+    session.flush()
 
 
 def bar_close(index: int, start: float = 100.0, step: float = 0.5) -> Decimal:
@@ -150,6 +240,57 @@ def seed_bars(
     return days
 
 
+def seed_candles(
+    factory: sessionmaker[Session],
+    asset_id: uuid.UUID,
+    candles: Sequence[Any],
+    *,
+    as_of: datetime = NOW,
+    available_after_close: timedelta = timedelta(minutes=30),
+    skip: Iterable[int] = (),
+) -> list[SessionDay]:
+    """MOCK daily bars from DETERMINISTIC FIXTURE candles (``tests/fixtures/
+    strategy_series``), one per session completed by ``as_of``, oldest first."""
+    days = sessions(as_of, len(candles))
+    skipped = set(skip)
+    rows: list[dict[str, Any]] = []
+    for index, (day, c) in enumerate(zip(days, candles, strict=True)):
+        if index in skipped:
+            continue
+        known = day.regular_close + available_after_close
+        rows.append(
+            {
+                "asset_id": asset_id,
+                "provider": "alpaca",
+                "feed": "iex",
+                "provider_symbol": "FIXTURE",
+                "timeframe": "1Day",
+                "adjustment": PriceAdjustment.SPLIT,
+                "event_time": midnight(day),
+                "revision": 0,
+                "open": Decimal(repr(round(c.open, 6))),
+                "high": Decimal(repr(round(c.high, 6))),
+                "low": Decimal(repr(round(c.low, 6))),
+                "close": Decimal(repr(round(c.close, 6))),
+                "volume": Decimal(int(c.volume)),
+                "vwap": None,
+                "trade_count": 100,
+                "is_complete": True,
+                "source": DataSource.HISTORICAL_REST,
+                "observation_kind": BarObservationKind.HISTORICAL,
+                "quality_status": DataQualityStatus.VALID,
+                "received_at": known,
+                "available_at": known,
+                "original_available_at": None,
+                "processed_at": known,
+                "ingested_at": known,
+            }
+        )
+    with session_scope(factory) as session:
+        session.execute(insert(MarketBarRecord), rows)
+    return days
+
+
 # --- Fixture strategies ------------------------------------------------------------------
 
 
@@ -166,8 +307,8 @@ class ProposingStrategy(Strategy):
     description = "TEST FIXTURE strategy: close versus SMA (not a trading strategy)."
     logic_version: ClassVar[str] = "fixture-proposer-1"
     implemented = True
-    supported_asset_classes = (AssetClass.EQUITY,)
-    supported_timeframes = ("1Day", "1Week")
+    supported_asset_classes: ClassVar[tuple[AssetClass, ...]] = (AssetClass.EQUITY,)
+    supported_timeframes: ClassVar[tuple[str, ...]] = ("1Day", "1Week")
     Parameters: ClassVar[type[StrategyParameters]] = FixtureParameters
 
     def required_features(
@@ -250,13 +391,57 @@ class SlowStrategy(ProposingStrategy):
         return super().evaluate(ctx, params)
 
 
+class AlwaysShortStrategy(ProposingStrategy):
+    """TEST FIXTURE: always proposes SHORT (to create an opposing-direction conflict)."""
+
+    strategy_id: ClassVar[str] = "fixture_short"
+    logic_version: ClassVar[str] = "fixture-short-1"
+    description = "TEST FIXTURE strategy that always proposes SHORT."
+    supported_asset_classes: ClassVar[tuple[AssetClass, ...]] = (AssetClass.EQUITY, AssetClass.ETF)
+
+    def evaluate(self, ctx: EvaluationContext, params: StrategyParameters) -> StrategyOutcome:
+        close = ctx.feature("close")
+        assert isinstance(close.value, float)
+        entry = Decimal(repr(close.value)).quantize(Decimal("0.0001"))
+        return StrategyOutcome(
+            proposals=(
+                ProposalDraft(
+                    direction=Direction.SHORT,
+                    reference_entry=entry,
+                    invalidation_level=entry * Decimal("1.05"),
+                    target_reference=entry * Decimal("0.95"),
+                    signal_strength=Decimal("0.5"),
+                    reasoning="TEST FIXTURE: always SHORT.",
+                    evidence=(Evidence(close.key, "trigger", "newest completed close"),),
+                ),
+            )
+        )
+
+
+class InterfaceOnlyFixture(InterfaceOnlyStrategy):
+    """TEST FIXTURE: parameters and features only, no logic (cannot be enabled)."""
+
+    strategy_id: ClassVar[str] = "fixture_interface_only"
+    family = StrategyFamily.MOMENTUM
+    name = "Fixture interface only"
+    description = "TEST FIXTURE strategy without evaluation logic."
+    logic_version: ClassVar[str] = "fixture-interface-1"
+    supported_asset_classes = (AssetClass.EQUITY,)
+    supported_timeframes = ("1Day",)
+
+    def required_features(
+        self, params: StrategyParameters, timeframe: str
+    ) -> Sequence[FeatureRequest]:
+        return [FeatureRequest("close", timeframe)]
+
+
 class NewsFixtureStrategy(ProposingStrategy):
     """TEST FIXTURE: requires a news count, so missing news coverage blocks it."""
 
     strategy_id: ClassVar[str] = "fixture_news"
     logic_version: ClassVar[str] = "fixture-news-1"
     description = "TEST FIXTURE strategy that needs news coverage."
-    supported_timeframes = ("1Day",)
+    supported_timeframes: ClassVar[tuple[str, ...]] = ("1Day",)
     schedule = EvaluationSchedule(
         (TriggerKind.BAR_CLOSE, TriggerKind.NEWS_EVENT), "bars and news (fixture)"
     )
@@ -344,17 +529,22 @@ def make_lab(
 __all__ = [
     "CAL",
     "NOW",
+    "REFERENCE_OBSERVED_AT",
+    "AlwaysShortStrategy",
     "FailingStrategy",
+    "InterfaceOnlyFixture",
     "Lab",
     "NewsFixtureStrategy",
     "ProposingStrategy",
     "SlowStrategy",
     "UntraceableStrategy",
+    "add_reference",
     "bar_close",
     "evaluation_request",
     "make_asset",
     "make_lab",
     "midnight",
     "seed_bars",
+    "seed_candles",
     "sessions",
 ]

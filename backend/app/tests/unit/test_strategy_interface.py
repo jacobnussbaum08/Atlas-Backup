@@ -8,7 +8,7 @@ import uuid
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import pytest
 
@@ -63,9 +63,9 @@ def test_six_independent_families_are_discovered():
 
 @pytest.mark.parametrize("strategy", discover(), ids=lambda s: s.strategy_id)
 def test_every_family_exposes_the_full_interface(strategy):
-    assert strategy.implemented is False  # Phase 4A: interfaces only
-    assert isinstance(strategy, InterfaceOnlyStrategy)
-    assert strategy.logic_version.endswith("-interface-1")
+    assert strategy.implemented is True  # Phase 4B: logic implemented
+    assert not isinstance(strategy, InterfaceOnlyStrategy)
+    assert not strategy.logic_version.endswith("-interface-1")
     assert strategy.description
     assert set(strategy.supported_asset_classes) <= set(AssetClass)
     assert strategy.schedule.triggers
@@ -80,9 +80,11 @@ def test_every_family_exposes_the_full_interface(strategy):
         assert resolved
         assert any(f.definition.name == "close" for f in resolved)
         assert all(f.timeframe == timeframe for f in resolved)
-    ctx = make_context({})
+
+
+def test_interface_only_strategies_still_refuse_to_evaluate():
     with pytest.raises(StrategyNotImplementedError, match="Phase 4B"):
-        strategy.evaluate(ctx, params)
+        _Probe().evaluate(make_context({}), _Probe().default_parameters())
 
 
 def test_event_driven_requires_news_and_cannot_make_it_optional():
@@ -93,7 +95,8 @@ def test_event_driven_requires_news_and_cannot_make_it_optional():
         for f in REGISTRY.resolve_all(strategy.required_features(params, "1Day"))
         if f.definition.source is FeatureSource.NEWS
     ]
-    counts = [f for f in news if f.definition.name == "news_event_count"]
+    # Phase 4B: counts anchored to the newest session close, so events precede the reaction.
+    counts = [f for f in news if f.definition.name == "period_news_count"]
     assert len(counts) == 1 + len(params.categories)  # ANY plus each category
     assert all(not f.optional for f in counts)
     assert TriggerKind.NEWS_EVENT in strategy.schedule.triggers
@@ -196,7 +199,7 @@ def make_context(features) -> EvaluationContext:
 
 
 def draft(**overrides) -> ProposalDraft:
-    values = {
+    values: dict[str, Any] = {
         "direction": Direction.LONG,
         "reference_entry": Decimal("100.123456789"),
         "invalidation_level": Decimal("95"),

@@ -13,10 +13,19 @@ Flow for one :class:`EvaluationRequest` (one strategy version, asset, timeframe,
 3. **Strategy**: called only if every required feature is VALID (else SKIPPED). It gets
    an :class:`~app.strategies.base.EvaluationContext` and nothing else.
 4. **Validation** of the drafts (``app.strategies.proposals``).
-5. **Finalize** (one transaction, row lock): only if the evaluation is still RUNNING and
-   owned by this worker (a timed-out or reclaimed evaluation commits nothing), store the
-   proposals, supersede older active proposals of the same strategy/asset/direction (LIVE
-   only) and set the terminal status. Proposals and results are never updated afterwards.
+5. **Finalize** (one transaction, row lock, per-asset advisory lock): only if the
+   evaluation is still RUNNING and owned by this worker (a timed-out or reclaimed
+   evaluation commits nothing), store the proposals (one per strategy, asset, timeframe,
+   direction, mode, basis and evaluation event: a repeat is DUPLICATE), supersede older
+   active proposals of the same strategy/asset/direction (LIVE only), record conflicts
+   with overlapping opposite-direction proposals and set the terminal status and signal
+   state. Proposals and results are never updated afterwards.
+
+Phase 4B additions: before any input is computed, the asset's point-in-time eligibility
+(``app.strategies.eligibility``) is loaded; an unsupported or untradable asset, or one no
+configured direction is eligible for, is SKIPPED as INELIGIBLE_ASSET. Every evaluation
+records a :class:`~app.strategies.enums.SignalState`, the checks the strategy evaluated
+and, without a proposal, the reason.
 
 Any failure is recorded with its stage and the evaluation becomes FAILED; nothing escapes
 to unrelated evaluations. :meth:`StrategyEngine.evaluate_many` runs requests concurrently
@@ -48,27 +57,32 @@ from app.database.models import (
     StrategyEvaluationErrorRecord,
     StrategyEvaluationRecord,
     StrategyEvaluationSnapshotRecord,
+    StrategyProposalConflictRecord,
     StrategyProposalEventRecord,
     StrategyProposalRecord,
     StrategyVersionRecord,
 )
 from app.database.sessions import session_scope
-from app.feature_engine.registry import ResolvedFeature, sha256_json
+from app.feature_engine.registry import FeatureStatus, ResolvedFeature, sha256_json
 from app.market_intelligence.enums import KnowledgeBasis
 from app.strategies import catalog
 from app.strategies.base import (
     AssetView,
+    Eligibility,
     EvaluationContext,
     Strategy,
     StrategyOutcome,
     StrategyParameters,
 )
 from app.strategies.config import StrategySettings
+from app.strategies.eligibility import load_eligibility
 from app.strategies.enums import (
+    ConflictKind,
     ErrorStage,
     EvaluationMode,
     EvaluationStatus,
     ProposalEventKind,
+    SignalState,
     TriggerKind,
 )
 from app.strategies.inputs import BarSeries, FeatureInputs, compute_features, store_snapshot
@@ -80,6 +94,24 @@ logger = get_logger(__name__)
 
 CALENDAR = "XNYS"  # every supported US venue follows the NYSE schedule (D-059)
 MAX_ERROR_MESSAGE = 2000
+MAX_CHECKS = 64
+
+# The order in which a blocked evaluation's feature problems name its state.
+_DATA_STATES = (
+    (FeatureStatus.INSUFFICIENT_DATA, SignalState.INSUFFICIENT_DATA),
+    (FeatureStatus.MISSING_INPUTS, SignalState.MISSING_DATA),
+    (FeatureStatus.UNAVAILABLE, SignalState.UNAVAILABLE_DATA),
+    (FeatureStatus.UNDEFINED, SignalState.INVALID_DATA),
+)
+
+
+def data_state(statuses: Iterable[FeatureStatus]) -> SignalState:
+    """The signal state of an evaluation blocked by these required-feature statuses."""
+    found = set(statuses)
+    for status, state in _DATA_STATES:
+        if status in found:
+            return state
+    return SignalState.INVALID_DATA
 
 
 @dataclass(frozen=True)
@@ -139,6 +171,7 @@ class EvaluationResult:
     status: EvaluationStatus | None = None
     proposal_ids: list[uuid.UUID] = field(default_factory=list)
     error: str | None = None
+    signal_state: SignalState | None = None
 
 
 class _Failure(Exception):
@@ -305,6 +338,18 @@ class StrategyEngine:
         snapshot: uuid.UUID | None = None
         try:
             strategy, params, resolved, asset = self._prepare(claim)
+            if (ineligible := self._ineligible(strategy, params, asset)) is not None:
+                return self._finalize(
+                    claim,
+                    EvaluationStatus.SKIPPED,
+                    [],
+                    None,
+                    [],
+                    [],
+                    state=SignalState.INELIGIBLE_ASSET,
+                    reason=ineligible,
+                    eligibility=asset.eligibility,
+                )
             try:
                 inputs = self._inputs(claim, resolved)
                 snapshot = self._store_snapshot(inputs)
@@ -316,7 +361,22 @@ class StrategyEngine:
                 if not f.optional and not (v := inputs.values[f.key]).valid
             ]
             if invalid:
-                return self._finalize(claim, EvaluationStatus.SKIPPED, [], snapshot, invalid, [])
+                state = data_state(
+                    inputs.values[f.key].status
+                    for f in resolved
+                    if not f.optional and not inputs.values[f.key].valid
+                )
+                return self._finalize(
+                    claim,
+                    EvaluationStatus.SKIPPED,
+                    [],
+                    snapshot,
+                    invalid,
+                    [],
+                    state=state,
+                    reason="; ".join(f"{i['feature']}: {i['status']}" for i in invalid)[:2000],
+                    eligibility=asset.eligibility,
+                )
             ctx = EvaluationContext(
                 asset=asset,
                 timeframe=request.timeframe,
@@ -333,17 +393,48 @@ class StrategyEngine:
                     raise TypeError("evaluate() must return a StrategyOutcome")
             except Exception as exc:
                 raise _Failure(ErrorStage.STRATEGY, exc, snapshot) from exc
+            checks = [c.to_json() for c in outcome.checks][:MAX_CHECKS]
+            if outcome.invalid_data is not None:
+                return self._finalize(
+                    claim,
+                    EvaluationStatus.SKIPPED,
+                    [],
+                    snapshot,
+                    [],
+                    outcome.notes,
+                    state=SignalState.INVALID_DATA,
+                    reason=outcome.invalid_data,
+                    checks=checks,
+                    eligibility=asset.eligibility,
+                )
             try:
                 expiry = expires_at(
                     self.calendar, request.timeframe, claim.data_cutoff, params.signal_ttl_periods
                 )
                 specs, notes = validate_drafts(
-                    outcome.proposals, ctx, params, expires_at=expiry, snapshot_ids=[snapshot]
+                    outcome.proposals,
+                    ctx,
+                    params,
+                    expires_at=expiry,
+                    snapshot_ids=[snapshot],
+                    evaluation_event=f"{request.trigger.value}:{request.trigger_ref}",
                 )
             except (ProposalValidationError, ValueError) as exc:
                 raise _Failure(ErrorStage.VALIDATION, exc, snapshot) from exc
             status = EvaluationStatus.PROPOSED if specs else EvaluationStatus.NO_PROPOSAL
-            return self._finalize(claim, status, specs, snapshot, [], [*outcome.notes, *notes])
+            reason = None if specs else (outcome.reason or "; ".join(notes) or None)
+            return self._finalize(
+                claim,
+                status,
+                specs,
+                snapshot,
+                [],
+                [*outcome.notes, *notes],
+                state=SignalState.SIGNAL if specs else SignalState.NO_SIGNAL,
+                reason=reason,
+                checks=checks,
+                eligibility=asset.eligibility,
+            )
         except _Failure as failure:
             return self._fail(claim, failure.stage, failure.error, failure.snapshot)
         except Exception as exc:  # preparation or persistence
@@ -393,7 +484,12 @@ class StrategyEngine:
             asset = session.get(Asset, request.asset_id)
             if asset is None:
                 raise ValueError("unknown asset")
-            view = AssetView(asset.id, asset.symbol, asset.asset_class, asset.exchange_code)
+            eligibility = load_eligibility(
+                session, asset.id, provider=self.series.provider, known_at=claim.known_at
+            )
+            view = AssetView(
+                asset.id, asset.symbol, asset.asset_class, asset.exchange_code, eligibility
+            )
             raw = dict(config.parameters)
         params = strategy.parse_parameters(raw)
         if request.timeframe not in params.timeframes:
@@ -430,44 +526,163 @@ class StrategyEngine:
             return None
         return record
 
+    @staticmethod
+    def _ineligible(strategy: Strategy, params: StrategyParameters, asset: AssetView) -> str | None:
+        """Why the asset cannot be evaluated at all, or None (Phase 4B)."""
+        if asset.asset_class not in strategy.supported_asset_classes:
+            return f"{asset.asset_class.value} is not supported by {strategy.strategy_id}"
+        if asset.eligibility is None:
+            return None
+        blocked = [asset.eligibility.direction_reason(d) for d in params.directions]
+        if all(reason is not None for reason in blocked):
+            return "; ".join(dict.fromkeys(r for r in blocked if r is not None))
+        return None
+
     def _finalize(
         self,
         claim: Claim,
         status: EvaluationStatus,
         specs: Sequence[ProposalSpec],
-        snapshot: uuid.UUID,
+        snapshot: uuid.UUID | None,
         skip_reasons: list[dict[str, Any]],
         notes: Sequence[str],
+        *,
+        state: SignalState,
+        reason: str | None = None,
+        checks: Sequence[dict[str, Any]] = (),
+        eligibility: Eligibility | None = None,
     ) -> EvaluationResult:
         request = claim.request
         now = self.clock.now()
+        notes = list(notes)
         with session_scope(self._sessions) as session:
+            # Serialises proposal writes per asset, so duplicate and conflict checks see
+            # every proposal committed before this one.
+            session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+                {"key": f"strategy_proposals:{request.asset_id}"},
+            )
             record = self._owned(session, claim)
             if record is None:
                 return EvaluationResult(request, "DISCARDED", claim.evaluation_id)
-            session.add(
-                StrategyEvaluationSnapshotRecord(evaluation_id=record.id, snapshot_id=snapshot)
-            )
+            if snapshot is not None:
+                session.add(
+                    StrategyEvaluationSnapshotRecord(evaluation_id=record.id, snapshot_id=snapshot)
+                )
+            recorded: list[ProposalSpec] = []
             for spec in specs:
+                duplicate = self._duplicate(session, record, spec)
+                if duplicate is not None:
+                    notes.append(
+                        f"{spec.direction} not recorded: proposal {duplicate} already exists "
+                        f"for event {spec.evaluation_event}"
+                    )
+                    continue
                 session.add(self._proposal(record, spec))
+                recorded.append(spec)
             session.flush()
             if request.mode is EvaluationMode.LIVE:
-                for spec in specs:
+                for spec in recorded:
                     self._supersede(session, record, spec, now)
+            conflicts = sum(self._record_conflicts(session, record, s, now) for s in recorded)
+            if specs and not recorded:
+                status, state = EvaluationStatus.NO_PROPOSAL, SignalState.DUPLICATE
+                reason = "the same proposal was already recorded for this evaluation event"
             record.status = status
+            record.signal_state = state
+            record.signal_reason = None if reason is None else redact_text(reason)[:2000]
+            record.checks = list(checks)
+            record.eligibility = None if eligibility is None else eligibility.to_json()
             record.finished_at = now
-            record.proposals_count = len(specs)
+            record.proposals_count = len(recorded)
             record.skip_reasons = skip_reasons
             record.notes = [str(n)[:500] for n in notes][:50]
         logger.info(
             "strategy.evaluated",
             strategy=request.strategy_id,
             status=status.value,
-            proposals=len(specs),
+            signal_state=state.value,
+            proposals=len(recorded),
+            conflicts=conflicts,
         )
         return EvaluationResult(
-            request, "EVALUATED", claim.evaluation_id, status, [s.id for s in specs]
+            request,
+            "EVALUATED",
+            claim.evaluation_id,
+            status,
+            [s.id for s in recorded],
+            signal_state=state,
         )
+
+    @staticmethod
+    def _duplicate(
+        session: Session, record: StrategyEvaluationRecord, spec: ProposalSpec
+    ) -> uuid.UUID | None:
+        p = StrategyProposalRecord
+        return session.scalar(
+            select(p.id).where(
+                p.strategy_id == record.strategy_id,
+                p.asset_id == record.asset_id,
+                p.timeframe == spec.timeframe,
+                p.direction == spec.direction,
+                p.mode == record.mode,
+                p.basis == record.basis,
+                p.evaluation_event == spec.evaluation_event,
+            )
+        )
+
+    @staticmethod
+    def _record_conflicts(
+        session: Session, record: StrategyEvaluationRecord, spec: ProposalSpec, now: datetime
+    ) -> int:
+        """Record every proposal for the same asset, mode and basis in the opposite
+        direction whose active period overlaps this one's. Nothing is resolved: the
+        Phase 5 coordinator decides between competing proposals."""
+        p, ev = StrategyProposalRecord, StrategyProposalEventRecord
+        superseded = exists().where(
+            ev.proposal_id == p.id,
+            ev.kind == ProposalEventKind.SUPERSEDED,
+            ev.occurred_at <= spec.signal_at,
+        )
+        others = session.execute(
+            select(p.id, p.signal_at, p.expires_at).where(
+                p.asset_id == record.asset_id,
+                p.direction != spec.direction,
+                p.mode == record.mode,
+                p.basis == record.basis,
+                p.id != spec.id,
+                p.signal_at < spec.expires_at,
+                p.expires_at > spec.signal_at,
+                ~superseded,
+            )
+        ).all()
+        if not others:
+            return 0
+        rows = []
+        for other in others:
+            first, second = sorted((spec.id, other.id))
+            rows.append(
+                {
+                    "proposal_a_id": first,
+                    "proposal_b_id": second,
+                    "asset_id": record.asset_id,
+                    "kind": ConflictKind.OPPOSING_DIRECTION,
+                    "mode": record.mode,
+                    "basis": record.basis,
+                    "overlap_start": max(spec.signal_at, other.signal_at),
+                    "overlap_end": min(spec.expires_at, other.expires_at),
+                    "detected_by": spec.id,
+                    "detected_at": now,
+                }
+            )
+        c = StrategyProposalConflictRecord
+        inserted = session.execute(
+            pg_insert(c)
+            .values(rows)
+            .on_conflict_do_nothing(index_elements=["proposal_a_id", "proposal_b_id"])
+            .returning(c.id)
+        )
+        return len(inserted.all())
 
     @staticmethod
     def _proposal(record: StrategyEvaluationRecord, spec: ProposalSpec) -> StrategyProposalRecord:
@@ -488,6 +703,8 @@ class StrategyEngine:
             reference_entry=spec.reference_entry,
             invalidation_level=spec.invalidation_level,
             target_reference=spec.target_reference,
+            levels=spec.levels,
+            evaluation_event=spec.evaluation_event,
             holding_horizon_periods=spec.holding_horizon_periods,
             signal_strength=spec.signal_strength,
             strength_kind=spec.strength_kind,
@@ -535,6 +752,8 @@ class StrategyEngine:
         now: datetime,
     ) -> None:
         record.status = EvaluationStatus.FAILED
+        record.signal_state = SignalState.FAILED
+        record.signal_reason = f"{stage.value}: {error_type}"
         record.finished_at = now
         session.add(
             StrategyEvaluationErrorRecord(
@@ -586,6 +805,7 @@ class StrategyEngine:
             claim.evaluation_id,
             EvaluationStatus.FAILED,
             error=redact_text(message)[:MAX_ERROR_MESSAGE],
+            signal_state=SignalState.FAILED,
         )
 
     # --- Expiry -----------------------------------------------------------------------

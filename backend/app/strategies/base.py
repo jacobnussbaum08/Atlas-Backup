@@ -121,11 +121,67 @@ BAR_CLOSE_SCHEDULE = EvaluationSchedule(
 
 
 @dataclass(frozen=True)
+class Eligibility:
+    """Whether the asset could be traded at the knowledge time, from the newest provider
+    reference version Atlas had observed by then (Phase 4B, ``app.strategies.eligibility``).
+
+    A SHORT hypothesis needs the provider to have reported the asset both shortable and
+    easy to borrow; unknown counts as not eligible. This is an analytical gate only: it
+    authorizes nothing (risk approval belongs to later phases).
+    """
+
+    known: bool
+    provider: str
+    provider_status: str | None = None
+    tradable: bool | None = None
+    shortable: bool | None = None
+    easy_to_borrow: bool | None = None
+    reference_version: int | None = None
+    observed_at: datetime | None = None
+
+    def ineligible_reason(self) -> str | None:
+        if not self.known:
+            return f"no {self.provider} reference data for the asset known at the cutoff"
+        if self.provider_status != "ACTIVE":
+            return f"{self.provider} status was {self.provider_status}"
+        if self.tradable is not True:
+            return f"not tradable at {self.provider}"
+        return None
+
+    def direction_reason(self, direction: Direction) -> str | None:
+        """Why ``direction`` is not eligible, or None."""
+        if (reason := self.ineligible_reason()) is not None:
+            return reason
+        if direction is Direction.SHORT:
+            if self.shortable is not True:
+                return "SHORT needs a shortable asset; the provider did not report it shortable"
+            if self.easy_to_borrow is not True:
+                return "SHORT needs an easy-to-borrow asset; the provider did not report it so"
+        return None
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "known": self.known,
+            "provider": self.provider,
+            "provider_status": self.provider_status,
+            "tradable": self.tradable,
+            "shortable": self.shortable,
+            "easy_to_borrow": self.easy_to_borrow,
+            "reference_version": self.reference_version,
+            "observed_at": None if self.observed_at is None else self.observed_at.isoformat(),
+            "long_eligible": self.direction_reason(Direction.LONG) is None,
+            "short_eligible": self.direction_reason(Direction.SHORT) is None,
+        }
+
+
+@dataclass(frozen=True)
 class AssetView:
     asset_id: uuid.UUID
     symbol: str
     asset_class: AssetClass
     exchange_code: str | None
+    # Point in time; None only where a test builds a context without the engine.
+    eligibility: Eligibility | None = None
 
     @property
     def market(self) -> str:
@@ -159,6 +215,11 @@ class EvaluationContext:
             raise StrategyDefinitionError(f"{value.key} has no valid numeric value")
         return value.value
 
+    def direction_block(self, direction: Direction) -> str | None:
+        """Why the asset is not eligible for ``direction`` at the cutoff, or None."""
+        eligibility = self.asset.eligibility
+        return None if eligibility is None else eligibility.direction_reason(direction)
+
 
 @dataclass(frozen=True)
 class Evidence:
@@ -181,12 +242,42 @@ class ProposalDraft:
     evidence: tuple[Evidence, ...]
     invalidation_level: Decimal | None = None
     target_reference: Decimal | None = None
+    # How entry, invalidation and target were derived (methods, ATR used, reward/risk);
+    # JSON-serialisable, stored with the proposal (Phase 4B).
+    levels: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class Check:
+    """One condition a strategy evaluated (Phase 4B). ``passed`` None: informational or
+    not applicable. Recorded on the evaluation whether or not a proposal follows."""
+
+    name: str
+    passed: bool | None
+    detail: str
+    direction: Direction | None = None
+    feature_keys: tuple[str, ...] = ()
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "passed": self.passed,
+            "detail": self.detail,
+            "direction": None if self.direction is None else self.direction.value,
+            "features": list(self.feature_keys),
+        }
 
 
 @dataclass(frozen=True)
 class StrategyOutcome:
     proposals: tuple[ProposalDraft, ...] = ()
     notes: tuple[str, ...] = field(default_factory=tuple)
+    # Phase 4B: the conditions evaluated, why nothing was proposed, and inputs the
+    # strategy found inconsistent although every feature was VALID (e.g. a non-positive
+    # ATR or close): such an evaluation is recorded as INVALID_DATA, not as "no signal".
+    checks: tuple[Check, ...] = ()
+    reason: str | None = None
+    invalid_data: str | None = None
 
 
 class Strategy(ABC):
@@ -257,6 +348,8 @@ __all__ = [
     "BAR_CLOSE_SCHEDULE",
     "STRATEGY_ID_PATTERN",
     "AssetView",
+    "Check",
+    "Eligibility",
     "EvaluationContext",
     "EvaluationSchedule",
     "Evidence",

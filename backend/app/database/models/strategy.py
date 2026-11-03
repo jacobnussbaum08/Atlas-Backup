@@ -17,6 +17,8 @@
 * ``strategy_evaluation_errors``: failures, by stage.
 * ``strategy_proposals``: standardized proposals (spec 11.7); hypotheses, not trades.
 * ``strategy_proposal_events``: expiry and supersession, recorded when Atlas noticed them.
+* ``strategy_proposal_conflicts`` (Phase 4B): overlapping opposite-direction proposals for
+  the same asset, recorded for the Phase 5 coordinator (never resolved here).
 
 Every table except ``strategy_evaluations`` is append-only (triggers, migration 0009).
 """
@@ -51,11 +53,13 @@ from app.database.models.base import Base, UUIDPrimaryKeyMixin, str_enum
 from app.feature_engine.registry import DefinitionStatus, FeatureSource, ValueKind
 from app.market_intelligence.enums import KnowledgeBasis
 from app.strategies.enums import (
+    ConflictKind,
     Direction,
     ErrorStage,
     EvaluationMode,
     EvaluationStatus,
     ProposalEventKind,
+    SignalState,
     StrategyFamily,
     StrengthKind,
     TriggerKind,
@@ -221,6 +225,13 @@ class StrategyEvaluationRecord(UUIDPrimaryKeyMixin, Base):
         CheckConstraint(
             "(status = 'PROPOSED') = (proposals_count > 0)", name="proposed_iff_proposals"
         ),
+        CheckConstraint(
+            "(status = 'RUNNING') = (signal_state IS NULL)", name="signal_state_iff_done"
+        ),
+        CheckConstraint(
+            "(status = 'PROPOSED') = (signal_state = 'SIGNAL')", name="signal_iff_proposed"
+        ),
+        Index(None, "signal_state", "started_at"),
     )
 
     strategy_id: Mapped[str] = mapped_column(ForeignKey(_STRATEGY_FK, ondelete="RESTRICT"))
@@ -251,6 +262,14 @@ class StrategyEvaluationRecord(UUIDPrimaryKeyMixin, Base):
     skip_reasons: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, server_default="[]")
     notes: Mapped[list[str]] = mapped_column(JSONB, server_default="[]")
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    # Phase 4B: what the evaluation found, why nothing was proposed, the conditions the
+    # strategy evaluated and the asset's point-in-time eligibility.
+    signal_state: Mapped[SignalState | None] = mapped_column(
+        str_enum(SignalState, "strategy_signal_state")
+    )
+    signal_reason: Mapped[str | None] = mapped_column(Text)
+    checks: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, server_default="[]")
+    eligibility: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
 
 
 class StrategyEvaluationSnapshotRecord(Base):
@@ -283,6 +302,17 @@ class StrategyProposalRecord(UUIDPrimaryKeyMixin, Base):
     __tablename__ = "strategy_proposals"
     __table_args__ = (
         UniqueConstraint("evaluation_id", "direction"),
+        # One proposal per strategy, asset, timeframe, direction, mode, basis and event.
+        UniqueConstraint(
+            "strategy_id",
+            "asset_id",
+            "timeframe",
+            "direction",
+            "mode",
+            "basis",
+            "evaluation_event",
+            name="uq_strategy_proposals_event",
+        ),
         Index(None, "strategy_id", "signal_at"),
         Index(None, "asset_id", "signal_at"),
         Index(None, "expires_at"),
@@ -331,6 +361,9 @@ class StrategyProposalRecord(UUIDPrimaryKeyMixin, Base):
     reasoning: Mapped[str] = mapped_column(Text)
     expires_at: Mapped[datetime]
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    # Phase 4B: "<trigger>:<trigger_ref>" of the evaluation, and how the levels were derived.
+    evaluation_event: Mapped[str] = mapped_column(String(160))
+    levels: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default="{}")
 
 
 class StrategyProposalEventRecord(Base):
@@ -357,6 +390,44 @@ class StrategyProposalEventRecord(Base):
     )
 
 
+class StrategyProposalConflictRecord(Base):
+    """Two overlapping proposals for the same asset in opposite directions (Phase 4B).
+
+    Recorded when the second one is stored; the pair is ordered (``proposal_a_id`` <
+    ``proposal_b_id``) so it is recorded once. A conflict is information for the Phase 5
+    coordinator, not a decision: neither proposal is changed.
+    """
+
+    __tablename__ = "strategy_proposal_conflicts"
+    __table_args__ = (
+        UniqueConstraint("proposal_a_id", "proposal_b_id"),
+        Index(None, "asset_id", "overlap_start"),
+        Index(None, "proposal_b_id"),
+        CheckConstraint("proposal_a_id < proposal_b_id", name="ordered_pair"),
+        CheckConstraint("overlap_end > overlap_start", name="overlap_positive"),
+        CheckConstraint(
+            "detected_by = proposal_a_id OR detected_by = proposal_b_id", name="detected_by_member"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    proposal_a_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("strategy_proposals.id", ondelete="RESTRICT")
+    )
+    proposal_b_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("strategy_proposals.id", ondelete="RESTRICT")
+    )
+    asset_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("assets.id", ondelete="RESTRICT"))
+    kind: Mapped[ConflictKind] = mapped_column(str_enum(ConflictKind, "proposal_conflict_kind"))
+    mode: Mapped[EvaluationMode] = mapped_column(str_enum(EvaluationMode, "evaluation_mode"))
+    basis: Mapped[KnowledgeBasis] = mapped_column(str_enum(KnowledgeBasis, "knowledge_basis"))
+    # When both proposals were active at once.
+    overlap_start: Mapped[datetime]
+    overlap_end: Mapped[datetime]
+    detected_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))  # the newer proposal
+    detected_at: Mapped[datetime]
+
+
 __all__ = [
     "FeatureDefinitionRecord",
     "StrategyConfigurationRecord",
@@ -364,6 +435,7 @@ __all__ = [
     "StrategyEvaluationRecord",
     "StrategyEvaluationSnapshotRecord",
     "StrategyFeatureSnapshotRecord",
+    "StrategyProposalConflictRecord",
     "StrategyProposalEventRecord",
     "StrategyProposalRecord",
     "StrategyRecord",

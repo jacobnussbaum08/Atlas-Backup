@@ -469,7 +469,7 @@ historical-retrieval form (operator token outside development). Point-in-time re
 
 ## Strategy laboratory (Phase 4A)
 
-Prerequisites: the database at head (migration 0009). Settings: `STRATEGY_*` in
+Prerequisites: the database at head (migration 0009 or later). Settings: `STRATEGY_*` in
 `.env.example` (decisions D-082 to D-089). Strategy parameters are not settings: they are
 immutable versions in PostgreSQL.
 
@@ -520,6 +520,48 @@ no proposals exist yet. Nothing here sizes, approves or submits a trade.
 The dashboard's **Strategy Laboratory** page shows the catalog, versions, parameters,
 required features, status history, proposals and evaluation history (read-only; no
 performance statistics exist).
+
+## Strategies (Phase 4B)
+
+Prerequisites: the database at head (migration 0010). Decisions D-090 to D-098.
+
+The six families now have evaluation logic. After deploying, sync the catalog once (the API
+and worker also do this): each family gets a new version whose configuration keeps the
+stored parameters and adds the new fields at their defaults. Strategies stay **disabled**
+until an operator enables them; nothing here sizes, approves or submits a trade.
+
+```bash
+uv run python -m app.strategies.cli sync
+uv run python -m app.strategies.cli list
+```
+
+Enable one strategy (operator token outside development):
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/strategies/momentum/status   -H 'Content-Type: application/json' -H "X-Atlas-Operator-Token: $ATLAS_OPERATOR_TOKEN"   -d '{"enabled": true, "reason": "paper evaluation"}'
+```
+
+Evaluate a strategy at a past cutoff (stored as a HISTORICAL evaluation; the output includes
+its signal state):
+
+```bash
+uv run python -m app.strategies.cli evaluate --strategy trend_following --symbol SPY --at 2026-11-02T08:00:00Z
+```
+
+Data the strategies need:
+
+* **Momentum** reads relative strength against `benchmark_symbol` (default SPY), which must
+  be an active Atlas asset with stored bars for the same sessions; otherwise its evaluations
+  are UNAVAILABLE_DATA (set `require_relative_strength=false` to make it context only).
+* **Event driven** needs news coverage (a completed backfill or a subscribed stream) over the
+  last session; without it every evaluation is UNAVAILABLE_DATA. Macroeconomic events are
+  not evaluated (no economic calendar).
+* **SHORT** proposals need the provider reference data to report the asset shortable and
+  easy to borrow; assets without reference data are INELIGIBLE_ASSET.
+
+Inspect results: `GET /api/v1/strategies/evaluations?signal_state=NO_SIGNAL` (and the other
+states), `GET /api/v1/strategies/proposals/{id}` (levels, evidence, conflicts) and
+`GET /api/v1/strategies/conflicts`. The dashboard's Strategy Laboratory page shows the same.
 
 ## Backup and restore
 

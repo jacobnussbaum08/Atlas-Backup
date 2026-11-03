@@ -20,7 +20,7 @@ one deployable backend, with modules separated by package boundaries rather than
 | `data_engine` | Provider contract, capabilities, schemas, Alpaca adapter (2A); historical retrieval, quality checks, storage, API, CLI (2B); streaming (2C) | 2 🚧 |
 | `asset_discovery`, `market_intelligence`, `feature_engine` | Universe, regimes, features; central feature registry with versioned definitions (4A) | 3 ✅, registry 4A ✅ |
 | `news` | News provider contract and Alpaca adapter (REST + stream), append-only articles and revisions, effective-dated asset mapping, versioned keyword classification, relevance, economic-calendar interface (no provider); `workers.news_stream` | 3C ✅ |
-| `strategies` | Strategy interface and six family modules (interfaces only until 4B), immutable versions and configurations, point-in-time feature snapshots, idempotent evaluation engine, standardized proposals (no execution access); `workers.strategy_evaluation` | 4A ✅ |
+| `strategies` | Strategy interface and six strategies (4B logic), immutable versions and configurations, point-in-time feature snapshots and eligibility, idempotent evaluation engine with signal states, standardized proposals and recorded conflicts (no execution access); `workers.strategy_evaluation` | 4A ✅, 4B ✅ |
 | `ai_engine`, `ml_engine` | Decision coordinator, ML models, async LLM news features | 5 |
 | `portfolio`, `accounting`, `risk` | Portfolio state, double-entry ledger, deterministic risk | 6 |
 | `execution`, `paper_broker` | Order state machine, simulated broker | 7 |

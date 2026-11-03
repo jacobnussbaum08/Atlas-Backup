@@ -1,9 +1,11 @@
-"""Strategy Laboratory API (Phase 4A).
+"""Strategy Laboratory API (Phase 4A; strategy logic, signal states and conflicts 4B).
 
-Reads: the catalog, strategy details, versions, configurations, status history, the
-feature registry, evaluations (with errors and feature snapshots) and proposals.
+Reads: the catalog (with current parameters and signal-state counts), strategy details,
+versions, configurations, status history, the feature registry, evaluations (with signal
+state, checks, eligibility, errors and feature snapshots; filterable by signal state),
+proposals (with levels and conflicts) and recorded proposal conflicts.
 Writes (operator token, audited): a new parameter version, and enable/disable. A strategy
-without evaluation logic (all six in Phase 4A) cannot be enabled.
+without evaluation logic cannot be enabled.
 
 There is no endpoint that approves, sizes or submits anything: proposals are hypotheses.
 No performance statistics are served because none exist.
@@ -32,7 +34,7 @@ from app.database.sessions import session_scope
 from app.feature_engine.registry import FEATURE_REGISTRY_VERSION
 from app.strategies import catalog, queries
 from app.strategies.base import Strategy, StrategyDefinitionError
-from app.strategies.enums import Direction, EvaluationStatus, ProposalStatus
+from app.strategies.enums import Direction, EvaluationStatus, ProposalStatus, SignalState
 from app.strategies.runtime import StrategyContext
 
 router = APIRouter(prefix="/strategies", tags=["strategies"])
@@ -61,6 +63,7 @@ def strategies(request: Request) -> StrategyContext:
 
 Context = Annotated[StrategyContext, Depends(strategies)]
 Limit = Annotated[int, Query(ge=1, le=200)]
+Timeframe = Annotated[str, Query(pattern="^(1Day|1Week)$")]
 
 
 # ------------------------------------------------------------------ models
@@ -93,6 +96,8 @@ class StrategySummary(BaseModel):
     last_evaluation_at: datetime | None
     proposals: int
     active_proposals: int
+    parameters: dict[str, Any] | None
+    signal_states: dict[str, int]
 
 
 class CatalogResponse(BaseModel):
@@ -156,6 +161,13 @@ class ProposalDetail(BaseModel):
     proposal: queries.ProposalView
     events: list[queries.ProposalEventView]
     snapshots: list[queries.SnapshotView]
+    conflicts: list[queries.ConflictView]
+    notes: list[str]
+
+
+class ConflictsResponse(BaseModel):
+    conflicts: list[queries.ConflictView]
+    as_of: datetime
     notes: list[str]
 
 
@@ -188,7 +200,15 @@ class StatusResult(BaseModel):
 
 
 # ------------------------------------------------------------------ helpers
-IMPLEMENTED = "Evaluation logic implemented."
+IMPLEMENTED = (
+    "Evaluation logic implemented (Phase 4B). Proposals are analytical hypotheses; default "
+    "parameters are not optimized and no performance is claimed."
+)
+CONFLICTS_NOTE = (
+    "A conflict records two overlapping proposals for the same asset in opposite "
+    "directions. Nothing is resolved here: competition between proposals belongs to the "
+    "Phase 5 decision coordinator."
+)
 NOT_IMPLEMENTED = (
     "Interface, parameters and feature dependencies only; evaluation logic arrives in "
     "Phase 4B. It is never evaluated and cannot be enabled until then."
@@ -209,8 +229,10 @@ def _summary(
     status = catalog.current_status(session, sid)
     configured: list[str] = []
     required: dict[str, Any] = {}
+    parameters: dict[str, Any] | None = None
     if version is not None:
-        configured = list(catalog.configuration(session, version).parameters.get("timeframes", []))
+        parameters = dict(catalog.configuration(session, version).parameters)
+        configured = list(parameters.get("timeframes", []))
         required = version.required_features
     c = counts.get(sid, {})
     return StrategySummary(
@@ -242,6 +264,8 @@ def _summary(
         last_evaluation_at=c.get("last_evaluation_at"),
         proposals=c.get("proposals", 0),
         active_proposals=c.get("active_proposals", 0),
+        parameters=parameters,
+        signal_states=c.get("signal_states", {}),
     )
 
 
@@ -267,7 +291,7 @@ def list_strategies(request: Request, ctx: Context) -> CatalogResponse:
         feature_registry_version=FEATURE_REGISTRY_VERSION,
         sync_problems=[] if sync is None else list(sync.problems),
         as_of=now,
-        notes=[queries.DISCLAIMER],
+        notes=[queries.DISCLAIMER, queries.PARAMETERS_NOTE],
     )
 
 
@@ -307,6 +331,8 @@ def list_evaluations(
     symbol: str | None = None,
     asset_id: uuid.UUID | None = None,
     status: EvaluationStatus | None = None,
+    signal_state: SignalState | None = None,
+    timeframe: Timeframe | None = None,
     before: datetime | None = None,
     limit: Limit = 50,
 ) -> EvaluationsResponse:
@@ -316,6 +342,8 @@ def list_evaluations(
             strategy_id=strategy_id,
             asset_id=_asset_id(session, symbol, asset_id),
             status=status,
+            signal_state=signal_state,
+            timeframe=timeframe,
             before=before,
             limit=limit,
         )
@@ -355,6 +383,7 @@ def list_proposals(
     asset_id: uuid.UUID | None = None,
     status: ProposalStatus | None = None,
     direction: Direction | None = None,
+    timeframe: Timeframe | None = None,
     before: datetime | None = None,
     limit: Limit = 50,
 ) -> ProposalsResponse:
@@ -367,6 +396,7 @@ def list_proposals(
             asset_id=_asset_id(session, symbol, asset_id),
             status=status,
             direction=direction,
+            timeframe=timeframe,
             before=before,
             limit=limit,
         )
@@ -389,8 +419,30 @@ def get_proposal(ctx: Context, proposal_id: uuid.UUID) -> ProposalDetail:
             proposal=found,
             events=queries.proposal_events(session, proposal_id),
             snapshots=snapshots,
-            notes=[queries.DISCLAIMER],
+            conflicts=queries.conflicts(session, now, proposal_id=proposal_id, limit=200),
+            notes=[queries.DISCLAIMER, CONFLICTS_NOTE],
         )
+
+
+@router.get("/conflicts", response_model=ConflictsResponse)
+def list_conflicts(
+    ctx: Context,
+    strategy_id: str | None = None,
+    symbol: str | None = None,
+    asset_id: uuid.UUID | None = None,
+    limit: Limit = 50,
+) -> ConflictsResponse:
+    """Recorded opposite-direction conflicts between proposals (newest first)."""
+    now = ctx.clock.now()
+    with session_scope(ctx.session_factory) as session:
+        rows = queries.conflicts(
+            session,
+            now,
+            asset_id=_asset_id(session, symbol, asset_id),
+            strategy_id=strategy_id,
+            limit=limit,
+        )
+    return ConflictsResponse(conflicts=rows, as_of=now, notes=[CONFLICTS_NOTE])
 
 
 # ------------------------------------------------------------------ one strategy

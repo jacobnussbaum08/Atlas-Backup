@@ -25,6 +25,7 @@ from app.strategies.base import StrategyDefinitionError, StrategyParameters
 from app.strategies.registry import default_registry
 from app.tests.integration.strategy_support import (
     FixtureParameters,
+    InterfaceOnlyFixture,
     ProposingStrategy,
     make_lab,
 )
@@ -58,7 +59,7 @@ def test_sync_registers_the_six_families_once(factory):
     with session_scope(factory) as session:
         versions = session.scalars(select(StrategyVersionRecord)).all()
         assert {v.strategy_id for v in versions} == {s.strategy_id for s in families}
-        assert all(not v.implemented for v in versions)
+        assert all(v.implemented for v in versions)  # Phase 4B
         momentum = catalog.latest_version(session, "momentum")
         config = catalog.configuration(session, momentum)
     # Every parameter is stored explicitly (defaults included) with its feature keys.
@@ -143,7 +144,7 @@ def test_versions_configurations_and_definitions_are_append_only(factory):
 
 
 def test_interface_only_strategies_cannot_be_enabled(factory):
-    strategy = default_registry().get("breakout")
+    strategy = InterfaceOnlyFixture()  # Phase 4B: the six families have logic now
     sync(factory, [strategy])
     with pytest.raises(catalog.StrategyStatusError, match="Phase 4B"), session_scope(factory) as s:
         catalog.set_status(s, strategy, enabled=True, reason="try", actor="test")
@@ -152,7 +153,7 @@ def test_interface_only_strategies_cannot_be_enabled(factory):
             session, strategy, enabled=False, reason="explicitly off", actor="test"
         )
         assert changed is True
-        assert catalog.is_enabled(session, "breakout") is False
+        assert catalog.is_enabled(session, strategy.strategy_id) is False
 
 
 def test_status_changes_are_recorded_history(fresh_engine):

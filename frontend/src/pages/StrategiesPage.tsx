@@ -1,11 +1,13 @@
 import { ChevronRight } from "lucide-react";
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { Link } from "react-router";
 
 import {
+  ConflictsTable,
   EvaluationsTable,
   FamilyBadge,
   ProposalsTable,
+  SignalStateCounts,
   StrategyStatusBadges,
 } from "../components/strategies";
 import {
@@ -26,9 +28,27 @@ import {
 import { useApiResource } from "../hooks/useApiResource";
 import { formatCount, humanize } from "../lib/format";
 import { strategies } from "../services/strategies";
-import type { ProposalStatus, StrategySummary } from "../types/strategies";
+import type { Direction, ParameterValue, ProposalStatus, SignalState, StrategySummary } from "../types/strategies";
 
 type ProposalFilter = "ALL" | ProposalStatus;
+type DirectionFilter = "ALL" | Direction;
+const DIRECTION_FILTERS: readonly { value: DirectionFilter; label: string }[] = [
+  { value: "ALL", label: "Both" },
+  { value: "LONG", label: "Long" },
+  { value: "SHORT", label: "Short" },
+];
+type ResultFilter = "ALL" | SignalState;
+const RESULT_FILTERS: readonly { value: ResultFilter; label: string }[] = [
+  { value: "ALL", label: "All" },
+  { value: "SIGNAL", label: "Signal" },
+  { value: "NO_SIGNAL", label: "No signal" },
+  { value: "INSUFFICIENT_DATA", label: "Insufficient" },
+  { value: "MISSING_DATA", label: "Missing" },
+  { value: "INELIGIBLE_ASSET", label: "Ineligible" },
+  { value: "FAILED", label: "Failed" },
+];
+// Parameters shown on a module card; the full configuration is on the strategy page.
+const SHARED_PARAMETERS = new Set(["timeframes", "directions", "min_signal_strength"]);
 const PROPOSAL_FILTERS: readonly { value: ProposalFilter; label: string }[] = [
   { value: "ALL", label: "All" },
   { value: "ACTIVE", label: "Active" },
@@ -45,7 +65,7 @@ export function StrategiesPage() {
     <section aria-labelledby="page-title">
       <PageHeader
         title="Strategy Laboratory"
-        description="Independent strategy families with immutable versions, validated parameters and point-in-time feature inputs. A proposal is a hypothesis: it carries no position size, is not approved and is never sent anywhere."
+        description="Six independent strategy modules with immutable versions, validated parameters and point-in-time feature inputs. A proposal is a hypothesis: it carries no position size, is not approved and is never sent anywhere."
         actions={<RefreshButton onClick={() => setRefresh((n) => n + 1)} loading={catalog.loading} />}
       />
       {catalog.status === "loading" && <Loading label="Loading strategies…" />}
@@ -64,8 +84,9 @@ export function StrategiesPage() {
             </Notice>
           ))}
           <p className="text-ink-faint text-2xs">
-            No performance statistics are shown: no strategy has traded or been backtested.
-            Signal strength is an uncalibrated score, not a probability.
+            No performance statistics are shown: no strategy has traded or been backtested (Phase 8).
+            Default parameters are conventional starting points, not optimized values. Signal strength is
+            an uncalibrated score, not a probability.
           </p>
           <ul aria-label="Strategy catalog" className="grid gap-3 md:grid-cols-2 2xl:grid-cols-3">
             {catalog.data.strategies.map((s) => (
@@ -75,9 +96,8 @@ export function StrategiesPage() {
             ))}
           </ul>
           <ProposalsPanel refreshKey={refresh} />
-          <Panel title="Evaluation history" subtitle="newest first">
-            <EvaluationsPanel refreshKey={refresh} />
-          </Panel>
+          <ConflictsPanel refreshKey={refresh} />
+          <EvaluationsSection refreshKey={refresh} />
           <FeatureRegistryPanel version={catalog.data.feature_registry_version} />
         </div>
       )}
@@ -85,8 +105,15 @@ export function StrategiesPage() {
   );
 }
 
+function showValue(value: ParameterValue): string {
+  if (Array.isArray(value)) return value.map(showValue).join(", ");
+  if (value === null) return "—";
+  return String(value);
+}
+
 function StrategyCard({ strategy: s }: { strategy: StrategySummary }) {
   const features = s.configured_timeframes.flatMap((tf) => s.required_features[tf] ?? []);
+  const parameters = Object.entries(s.parameters ?? {}).filter(([name]) => !SHARED_PARAMETERS.has(name));
   return (
     <Panel
       title={
@@ -136,6 +163,10 @@ function StrategyCard({ strategy: s }: { strategy: StrategySummary }) {
             ),
           },
           {
+            label: "Directions",
+            value: showValue(s.parameters?.["directions"] ?? null),
+          },
+          {
             label: "Activity",
             value: (
               <span className="num">
@@ -143,24 +174,58 @@ function StrategyCard({ strategy: s }: { strategy: StrategySummary }) {
               </span>
             ),
           },
+          {
+            label: "Last evaluated",
+            value: s.last_evaluation_at ? <Timestamp iso={s.last_evaluation_at} /> : "never",
+          },
+          { label: "Results", value: <SignalStateCounts counts={s.signal_states} /> },
         ]}
       />
+      {parameters.length > 0 && (
+        <details className="mt-2 text-xs">
+          <summary className="text-ink-muted hover:text-accent cursor-pointer">
+            Configuration ({parameters.length} parameters)
+          </summary>
+          <dl aria-label={`${s.name} configuration`} className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5">
+            {parameters.map(([name, value]) => (
+              <Fragment key={name}>
+                <dt className="text-ink-muted num">{name}</dt>
+                <dd className="num">{showValue(value)}</dd>
+              </Fragment>
+            ))}
+          </dl>
+        </details>
+      )}
     </Panel>
   );
 }
 
 function ProposalsPanel({ refreshKey }: { refreshKey: number }) {
   const [status, setStatus] = useState<ProposalFilter>("ALL");
+  const [direction, setDirection] = useState<DirectionFilter>("ALL");
   const proposals = useApiResource(
-    (signal) => strategies.proposals({ status: status === "ALL" ? undefined : status, limit: 50 }, { signal }),
-    [refreshKey, status],
+    (signal) =>
+      strategies.proposals(
+        {
+          status: status === "ALL" ? undefined : status,
+          direction: direction === "ALL" ? undefined : direction,
+          limit: 50,
+        },
+        { signal },
+      ),
+    [refreshKey, status, direction],
     { refreshMs: 30_000 },
   );
   return (
     <Panel
       title="Recent proposals"
       subtitle="hypotheses, not trades"
-      actions={<Segmented label="Proposal status" options={PROPOSAL_FILTERS} value={status} onChange={setStatus} />}
+      actions={
+        <span className="inline-flex flex-wrap gap-2">
+          <Segmented label="Proposal direction" options={DIRECTION_FILTERS} value={direction} onChange={setDirection} />
+          <Segmented label="Proposal status" options={PROPOSAL_FILTERS} value={status} onChange={setStatus} />
+        </span>
+      }
     >
       {proposals.status === "loading" && <Loading />}
       {proposals.status === "error" && <ErrorState message={proposals.error ?? ""} onRetry={proposals.reload} compact />}
@@ -169,10 +234,51 @@ function ProposalsPanel({ refreshKey }: { refreshKey: number }) {
   );
 }
 
-function EvaluationsPanel({ refreshKey, strategyId }: { refreshKey: number; strategyId?: string }) {
-  const evaluations = useApiResource(
-    (signal) => strategies.evaluations({ strategy_id: strategyId, limit: 50 }, { signal }),
+function ConflictsPanel({ refreshKey, strategyId }: { refreshKey: number; strategyId?: string }) {
+  const conflicts = useApiResource(
+    (signal) => strategies.conflicts({ strategy_id: strategyId, limit: 50 }, { signal }),
     [refreshKey, strategyId],
+    { refreshMs: 30_000 },
+  );
+  return (
+    <Panel title="Proposal conflicts" subtitle="recorded, not resolved (Phase 5 coordinator)">
+      {conflicts.status === "loading" && <Loading />}
+      {conflicts.status === "error" && <ErrorState message={conflicts.error ?? ""} onRetry={conflicts.reload} compact />}
+      {conflicts.data && <ConflictsTable conflicts={conflicts.data.conflicts} />}
+    </Panel>
+  );
+}
+
+function EvaluationsSection({ refreshKey, strategyId }: { refreshKey: number; strategyId?: string }) {
+  const [result, setResult] = useState<ResultFilter>("ALL");
+  return (
+    <Panel
+      title="Evaluation history"
+      subtitle="newest first"
+      actions={<Segmented label="Evaluation result" options={RESULT_FILTERS} value={result} onChange={setResult} />}
+    >
+      <EvaluationsPanel
+        refreshKey={refreshKey}
+        {...(strategyId === undefined ? {} : { strategyId })}
+        {...(result === "ALL" ? {} : { signalState: result })}
+      />
+    </Panel>
+  );
+}
+
+function EvaluationsPanel({
+  refreshKey,
+  strategyId,
+  signalState,
+}: {
+  refreshKey: number;
+  strategyId?: string;
+  signalState?: SignalState;
+}) {
+  const evaluations = useApiResource(
+    (signal) =>
+      strategies.evaluations({ strategy_id: strategyId, signal_state: signalState, limit: 50 }, { signal }),
+    [refreshKey, strategyId, signalState],
     { refreshMs: 30_000 },
   );
   if (evaluations.status === "loading") return <Loading />;
@@ -243,4 +349,4 @@ function FeatureRegistryPanel({ version }: { version: string }) {
   );
 }
 
-export { EvaluationsPanel };
+export { ConflictsPanel, EvaluationsPanel, EvaluationsSection };

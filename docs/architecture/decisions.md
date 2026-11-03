@@ -1169,3 +1169,106 @@ a second delivery path for little gain at daily granularity.
 status history, proposals and evaluation history, and the feature registry. It has no
 enable, parameter or execution controls (those are operator API calls) and shows no
 performance statistics: none exist until strategies trade or are backtested (Phases 7-8).
+
+## Phase 4B — six trading strategies
+
+### D-090 Strategies compute only from registry features and record every condition
+
+**Decision:** the six strategies read features through `EvaluationContext` and nothing else;
+every indicator comes from the feature registry (Phase 3B `indicators` plus additions). What
+strategies share (`app/strategies/signals.py`) is bookkeeping: an `Assessment` per direction
+evaluates *every* condition (no short-circuit) and records it as a check (passed, failed or
+informational); passed checks become the proposal's evidence; `make_levels` rejects invalid
+price relationships (non-positive, wrong side, collapsed by rounding); `strength` is the mean
+of components clamped to [0, 1]. A strategy that finds inconsistent but VALID inputs (e.g. a
+non-positive ATR) returns `invalid_data` instead of "no signal".
+
+**Why:** an evaluation without a proposal must still say exactly why, and the same
+indicator must never exist twice with diverging maths.
+
+### D-091 New features are new names, not new versions of existing ones
+
+**Decision:** Phase 4B added `close_location`, `true_range_ratio`, `log_slope`,
+`log_slope_tstat`, `realized_volatility_percentile`, `prior_bollinger_width_percentile`,
+`failed_breakout_count`, `relative_return` and `period_news_count`, all at v1. No existing
+definition changed. `relative_return` introduces the `BENCHMARK` feature source: the
+benchmark's bars are loaded for exactly the same completed periods and knowledge time; a
+missing period in either series is `MISSING_INPUTS`, an unknown or ambiguous benchmark
+`UNAVAILABLE` (migration 0010 widens the `feature_source` CHECK).
+
+**Why:** a v2 of an existing feature would change the resolved keys of Phase 4A strategies
+and stored snapshots; new names keep every earlier key and hash valid.
+
+### D-092 Point-in-time asset eligibility; SHORT needs shortable and easy to borrow
+
+**Decision:** before any input is computed, the engine loads the newest Phase 3A provider
+reference version observed by the evaluation's knowledge time. No version, a non-ACTIVE
+status or `tradable` not true makes the asset ineligible (`INELIGIBLE_ASSET`, no snapshot).
+A SHORT hypothesis additionally needs `shortable` and `easy_to_borrow` both reported true;
+unknown counts as no. If no configured direction is eligible the evaluation is
+`INELIGIBLE_ASSET`; otherwise the blocked direction is a failed `eligibility` check and its
+drafts are dropped by validation.
+
+**Why:** flags known later must not leak into historical evaluations, and a short
+hypothesis on an unborrowable asset is not a hypothesis Atlas could ever act on. This gates
+analysis only; it authorizes nothing (risk control is later).
+
+### D-093 Evaluations record a signal state
+
+**Decision:** `strategy_evaluations.signal_state` distinguishes SIGNAL, NO_SIGNAL,
+INSUFFICIENT_DATA, MISSING_DATA (gap or stale), UNAVAILABLE_DATA (source not covering the
+window), INVALID_DATA, INELIGIBLE_ASSET, DUPLICATE and FAILED, with `signal_reason`, the
+checks and the eligibility used. A blocked evaluation's state follows its worst feature
+status in that order. Expired is a property of a proposal (derived status), not of an
+evaluation. CHECKs tie the state to the status (RUNNING has none; PROPOSED is SIGNAL);
+pre-4B rows were backfilled from status and skip reasons.
+
+### D-094 One proposal per strategy, asset, timeframe, direction, mode, basis and event
+
+**Decision:** a proposal stores its `evaluation_event` (`<trigger>:<trigger_ref>`), unique
+together with strategy, asset, timeframe, direction, mode and basis. The engine checks under
+a per-asset advisory lock and records a repeat as DUPLICATE (with the existing proposal's
+id); the unique constraint is the backstop. The key is per strategy, not per version, so a
+new parameter version re-evaluating the same completed period cannot propose it again.
+
+### D-095 Opposing proposals are recorded as conflicts, never resolved
+
+**Decision:** when a proposal is stored, every proposal for the same asset, mode and basis in
+the opposite direction whose active period overlaps (and that was not superseded by then)
+is recorded in `strategy_proposal_conflicts` (append-only; ordered pair, so once). Both
+proposals stay as they were. Conflicts include different timeframes and the same strategy
+(flagged). The per-asset advisory lock serialises proposal writes so concurrent strategies
+see each other's proposals.
+
+**Why:** different strategies may legitimately disagree; choosing between them is the
+Phase 5 coordinator's job, which needs the disagreement on record.
+
+### D-096 Event-driven: events must precede the reaction; direction comes from price
+
+**Decision:** event-driven counts articles with `period_news_count`, whose window runs from
+the close of the session `event_sessions` before the newest completed one to the newest
+one's close (exchange calendar, so weekends and holidays are covered), with only events
+available by the knowledge time. Direction comes only from the price reaction (in ATR),
+confirmed by volume and close location; Atlas stores no sentiment and article wording is
+never an input. Missing coverage blocks (UNAVAILABLE), never counts as no news.
+Macroeconomic and central-bank events are not evaluated: the economic calendar is
+NOT_CONFIGURED (D-077), and every evaluation records this.
+
+### D-097 Mean reversion: opposing trends by regression slope and regimes, not ADX
+
+**Decision:** "do not trade blindly against strong trends" is implemented as: the long-term
+SMA filter; no proposal when the `trend_slope_length` (50) regression slope opposes the
+trade with a t-statistic of at least `max_opposing_slope_tstat` (3); a BEARISH (for LONG) or
+BULLISH (for SHORT) Phase 3B market trend regime; and blocked market volatility regimes
+(EXTREME). ADX is recorded as context only.
+
+**Why:** testing showed ADX(14) is driven by the very selloff that creates the stretch, so
+an ADX guard rejected nearly every genuine setup; a longer regression measures an
+*established* trend.
+
+### D-098 Catalog sync writes new parameter fields' defaults into a new configuration
+
+**Decision:** when the code adds parameter fields, sync creates the new version with a new
+configuration that keeps every stored value and writes the new fields' defaults explicitly;
+the version's reason names the added fields. Renamed or removed fields still make sync
+report a problem instead of guessing. All six families kept every Phase 4A parameter name.

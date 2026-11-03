@@ -221,3 +221,26 @@ def test_regime_features_are_point_in_time_and_age_limited(env):
     )
     assert stale.status is FeatureStatus.UNAVAILABLE
     assert "old" in (stale.reason or "")
+
+
+def period_news(env, closes, **params):
+    feature = REGISTRY.resolve(FeatureRequest("period_news_count", "1Day", params))
+    ctx = StoredContext(env.assets["FXC"], NOW, NOW, KnowledgeBasis.RECORDED, tuple(closes))
+    with session_scope(env.factory) as session:
+        return compute_stored_features(session, [feature], ctx)[feature.key]
+
+
+def test_period_news_count_counts_only_articles_before_the_session_close(env):
+    """Phase 4B: the event-driven strategy's window ends at the newest session close, so
+    an article published after that close cannot explain the period's price reaction."""
+    closes = (NOW - timedelta(hours=25), NOW - timedelta(minutes=90))  # FIXTURE closes
+    assert period_news(env, closes).status is FeatureStatus.UNAVAILABLE  # no coverage yet
+    backfill(env, NOW - timedelta(hours=48), NOW)
+    value = period_news(env, closes)
+    # Article 1 (3 h before NOW) counts; article 2 (1 h before NOW, after the close) and
+    # article 3 (before the previous close) do not.
+    assert (value.status, value.value) == (FeatureStatus.VALID, 1.0)
+    assert value.inputs["window_end"] == closes[-1].isoformat()
+    wider = period_news(env, (NOW - timedelta(hours=40), *closes), sessions=2)
+    assert wider.value == 2.0  # now article 3 (30 h before NOW) is inside the window
+    assert period_news(env, ()).status is FeatureStatus.UNAVAILABLE

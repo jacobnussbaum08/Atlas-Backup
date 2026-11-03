@@ -1,4 +1,5 @@
-"""Read models of the Strategy Laboratory (Phase 4A) for the API and dashboard.
+"""Read models of the Strategy Laboratory (Phase 4A; signal states, checks, levels and
+conflicts Phase 4B) for the API and dashboard.
 
 Proposal status is derived at read time: SUPERSEDED if a newer proposal superseded it,
 EXPIRED once its expiry passed, ACTIVE otherwise. Nothing here computes performance:
@@ -24,6 +25,7 @@ from app.database.models import (
     StrategyEvaluationRecord,
     StrategyEvaluationSnapshotRecord,
     StrategyFeatureSnapshotRecord,
+    StrategyProposalConflictRecord,
     StrategyProposalEventRecord,
     StrategyProposalRecord,
     StrategyStatusEventRecord,
@@ -31,12 +33,14 @@ from app.database.models import (
 )
 from app.market_intelligence.enums import KnowledgeBasis
 from app.strategies.enums import (
+    ConflictKind,
     Direction,
     ErrorStage,
     EvaluationMode,
     EvaluationStatus,
     ProposalEventKind,
     ProposalStatus,
+    SignalState,
     StrengthKind,
     TriggerKind,
 )
@@ -46,6 +50,11 @@ DISCLAIMER = (
     "are not approved trades, carry no position size and were not sent anywhere; signal "
     "strength is an uncalibrated score, not a probability. No strategy has been traded or "
     "backtested, so there are no performance statistics."
+)
+PARAMETERS_NOTE = (
+    "Strategy parameters are conventional starting points, versioned and configurable; they "
+    "are not optimized, and no claim is made about any strategy's returns. Formal "
+    "backtesting and comparison belong to Phase 8."
 )
 
 
@@ -100,6 +109,8 @@ class EvaluationView(BaseModel):
     strategy_id: str
     strategy_version_id: uuid.UUID
     version: int
+    logic_version: str
+    configuration_id: uuid.UUID
     asset_id: uuid.UUID
     symbol: str
     timeframe: str
@@ -118,6 +129,10 @@ class EvaluationView(BaseModel):
     skip_reasons: list[dict[str, Any]]
     notes: list[str]
     worker_id: str
+    signal_state: SignalState | None
+    signal_reason: str | None
+    checks: list[dict[str, Any]]
+    eligibility: dict[str, Any] | None
 
 
 class SnapshotView(BaseModel):
@@ -174,6 +189,36 @@ class ProposalView(BaseModel):
     expires_at: datetime
     created_at: datetime
     status: ProposalStatus
+    evaluation_event: str
+    levels: dict[str, Any]
+    conflict_count: int
+
+
+class ProposalBrief(BaseModel):
+    id: uuid.UUID
+    strategy_id: str
+    direction: Direction
+    timeframe: str
+    signal_at: datetime
+    expires_at: datetime
+    reference_entry: Decimal
+    signal_strength: Decimal
+    status: ProposalStatus
+
+
+class ConflictView(BaseModel):
+    id: int
+    kind: ConflictKind
+    asset_id: uuid.UUID
+    symbol: str
+    mode: EvaluationMode
+    basis: KnowledgeBasis
+    overlap_start: datetime
+    overlap_end: datetime
+    detected_by: uuid.UUID
+    detected_at: datetime
+    same_strategy: bool
+    proposals: list[ProposalBrief]
 
 
 def version_view(
@@ -255,7 +300,8 @@ def status_history(session: Session, strategy_id: str) -> list[StatusEventView]:
 
 
 def counts(session: Session, now: datetime) -> dict[str, dict[str, Any]]:
-    """Per strategy: evaluations, last evaluation time, proposals total and active."""
+    """Per strategy: evaluations (and by signal state), last evaluation time, proposals
+    total and active."""
     e, p = StrategyEvaluationRecord, StrategyProposalRecord
     out: dict[str, dict[str, Any]] = {}
     for sid, total, last in session.execute(
@@ -263,6 +309,13 @@ def counts(session: Session, now: datetime) -> dict[str, dict[str, Any]]:
     ):
         out.setdefault(sid, {})["evaluations"] = int(total)
         out[sid]["last_evaluation_at"] = last
+    for sid, state, total in session.execute(
+        select(e.strategy_id, e.signal_state, func.count())
+        .where(e.signal_state.is_not(None))
+        .group_by(e.strategy_id, e.signal_state)
+    ):
+        if state is not None:
+            out.setdefault(sid, {}).setdefault("signal_states", {})[state.value] = int(total)
     superseded = exists().where(
         StrategyProposalEventRecord.proposal_id == p.id,
         StrategyProposalEventRecord.kind == ProposalEventKind.SUPERSEDED,
@@ -276,16 +329,28 @@ def counts(session: Session, now: datetime) -> dict[str, dict[str, Any]]:
     return out
 
 
-def _evaluation_select() -> Select[StrategyEvaluationRecord, int, str]:
+def _evaluation_select() -> Select[StrategyEvaluationRecord, int, str, str, uuid.UUID]:
     e = StrategyEvaluationRecord
     return (
-        select(e, StrategyVersionRecord.version, Asset.symbol)
+        select(
+            e,
+            StrategyVersionRecord.version,
+            Asset.symbol,
+            StrategyVersionRecord.logic_version,
+            StrategyVersionRecord.configuration_id,
+        )
         .join(StrategyVersionRecord, StrategyVersionRecord.id == e.strategy_version_id)
         .join(Asset, Asset.id == e.asset_id)
     )
 
 
-def _evaluation_view(e: StrategyEvaluationRecord, version: int, symbol: str) -> EvaluationView:
+def _evaluation_view(
+    e: StrategyEvaluationRecord,
+    version: int,
+    symbol: str,
+    logic_version: str,
+    configuration_id: uuid.UUID,
+) -> EvaluationView:
     duration = (
         None
         if e.finished_at is None
@@ -296,6 +361,8 @@ def _evaluation_view(e: StrategyEvaluationRecord, version: int, symbol: str) -> 
         strategy_id=e.strategy_id,
         strategy_version_id=e.strategy_version_id,
         version=version,
+        logic_version=logic_version,
+        configuration_id=configuration_id,
         asset_id=e.asset_id,
         symbol=symbol,
         timeframe=e.timeframe,
@@ -314,6 +381,10 @@ def _evaluation_view(e: StrategyEvaluationRecord, version: int, symbol: str) -> 
         skip_reasons=e.skip_reasons,
         notes=e.notes,
         worker_id=e.worker_id,
+        signal_state=e.signal_state,
+        signal_reason=e.signal_reason,
+        checks=e.checks,
+        eligibility=e.eligibility,
     )
 
 
@@ -323,6 +394,8 @@ def evaluations(
     strategy_id: str | None = None,
     asset_id: uuid.UUID | None = None,
     status: EvaluationStatus | None = None,
+    signal_state: SignalState | None = None,
+    timeframe: str | None = None,
     before: datetime | None = None,
     limit: int = 50,
 ) -> list[EvaluationView]:
@@ -334,17 +407,21 @@ def evaluations(
         stmt = stmt.where(e.asset_id == asset_id)
     if status is not None:
         stmt = stmt.where(e.status == status)
+    if signal_state is not None:
+        stmt = stmt.where(e.signal_state == signal_state)
+    if timeframe is not None:
+        stmt = stmt.where(e.timeframe == timeframe)
     if before is not None:
         stmt = stmt.where(e.started_at < before)
     rows = session.execute(stmt.order_by(e.started_at.desc(), e.id.desc()).limit(limit)).all()
-    return [_evaluation_view(r[0], r[1], r[2]) for r in rows]
+    return [_evaluation_view(*r) for r in rows]
 
 
 def evaluation(session: Session, evaluation_id: uuid.UUID) -> EvaluationView | None:
     row = session.execute(
         _evaluation_select().where(StrategyEvaluationRecord.id == evaluation_id)
     ).first()
-    return None if row is None else _evaluation_view(row[0], row[1], row[2])
+    return None if row is None else _evaluation_view(*row)
 
 
 def evaluation_errors(session: Session, evaluation_id: uuid.UUID) -> list[ErrorView]:
@@ -415,21 +492,37 @@ def _status(p: StrategyProposalRecord, superseded: bool, now: datetime) -> Propo
     return ProposalStatus.EXPIRED if p.expires_at <= now else ProposalStatus.ACTIVE
 
 
-def _proposal_views(session: Session, rows: Sequence[Any], now: datetime) -> list[ProposalView]:
-    ids = [r[0].id for r in rows]
-    superseded = (
-        set(
-            session.scalars(
-                select(StrategyProposalEventRecord.proposal_id).where(
-                    StrategyProposalEventRecord.proposal_id.in_(ids),
-                    StrategyProposalEventRecord.kind == ProposalEventKind.SUPERSEDED,
-                    StrategyProposalEventRecord.occurred_at <= now,
-                )
+def _superseded(session: Session, ids: Sequence[uuid.UUID], now: datetime) -> set[uuid.UUID]:
+    if not ids:
+        return set()
+    return set(
+        session.scalars(
+            select(StrategyProposalEventRecord.proposal_id).where(
+                StrategyProposalEventRecord.proposal_id.in_(list(ids)),
+                StrategyProposalEventRecord.kind == ProposalEventKind.SUPERSEDED,
+                StrategyProposalEventRecord.occurred_at <= now,
             )
         )
-        if ids
-        else set()
     )
+
+
+def _conflict_counts(session: Session, ids: Sequence[uuid.UUID]) -> dict[uuid.UUID, int]:
+    if not ids:
+        return {}
+    c = StrategyProposalConflictRecord
+    out: dict[uuid.UUID, int] = {}
+    for column in (c.proposal_a_id, c.proposal_b_id):
+        for pid, total in session.execute(
+            select(column, func.count()).where(column.in_(list(ids))).group_by(column)
+        ):
+            out[pid] = out.get(pid, 0) + int(total)
+    return out
+
+
+def _proposal_views(session: Session, rows: Sequence[Any], now: datetime) -> list[ProposalView]:
+    ids = [r[0].id for r in rows]
+    superseded = _superseded(session, ids, now)
+    conflict_counts = _conflict_counts(session, ids)
     views = []
     for p, version, symbol in rows:
         views.append(
@@ -460,6 +553,9 @@ def _proposal_views(session: Session, rows: Sequence[Any], now: datetime) -> lis
                 expires_at=p.expires_at,
                 created_at=p.created_at,
                 status=_status(p, p.id in superseded, now),
+                evaluation_event=p.evaluation_event,
+                levels=p.levels,
+                conflict_count=conflict_counts.get(p.id, 0),
             )
         )
     return views
@@ -474,6 +570,7 @@ def proposals(
     status: ProposalStatus | None = None,
     direction: Direction | None = None,
     evaluation_id: uuid.UUID | None = None,
+    timeframe: str | None = None,
     before: datetime | None = None,
     limit: int = 50,
 ) -> list[ProposalView]:
@@ -481,6 +578,8 @@ def proposals(
     stmt = _proposal_select()
     if strategy_id is not None:
         stmt = stmt.where(p.strategy_id == strategy_id)
+    if timeframe is not None:
+        stmt = stmt.where(p.timeframe == timeframe)
     if asset_id is not None:
         stmt = stmt.where(p.asset_id == asset_id)
     if direction is not None:
@@ -528,17 +627,81 @@ def proposal_events(session: Session, proposal_id: uuid.UUID) -> list[ProposalEv
     ]
 
 
+def conflicts(
+    session: Session,
+    now: datetime,
+    *,
+    asset_id: uuid.UUID | None = None,
+    strategy_id: str | None = None,
+    proposal_id: uuid.UUID | None = None,
+    limit: int = 50,
+) -> list[ConflictView]:
+    """Recorded opposite-direction conflicts, newest first (Phase 4B)."""
+    c, p = StrategyProposalConflictRecord, StrategyProposalRecord
+    stmt = select(c, Asset.symbol).join(Asset, Asset.id == c.asset_id)
+    if asset_id is not None:
+        stmt = stmt.where(c.asset_id == asset_id)
+    if proposal_id is not None:
+        stmt = stmt.where((c.proposal_a_id == proposal_id) | (c.proposal_b_id == proposal_id))
+    if strategy_id is not None:
+        members = select(p.id).where(p.strategy_id == strategy_id)
+        stmt = stmt.where(c.proposal_a_id.in_(members) | c.proposal_b_id.in_(members))
+    rows = session.execute(stmt.order_by(c.detected_at.desc(), c.id.desc()).limit(limit)).all()
+    ids = list({pid for r in rows for pid in (r[0].proposal_a_id, r[0].proposal_b_id)})
+    found = {x.id: x for x in session.scalars(select(p).where(p.id.in_(ids)))} if ids else {}
+    superseded = _superseded(session, ids, now)
+
+    def brief(pid: uuid.UUID) -> ProposalBrief:
+        x = found[pid]
+        return ProposalBrief(
+            id=x.id,
+            strategy_id=x.strategy_id,
+            direction=x.direction,
+            timeframe=x.timeframe,
+            signal_at=x.signal_at,
+            expires_at=x.expires_at,
+            reference_entry=x.reference_entry,
+            signal_strength=x.signal_strength,
+            status=_status(x, x.id in superseded, now),
+        )
+
+    views = []
+    for record, symbol in rows:
+        pair = [brief(record.proposal_a_id), brief(record.proposal_b_id)]
+        views.append(
+            ConflictView(
+                id=record.id,
+                kind=record.kind,
+                asset_id=record.asset_id,
+                symbol=symbol,
+                mode=record.mode,
+                basis=record.basis,
+                overlap_start=record.overlap_start,
+                overlap_end=record.overlap_end,
+                detected_by=record.detected_by,
+                detected_at=record.detected_at,
+                same_strategy=pair[0].strategy_id == pair[1].strategy_id,
+                proposals=pair,
+            )
+        )
+    return views
+
+
 __all__ = [
     "DISCLAIMER",
+    "PARAMETERS_NOTE",
     "ConfigurationView",
+    "ConflictView",
     "ErrorView",
     "EvaluationView",
+    "ProposalBrief",
     "ProposalEventView",
     "ProposalView",
     "SnapshotView",
     "StatusEventView",
     "VersionView",
     "configurations",
+    "conflicts",
     "counts",
     "evaluation",
     "evaluation_errors",

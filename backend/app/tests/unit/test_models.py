@@ -84,6 +84,7 @@ def test_expected_tables_exist():
         "strategy_evaluation_errors",
         "strategy_proposals",
         "strategy_proposal_events",
+        "strategy_proposal_conflicts",  # Phase 4B
     }
 
 

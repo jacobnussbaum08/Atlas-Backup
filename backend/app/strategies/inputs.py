@@ -7,7 +7,9 @@
 * the newest revision of each of those periods' daily bars that Atlas had stored by the
   knowledge time (``reads.daily_bars``, the Phase 3B query); only VALID bars count;
 * stored Phase 3B regimes and Phase 3C news events available by then
-  (``app.feature_engine.stored``).
+  (``app.feature_engine.stored``);
+* for benchmark features (Phase 4B), the benchmark asset's bars for exactly the same
+  periods under the same rules.
 
 Knowledge basis (``KnowledgeBasis``, as Phase 3B): RECORDED evaluations use what Atlas had
 stored by the cutoff itself (``known_at = data_cutoff``), the strict point-in-time view a
@@ -18,7 +20,7 @@ for periods that had completed by the cutoff, and are labelled as such.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Hashable, Sequence
+from collections.abc import Callable, Hashable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
@@ -29,9 +31,10 @@ from sqlalchemy.orm import Session
 
 from app.asset_discovery.sessions import ExchangeCalendar
 from app.data_engine.enums import PriceAdjustment
-from app.database.models import StrategyFeatureSnapshotRecord
+from app.database.models import Asset, AssetClass, AssetStatus, StrategyFeatureSnapshotRecord
 from app.database.repositories import universe as reads
 from app.feature_engine.bar_features import BarHistory, compute_bar_features
+from app.feature_engine.benchmark import Benchmark, compute_benchmark_feature
 from app.feature_engine.features import Bar, weekly_bars
 from app.feature_engine.registry import (
     DAILY,
@@ -90,6 +93,10 @@ class FeatureInputs:
         )
 
 
+# Session closes handed to stored features (period_news_count: up to 5 sessions back).
+SESSION_CLOSES = 6
+
+
 def knowledge_time(basis: KnowledgeBasis, data_cutoff: datetime, now: datetime) -> datetime:
     return data_cutoff if basis is KnowledgeBasis.RECORDED else max(now, data_cutoff)
 
@@ -145,6 +152,22 @@ def _history(
     return BarHistory(timeframe, list(weeks), bars)
 
 
+def _benchmark(session: Session, symbol: str, load: Callable[[uuid.UUID], BarHistory]) -> Benchmark:
+    """The benchmark asset by symbol (an active US equity or ETF) and its history."""
+    found = session.scalars(
+        select(Asset.id).where(
+            Asset.symbol == symbol,
+            Asset.status == AssetStatus.ACTIVE,
+            Asset.asset_class.in_([AssetClass.EQUITY, AssetClass.ETF]),
+        )
+    ).all()
+    if not found:
+        return Benchmark(symbol, None, None, f"benchmark {symbol} is not an Atlas asset")
+    if len(found) > 1:
+        return Benchmark(symbol, None, None, f"benchmark symbol {symbol} is ambiguous")
+    return Benchmark(symbol, found[0], load(found[0]))
+
+
 def compute_features(
     session: Session,
     features: Sequence[ResolvedFeature],
@@ -161,28 +184,46 @@ def compute_features(
     if basis is KnowledgeBasis.RECORDED and known_at != data_cutoff:
         raise ValueError("RECORDED inputs are those known at the cutoff itself")
     bar_features = [f for f in features if f.definition.source is FeatureSource.BARS]
-    stored_features = [f for f in features if f.definition.source is not FeatureSource.BARS]
+    pair_features = [f for f in features if f.definition.source is FeatureSource.BENCHMARK]
+    stored_features = [
+        f
+        for f in features
+        if f.definition.source not in (FeatureSource.BARS, FeatureSource.BENCHMARK)
+    ]
     for f in features:
         if f.timeframe != timeframe:
             raise ValueError(f"{f.key} is not on the evaluation timeframe {timeframe}")
     values: dict[str, FeatureValue] = {}
     last_event: datetime | None = None
-    window = max((f.window for f in bar_features), default=1)
-    history = _history(
-        session,
-        asset_id,
-        timeframe,
-        window,
-        data_cutoff=data_cutoff,
-        known_at=known_at,
-        series=series,
-    )
+    window = max((f.window for f in (*bar_features, *pair_features)), default=1)
+
+    def load(target: uuid.UUID) -> BarHistory:
+        return _history(
+            session,
+            target,
+            timeframe,
+            window,
+            data_cutoff=data_cutoff,
+            known_at=known_at,
+            series=series,
+        )
+
+    history = load(asset_id)
     if history.periods and history.periods[-1] in history.bars:
         last_event = history.bars[history.periods[-1]].event_time
     if bar_features:
         values.update(compute_bar_features(bar_features, history))
+    if pair_features:
+        benchmarks: dict[str, Benchmark] = {}
+        for f in pair_features:
+            symbol = str(f.param_map["benchmark"])
+            if symbol not in benchmarks:
+                benchmarks[symbol] = _benchmark(session, symbol, load)
+            values[f.key] = compute_benchmark_feature(f, history, benchmarks[symbol], asset_id)
     if stored_features:
-        ctx = StoredContext(asset_id, data_cutoff, known_at, basis)
+        newest = completed_daily(series.calendar, data_cutoff, SESSION_CLOSES, series.settle)
+        closes = tuple(s.regular_close for s in newest)
+        ctx = StoredContext(asset_id, data_cutoff, known_at, basis, closes)
         values.update(compute_stored_features(session, stored_features, ctx))
     return FeatureInputs(
         asset_id=asset_id,

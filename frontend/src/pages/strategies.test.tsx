@@ -8,10 +8,13 @@ import { installFakeLive, LAYOUT_ROUTES, stubApi } from "../test/marketFixtures"
 import {
   CATALOG,
   CATALOG_WITH_FIXTURE,
+  CONFLICTS,
+  EMPTY_CONFLICTS,
   EMPTY_EVALUATIONS,
   EMPTY_PROPOSALS,
   EVALUATIONS,
   FEATURES,
+  INTERFACE_ONLY_CATALOG,
   MOMENTUM_DETAIL,
   PROPOSALS,
 } from "../test/strategyFixtures";
@@ -32,6 +35,7 @@ const EMPTY_ROUTES = {
   "/api/v1/strategies/proposals": { body: EMPTY_PROPOSALS },
   "/api/v1/strategies/evaluations": { body: EMPTY_EVALUATIONS },
   "/api/v1/strategies/features": { body: FEATURES },
+  "/api/v1/strategies/conflicts": { body: EMPTY_CONFLICTS },
 };
 
 beforeEach(() => {
@@ -47,13 +51,36 @@ describe("Strategy Laboratory", () => {
     expect(cards).toHaveLength(6);
     const momentum = within(cards[3]!);
     expect(momentum.getByRole("link", { name: /Momentum/ })).toHaveAttribute("href", "/strategies/momentum");
-    expect(momentum.getByText("v1 · momentum-interface-1")).toBeInTheDocument();
+    expect(momentum.getByText("v1 · momentum-1")).toBeInTheDocument();
     expect(momentum.getByText("Equity, Etf")).toBeInTheDocument();
     expect(momentum.getByText("Disabled")).toBeInTheDocument();
-    expect(momentum.getByText("Interface only")).toBeInTheDocument();
+    expect(momentum.getByText("Logic implemented")).toBeInTheDocument();
     expect(momentum.getByText("2 required, 1 optional")).toBeInTheDocument();
+    expect(momentum.getByText("none yet")).toBeInTheDocument();
+    expect(momentum.getByText("LONG, SHORT")).toBeInTheDocument();
     expect(within(cards[1]!).getByText("Bar close + News event")).toBeInTheDocument();
-    expect(screen.getByText(/no evaluation logic yet \(Phase 4B\)/)).toBeInTheDocument();
+    expect(screen.queryByText(/no evaluation logic yet/)).toBeNull();
+  });
+
+  it("explains interface-only strategies when no family has logic", async () => {
+    stubApi({ ...EMPTY_ROUTES, "/api/v1/strategies": { body: INTERFACE_ONLY_CATALOG } });
+    renderAt("/strategies");
+    expect(await screen.findByText(/no evaluation logic yet \(Phase 4B\)/)).toBeInTheDocument();
+    expect(screen.getAllByText("Interface only")).toHaveLength(6);
+  });
+
+  it("shows each module's configuration and evaluation results", async () => {
+    stubApi({ ...EMPTY_ROUTES, "/api/v1/strategies": { body: CATALOG_WITH_FIXTURE } });
+    renderAt("/strategies");
+    const catalog = await screen.findByRole("list", { name: "Strategy catalog" });
+    const fixture = within(within(catalog).getAllByRole("listitem")[6]!);
+    const results = fixture.getByLabelText("Evaluation results");
+    expect(within(results).getByText(/Signal/)).toBeInTheDocument();
+    expect(within(results).getByText(/Missing data/)).toBeInTheDocument();
+    fireEvent.click(fixture.getByText("Configuration (2 parameters)"));
+    const config = fixture.getByLabelText("Fixture proposer configuration");
+    expect(within(config).getByText("atr_length")).toBeInTheDocument();
+    expect(within(config).getByText("14")).toBeInTheDocument();
   });
 
   it("shows honest empty states and no performance figures or execution controls", async () => {
@@ -93,7 +120,51 @@ describe("Strategy Laboratory", () => {
     expect(within(evaluations).getByText("Skipped")).toBeInTheDocument();
     expect(within(evaluations).getByText("sma.v1(length=5)@1Day: missing inputs")).toBeInTheDocument();
     expect(within(evaluations).getByText("Historical · Reconstructed")).toBeInTheDocument();
-    expect(screen.getByText("Logic implemented")).toBeInTheDocument();
+    expect(screen.getAllByText("Logic implemented")).toHaveLength(7);
+  });
+
+  it("shows a proposal's levels and supporting evidence, and recorded conflicts", async () => {
+    stubApi({
+      ...EMPTY_ROUTES,
+      "/api/v1/strategies/proposals": { body: PROPOSALS },
+      "/api/v1/strategies/conflicts": { body: CONFLICTS },
+    });
+    renderAt("/strategies");
+    const proposals = await screen.findByRole("table", { name: "Strategy proposals" });
+    expect(within(proposals).getByText("Conflict")).toBeInTheDocument();
+    fireEvent.click(within(proposals).getByRole("button", { name: "Evidence" }));
+    const methods = within(proposals).getByLabelText("Level methods");
+    expect(within(methods).getByText("entry -/+ 2.0 x ATR14")).toBeInTheDocument();
+    expect(within(methods).getByText("1.00")).toBeInTheDocument();
+    const evidence = within(proposals).getByRole("list", { name: "Supporting evidence" });
+    expect(within(evidence).getByText("close.v1()@1Day")).toBeInTheDocument();
+    expect(within(proposals).getByText(/1 recorded conflict/)).toBeInTheDocument();
+    const conflicts = await screen.findByRole("table", { name: "Proposal conflicts" });
+    expect(within(conflicts).getByText("fixture_short")).toBeInTheDocument();
+    expect(within(conflicts).getByText("Short")).toBeInTheDocument();
+    expect(screen.getByText(/recorded, not resolved/)).toBeInTheDocument();
+  });
+
+  it("shows an evaluation's result, checks and eligibility, and filters by result", async () => {
+    const stub = stubApi({ ...EMPTY_ROUTES, "/api/v1/strategies/evaluations": { body: EVALUATIONS } });
+    renderAt("/strategies");
+    const evaluations = await screen.findByRole("table", { name: "Evaluation history" });
+    expect(within(evaluations).getByText("Missing data")).toBeInTheDocument();
+    fireEvent.click(within(evaluations).getByRole("button", { name: "3 checks" }));
+    const checks = within(evaluations).getByRole("list", { name: "Evaluated conditions" });
+    expect(within(checks).getByText(/volume ratio 0.9/)).toBeInTheDocument();
+    expect(within(checks).getByText("(failed)", { exact: false })).toBeInTheDocument();
+    expect(within(evaluations).getByText(/long yes,\s*short no/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("radio", { name: "Ineligible" }));
+    await waitFor(() =>
+      expect(
+        stub.calls.some(
+          (c) =>
+            c.url.pathname === "/api/v1/strategies/evaluations" &&
+            c.url.searchParams.get("signal_state") === "INELIGIBLE_ASSET",
+        ),
+      ).toBe(true),
+    );
   });
 
   it("filters proposals by status", async () => {

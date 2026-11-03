@@ -52,6 +52,9 @@ class StoredContext:
     data_cutoff: datetime
     known_at: datetime
     basis: KnowledgeBasis
+    # Regular closes of the newest sessions completed and settled by the cutoff, oldest
+    # first (the window of ``period_news_count``); empty when unknown.
+    session_closes: tuple[datetime, ...] = ()
 
 
 def compute_stored_features(
@@ -206,14 +209,22 @@ def _news(
     session: Session, feature: ResolvedFeature, ctx: StoredContext, symbol: str
 ) -> FeatureValue:
     p = feature.param_map
-    start = ctx.data_cutoff - timedelta(hours=int(p["lookback_hours"]))
+    if feature.definition.name == "period_news_count":
+        sessions = int(p["sessions"])
+        closes = ctx.session_closes
+        if len(closes) < sessions + 1 or closes[-1] > ctx.data_cutoff:
+            return _value(feature, FeatureStatus.UNAVAILABLE, "no completed sessions by the cutoff")
+        start, end = closes[-1 - sessions], closes[-1]
+    else:
+        end = ctx.data_cutoff
+        start = end - timedelta(hours=int(p["lookback_hours"]))
     intervals = coverage_intervals(session, symbol, known_at=ctx.known_at)
     coverage_inputs: dict[str, Any] = {
         "window_start": start.isoformat(),
-        "window_end": ctx.data_cutoff.isoformat(),
+        "window_end": end.isoformat(),
         "coverage_sources": sorted({kind for _, _, kind in intervals}),
     }
-    if not covered(intervals, start, ctx.data_cutoff):
+    if not covered(intervals, start, end):
         return _value(
             feature,
             FeatureStatus.UNAVAILABLE,
@@ -243,7 +254,7 @@ def _news(
             rel.relationship == AssetRelationship.DIRECT_PROVIDER_SYMBOL,
             rel.static_relevance >= p["min_relevance"],
             e.event_time > start,
-            e.event_time <= ctx.data_cutoff,
+            e.event_time <= end,
         )
     )
     category = str(p["category"])
@@ -254,7 +265,7 @@ def _news(
     coverage_end = max((min(hi, ctx.known_at) for _, hi, _ in intervals), default=None)
     available_at = available or coverage_end
     inputs = {**coverage_inputs, "articles": int(count)}
-    if feature.definition.name == "news_event_count":
+    if feature.definition.name in ("news_event_count", "period_news_count"):
         return _value(feature, FeatureStatus.VALID, None, float(count), available_at, inputs)
     if latest is None:
         return _value(

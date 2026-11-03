@@ -1,4 +1,5 @@
-"""Strategy Laboratory API against real PostgreSQL (Phase 4A).
+"""Strategy Laboratory API against real PostgreSQL (Phase 4A; signal states, levels and
+conflicts Phase 4B).
 
 The catalog is the real six families plus a TEST FIXTURE strategy that can propose
 (``strategy_support``); bars are MOCK observations.
@@ -15,7 +16,9 @@ from app.main import create_app
 from app.strategies.registry import StrategyRegistry, discover
 from app.strategies.runtime import StrategyContext
 from app.tests.integration.strategy_support import (
+    AlwaysShortStrategy,
     FailingStrategy,
+    InterfaceOnlyFixture,
     ProposingStrategy,
     evaluation_request,
     make_asset,
@@ -29,7 +32,10 @@ BASE = "/api/v1/strategies"
 
 @pytest.fixture
 def lab(fresh_engine):
-    return make_lab(fresh_engine, [*discover(), ProposingStrategy(), FailingStrategy()])
+    return make_lab(
+        fresh_engine,
+        [*discover(), ProposingStrategy(), FailingStrategy(), InterfaceOnlyFixture()],
+    )
 
 
 @pytest.fixture
@@ -66,10 +72,13 @@ def test_catalog_lists_every_strategy_without_performance_figures(client):
         "event_driven",
     }
     momentum = next(s for s in body["strategies"] if s["strategy_id"] == "momentum")
-    assert momentum["implemented"] is False
-    assert momentum["enabled"] is False
-    assert "Phase 4B" in momentum["implementation_note"]
+    assert momentum["implemented"] is True  # Phase 4B
+    assert momentum["enabled"] is True  # make_lab enables implemented strategies
+    assert "not optimized" in momentum["implementation_note"]
     assert momentum["current_version"]["version"] == 1
+    assert momentum["current_version"]["logic_version"] == "momentum-1"
+    assert momentum["parameters"]["lookback_periods"] == 20
+    assert momentum["signal_states"] == {}
     assert momentum["supported_asset_classes"] == ["EQUITY", "ETF"]
     assert momentum["supported_timeframes"] == ["1Day", "1Week"]
     assert momentum["configured_timeframes"] == ["1Day"]
@@ -118,7 +127,12 @@ def test_operator_creates_a_version_and_cannot_enable_interface_only(client):
             headers=headers,
         )
         enable = c.post(
-            f"{BASE}/breakout/status", json={"enabled": True, "reason": "try"}, headers=headers
+            f"{BASE}/fixture_interface_only/status",
+            json={"enabled": True, "reason": "try"},
+            headers=headers,
+        )
+        disable = c.post(
+            f"{BASE}/breakout/status", json={"enabled": False, "reason": "pause"}, headers=headers
         )
         fixture = c.post(
             f"{BASE}/fixture_proposer/status",
@@ -134,6 +148,8 @@ def test_operator_creates_a_version_and_cannot_enable_interface_only(client):
     assert invalid.status_code == 422
     assert "greater than or equal to 5" in invalid.json()["error"]["message"]
     assert enable.status_code == 409
+    assert disable.json()["enabled"] is False
+    assert disable.json()["changed"] is True
     assert fixture.json()["enabled"] is False
     assert fixture.json()["changed"] is True
 
@@ -188,3 +204,47 @@ def test_custom_registry_context_is_used(lab, make_settings):
     with TestClient(app) as c:
         ids = [s["strategy_id"] for s in c.get(BASE).json()["strategies"]]
     assert ids == ["fixture_proposer"]
+
+
+def test_signal_states_levels_and_conflicts_are_served(fresh_engine, make_settings):
+    """Phase 4B: evaluations carry a signal state and checks; proposals carry levels and
+    conflicts; recorded conflicts are listed (opposite FIXTURE proposals)."""
+    lab = make_lab(fresh_engine, [*discover(), ProposingStrategy(), AlwaysShortStrategy()])
+    asset = make_asset(lab.factory, "FXA")
+    seed_bars(lab.factory, asset, count=40)  # rising: the proposer goes LONG
+    long = lab.engine.evaluate(evaluation_request(lab, asset))
+    short = lab.engine.evaluate(evaluation_request(lab, asset, "fixture_short"))
+    skipped = lab.engine.evaluate(evaluation_request(lab, asset, "trend_following"))
+    ctx = StrategyContext(lab.engine.settings, lab.registry, lab.engine, lab.factory, lab.clock)
+    app = create_app(make_settings(), clock=lab.clock, health_checks={}, strategies=ctx)
+    with TestClient(app) as c:
+        signals = c.get(f"{BASE}/evaluations", params={"signal_state": "SIGNAL"}).json()
+        insufficient = c.get(
+            f"{BASE}/evaluations", params={"signal_state": "INSUFFICIENT_DATA"}
+        ).json()
+        detail = c.get(f"{BASE}/proposals/{short.proposal_ids[0]}").json()
+        conflicts = c.get(f"{BASE}/conflicts", params={"symbol": "FXA"}).json()
+        by_strategy = c.get(f"{BASE}/conflicts", params={"strategy_id": "trend_following"}).json()
+        catalog_body = c.get(BASE).json()
+        bad = c.get(f"{BASE}/proposals", params={"timeframe": "1Hour"})
+    assert {e["id"] for e in signals["evaluations"]} == {
+        str(long.evaluation_id),
+        str(short.evaluation_id),
+    }
+    [skip] = insufficient["evaluations"]
+    assert skip["id"] == str(skipped.evaluation_id)
+    assert skip["signal_reason"]
+    assert skip["eligibility"]["long_eligible"] is True
+    assert skip["logic_version"] == "trend-following-1"
+    assert detail["proposal"]["evaluation_event"] == "BAR_CLOSE:1Day:2026-11-03"
+    assert detail["proposal"]["conflict_count"] == 1
+    [conflict] = detail["conflicts"]
+    assert {p["direction"] for p in conflict["proposals"]} == {"LONG", "SHORT"}
+    assert conflict["kind"] == "OPPOSING_DIRECTION"
+    assert any("Phase 5" in n for n in detail["notes"])
+    assert [x["id"] for x in conflicts["conflicts"]] == [conflict["id"]]
+    assert by_strategy["conflicts"] == []
+    states = {s["strategy_id"]: s["signal_states"] for s in catalog_body["strategies"]}
+    assert states["fixture_proposer"] == {"SIGNAL": 1}
+    assert states["trend_following"] == {"INSUFFICIENT_DATA": 1}
+    assert bad.status_code == 422

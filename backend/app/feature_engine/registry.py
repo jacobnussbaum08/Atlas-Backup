@@ -10,7 +10,9 @@ snapshot.
 Calculations are not reimplemented here: bar features call ``app.feature_engine.indicators``
 (the Phase 3B functions plus the Phase 4A additions), market-intelligence features read the
 stored Phase 3B classifications and news features read the stored Phase 3C events
-(``app.feature_engine.stored``).
+(``app.feature_engine.stored``). Benchmark features (Phase 4B) combine the asset's
+completed bars with a benchmark's bars on the same periods (``app.feature_engine.benchmark``).
+Phase 4B added definitions under new names only; no earlier definition changed.
 
 Rules every bar feature follows (``app.feature_engine.bar_features``):
 
@@ -34,6 +36,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -57,6 +60,9 @@ FeatureScalar = float | str | None
 
 class FeatureSource(StrEnum):
     BARS = "BARS"  # completed price bars (app.feature_engine.bar_features)
+    # completed bars of the asset and of a benchmark on the same periods
+    # (app.feature_engine.benchmark; Phase 4B)
+    BENCHMARK = "BENCHMARK"
     MARKET_INTELLIGENCE = "MARKET_INTELLIGENCE"  # stored Phase 3B classifications
     NEWS = "NEWS"  # stored Phase 3C news events
 
@@ -146,6 +152,8 @@ class BarWindow:
 
 
 BarCompute = Callable[[BarWindow, Params], float | None]
+# (asset window, benchmark window on the same periods, params) -> value
+PairCompute = Callable[[BarWindow, BarWindow, Params], float | None]
 
 
 @dataclass(frozen=True)
@@ -166,10 +174,15 @@ class FeatureDefinition:
     window: Callable[[Params], int] | None = None
     compute: BarCompute | None = None
     check: Callable[[Params], str | None] | None = None  # cross-parameter validation
+    # Benchmark features: the calculation over the asset's and the benchmark's windows.
+    pair_compute: PairCompute | None = None
 
     def __post_init__(self) -> None:
         bars = self.source is FeatureSource.BARS
-        if bars != (self.window is not None and self.compute is not None):
+        pair = self.source is FeatureSource.BENCHMARK
+        if bars != (self.compute is not None) or pair != (self.pair_compute is not None):
+            raise FeatureRegistryError(f"{self.name}: bar features (only) need window/compute")
+        if (bars or pair) != (self.window is not None):
             raise FeatureRegistryError(f"{self.name}: bar features (only) need window/compute")
 
     def resolve_params(self, params: Mapping[str, Any]) -> dict[str, ParamValue]:
@@ -489,6 +502,66 @@ def _prior(highest: bool) -> BarCompute:
     return compute
 
 
+def _close_location(w: BarWindow, p: Params) -> float | None:
+    return ind.close_location(w.high[-1], w.low[-1], w.close[-1])
+
+
+def _true_range_ratio(w: BarWindow, p: Params) -> float | None:
+    newest = ind.true_range(w.high[-2:], w.low[-2:], w.close[-2:])[-1]
+    before = _last(ind.atr(w.high[:-1], w.low[:-1], w.close[:-1], _int(p, "length")))
+    return None if before is None or before <= 0 else newest / before
+
+
+def _log_slope(index: int) -> BarCompute:
+    def compute(w: BarWindow, p: Params) -> float | None:
+        fitted = ind.log_slope(w.close[-_int(p, "length") :])
+        if fitted is None:
+            return None
+        value = fitted[index]
+        # A perfect fit has an infinite t-statistic; report the cap instead.
+        return max(-TSTAT_CAP, min(TSTAT_CAP, value)) if index == 1 else value
+
+    return compute
+
+
+def _realized_volatility_percentile(w: BarWindow, p: Params) -> float | None:
+    series = ind.rolling_volatility(w.close, _int(p, "length"), w.periods_per_year)
+    history = [x for x in series[-_int(p, "history") :] if x is not None]
+    current = series[-1]
+    return None if current is None else ind.percentile_rank(history, current)
+
+
+def _prior_bollinger_width_percentile(w: BarWindow, p: Params) -> float | None:
+    widths = ind.bollinger_width(w.close, _int(p, "length"), _float(p, "k"))
+    ending = widths[: len(widths) - _int(p, "offset")]
+    history = [x for x in ending[-_int(p, "history") :] if x is not None]
+    current = ending[-1] if ending else None
+    return None if current is None else ind.percentile_rank(history, current)
+
+
+def _failed_breakout_count(w: BarWindow, p: Params) -> float | None:
+    count = ind.failed_breakouts(
+        w.high,
+        w.low,
+        w.close,
+        _int(p, "length"),
+        _int(p, "lookback"),
+        upside=p["side"] == "HIGH",
+    )
+    return None if count is None else float(count)
+
+
+def _relative_return(asset: BarWindow, benchmark: BarWindow, p: Params) -> float | None:
+    n = _int(p, "periods")
+    mine, theirs = ind.roc(asset.close, n)[-1], ind.roc(benchmark.close, n)[-1]
+    return None if mine is None or theirs is None else mine - theirs
+
+
+def _symbol(p: Params) -> str | None:
+    value = str(p["benchmark"])
+    return None if SYMBOL_PATTERN.match(value) else "benchmark must be an upper-case ticker"
+
+
 def _shorter(short: str, long: str) -> Callable[[Params], str | None]:
     def check(p: Params) -> str | None:
         return None if _int(p, short) < _int(p, long) else f"{short} must be shorter than {long}"
@@ -513,6 +586,8 @@ _CLOSE = ("bars.close",)
 _BAR_AVAILABILITY = "the newest availability (available_at) among the completed bars of its window"
 
 V1 = "v1"
+TSTAT_CAP = 1000.0
+SYMBOL_PATTERN = re.compile(r"^[A-Z][A-Z0-9.]{0,9}$")
 
 
 def _bar(
@@ -816,8 +891,124 @@ def _bar_definitions() -> list[FeatureDefinition]:
             _prior(highest=False),
             required=("bars.low",),
         ),
+        # --- Phase 4B additions (new names; earlier definitions are unchanged) ----------
+        _bar(
+            "close_location",
+            "Where the newest period closed within its own high-low range (0 = at the low, "
+            "1 = at the high).",
+            "(close - low) / (high - low) of the newest period; UNDEFINED when high = low "
+            "(indicators.close_location)",
+            (),
+            "1",
+            lambda p: 1,
+            _close_location,
+            required=_BARS,
+        ),
+        _bar(
+            "true_range_ratio",
+            "True range of the newest period relative to the average true range of the "
+            "periods before it (range expansion above 1).",
+            "true_range[t] / atr(length) over the periods before t (indicators.true_range, "
+            "indicators.atr)",
+            (_length(14, 100),),
+            "5 * length + 2",
+            lambda p: 5 * _int(p, "length") + 2,
+            _true_range_ratio,
+            required=_BARS,
+        ),
+        _bar(
+            "log_slope",
+            "Trend slope: growth rate per period of the least-squares line through log "
+            "closes (0.001 = +0.1 % per period).",
+            "OLS slope of ln(close) over the last `length` closes (indicators.log_slope)",
+            (Parameter("length", int, 20, "closes in the fit", 3, 260),),
+            "length",
+            length,
+            _log_slope(0),
+        ),
+        _bar(
+            "log_slope_tstat",
+            "How clearly the trend slope differs from flat: slope over its standard error "
+            "(relative evidence, not a significance test; residuals are autocorrelated).",
+            "OLS t-statistic of the ln(close) slope over the last `length` closes "
+            f"(indicators.log_slope), capped at +/-{TSTAT_CAP:g} for a perfect fit",
+            (Parameter("length", int, 20, "closes in the fit", 3, 260),),
+            "length",
+            length,
+            _log_slope(1),
+        ),
+        _bar(
+            "realized_volatility_percentile",
+            "Rank of the current realized volatility among the last `history` values (0-1).",
+            "mid-rank percentile (indicators.percentile_rank) of realized_volatility(length)",
+            (
+                Parameter("length", int, 20, "returns per volatility value", 2, 260),
+                Parameter("history", int, 100, "values ranked against", 10, 500),
+            ),
+            "length + history",
+            lambda p: _int(p, "length") + _int(p, "history"),
+            _realized_volatility_percentile,
+        ),
+        _bar(
+            "prior_bollinger_width_percentile",
+            "Bollinger band-width percentile as it stood `offset` periods before the newest "
+            "one (compression measured before the newest period's move).",
+            "mid-rank percentile of bollinger_width at t - offset among the `history` widths "
+            "ending there (indicators.bollinger_width, indicators.percentile_rank)",
+            (
+                *bands,
+                Parameter("history", int, 100, "widths ranked against", 10, 500),
+                Parameter("offset", int, 1, "periods before the newest", 1, 20),
+            ),
+            "length + history - 1 + offset",
+            lambda p: _int(p, "length") + _int(p, "history") - 1 + _int(p, "offset"),
+            _prior_bollinger_width_percentile,
+        ),
+        _bar(
+            "failed_breakout_count",
+            "Breakouts beyond the prior `length`-period high (side HIGH) or low (LOW) among "
+            "the `lookback` periods before the newest one that later closed back inside.",
+            "count of i in [t - lookback, t - 1] with close[i] beyond the extreme of the "
+            "`length` periods before i and a later close (up to t) back across that level "
+            "(indicators.failed_breakouts)",
+            (
+                Parameter("length", int, 20, "periods defining the level", 2, 260),
+                Parameter("lookback", int, 20, "breakout periods examined", 1, 120),
+                Parameter("side", str, "HIGH", "breakout side", choices=("HIGH", "LOW")),
+            ),
+            "length + lookback + 1",
+            lambda p: _int(p, "length") + _int(p, "lookback") + 1,
+            _failed_breakout_count,
+            required=_BARS,
+        ),
     ]
     return definitions
+
+
+def _benchmark_definitions() -> list[FeatureDefinition]:
+    return [
+        FeatureDefinition(
+            name="relative_return",
+            version=V1,
+            source=FeatureSource.BENCHMARK,
+            description="Relative strength: the asset's return over `periods` minus the "
+            "benchmark's return over the same completed periods.",
+            method="roc(asset close, periods) - roc(benchmark close, periods) "
+            "(indicators.roc); both series from the same completed, settled periods and "
+            "known by the same knowledge time; 0 by construction for the benchmark itself",
+            parameters=(
+                Parameter("periods", int, 20, "periods in the returns", 1, 260),
+                Parameter("benchmark", str, "SPY", "benchmark symbol (an Atlas asset)"),
+            ),
+            timeframes=BAR_TIMEFRAMES,
+            required_data=("bars.close", "benchmark bars.close"),
+            availability="the newest availability among the completed bars of both windows",
+            window_rule="periods + 1",
+            window=lambda p: _int(p, "periods") + 1,
+            pair_compute=_relative_return,
+            check=_symbol,
+        )
+    ]
 
 
 def _stored_definitions() -> list[FeatureDefinition]:
@@ -905,10 +1096,34 @@ def _stored_definitions() -> list[FeatureDefinition]:
             required_data=("news_events", "event_asset_relationships", "news coverage"),
             availability=news_availability,
         ),
+        FeatureDefinition(
+            name="period_news_count",
+            version=V1,
+            source=FeatureSource.NEWS,
+            description="Number of news articles about the asset published between the "
+            "regular close of the session `sessions` before the newest completed one and the "
+            "newest one's close: every article counted precedes the price reaction of the "
+            "newest period(s), and weekends and holidays are covered.",
+            method=(
+                "articles DIRECTLY related to the asset whose newest Phase 3C event known at "
+                "the knowledge time has event_time in (close[s - sessions], close[s]], where "
+                "close[s] is the regular close of the newest session completed and settled by "
+                "the cutoff (exchange calendar); UNAVAILABLE unless completed news retrieval "
+                "or a subscribed stream covered the whole window. Absent coverage is never "
+                "read as 'no news'."
+            ),
+            parameters=(
+                Parameter("sessions", int, 1, "sessions covered, ending at the newest", 1, 5),
+                *news_params[1:],
+            ),
+            timeframes=BAR_TIMEFRAMES,
+            required_data=("news_events", "event_asset_relationships", "news coverage"),
+            availability=news_availability,
+        ),
     ]
 
 
-REGISTRY = FeatureRegistry([*_bar_definitions(), *_stored_definitions()])
+REGISTRY = FeatureRegistry([*_bar_definitions(), *_benchmark_definitions(), *_stored_definitions()])
 
 
 __all__ = [
@@ -927,6 +1142,7 @@ __all__ = [
     "FeatureSource",
     "FeatureStatus",
     "FeatureValue",
+    "PairCompute",
     "Parameter",
     "ResolvedFeature",
     "ValueKind",

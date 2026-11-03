@@ -7,7 +7,9 @@
   (description, timeframes, schedule, required features, ...) differs from the current
   version, a new version is created with the *same* configuration, or the strategy is
   reported as needing attention when that configuration no longer validates (parameters
-  are never changed silently).
+  are never changed silently). When the code adds parameter fields (Phase 4B), the new
+  version's configuration keeps every stored value and writes the new fields' defaults out,
+  and the version's reason names them.
 * :func:`create_version` validates new parameters and adds a version (idempotent: the same
   parameters as the current version return it unchanged).
 * :func:`set_status` appends an enable/disable event. A strategy without logic cannot be
@@ -313,14 +315,23 @@ def sync_strategies(
             )
             continue
         wanted = _metadata(strategy, params, registry)
-        if wanted != _version_metadata(current):
+        normalized = parameters_json(params)
+        added = sorted(set(normalized) - set(stored.parameters))
+        if wanted != _version_metadata(current) or added:
             changed = sorted(k for k, v in wanted.items() if _version_metadata(current)[k] != v)
+            reason = f"code changed: {', '.join(changed) or 'parameter schema'}"
+            config = stored
+            if normalized != stored.parameters:
+                # New parameter fields: every stored value is kept; the new fields' defaults
+                # are written out so the configuration is complete and explicit.
+                config = _configuration(session, strategy, params, SYSTEM_ACTOR)
+                reason += f"; new parameters at their defaults: {', '.join(added) or 'none'}"
             version = _add_version(
                 session,
                 strategy,
-                stored,
+                config,
                 wanted,
-                reason=f"code changed: {', '.join(changed)}",
+                reason=reason,
                 actor=SYSTEM_ACTOR,
                 actor_type=ActorType.SYSTEM,
                 previous=current,

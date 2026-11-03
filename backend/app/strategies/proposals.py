@@ -12,6 +12,7 @@ whole evaluation (``ErrorStage.VALIDATION``) rather than storing a partial resul
 
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -32,6 +33,7 @@ PRICE_PLACES = Decimal("0.00000001")  # NUMERIC(20, 8)
 STRENGTH_PLACES = Decimal("0.0001")  # NUMERIC(5, 4)
 MAX_REASONING = 2000
 MAX_EVIDENCE = 32
+MAX_LEVELS_JSON = 4000
 
 
 class ProposalValidationError(ValueError):
@@ -58,6 +60,11 @@ class ProposalSpec:
     expires_at: datetime
     market: str
     feature_snapshot_ids: list[uuid.UUID] = field(default_factory=list)
+    # Phase 4B: how the levels were derived, and the event that produced the proposal
+    # (trigger and reference; one proposal per strategy, asset, timeframe, direction,
+    # mode, basis and event).
+    levels: dict[str, Any] = field(default_factory=dict)
+    evaluation_event: str = ""
 
 
 def _price(name: str, value: Decimal | None, *, required: bool) -> Decimal | None:
@@ -112,6 +119,17 @@ def _evidence(
     return out
 
 
+def _levels(levels: Mapping[str, Any]) -> dict[str, Any]:
+    try:
+        text = json.dumps(dict(levels), sort_keys=True, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise ProposalValidationError("levels must be JSON-serialisable") from exc
+    if len(text) > MAX_LEVELS_JSON:
+        raise ProposalValidationError(f"levels longer than {MAX_LEVELS_JSON} characters")
+    loaded: dict[str, Any] = json.loads(text)
+    return loaded
+
+
 def validate_drafts(
     drafts: Sequence[ProposalDraft],
     ctx: EvaluationContext,
@@ -119,8 +137,10 @@ def validate_drafts(
     *,
     expires_at: datetime,
     snapshot_ids: Sequence[uuid.UUID],
+    evaluation_event: str = "",
 ) -> tuple[list[ProposalSpec], list[str]]:
-    """Validated proposals and notes about drafts left out (below the minimum strength)."""
+    """Validated proposals and notes about drafts left out (below the minimum strength, or
+    for a direction the asset was not eligible for at the cutoff)."""
     if expires_at <= ctx.data_cutoff:
         raise ProposalValidationError("the expiry must be after the signal")
     seen: set[Direction] = set()
@@ -135,6 +155,10 @@ def validate_drafts(
         if direction in seen:
             raise ProposalValidationError(f"more than one {direction} proposal")
         seen.add(direction)
+        blocked = ctx.direction_block(direction)
+        if blocked is not None:
+            notes.append(f"{direction} draft left out: {blocked}")
+            continue
         entry = _price("reference_entry", draft.reference_entry, required=True)
         if entry is None:
             raise ProposalValidationError("reference_entry is required")
@@ -160,6 +184,7 @@ def validate_drafts(
         if len(reasoning) > MAX_REASONING:
             raise ProposalValidationError(f"the reasoning is longer than {MAX_REASONING}")
         evidence = _evidence(draft.evidence, ctx.features)
+        levels = _levels(draft.levels)
         if strength < params.min_signal_strength:
             notes.append(
                 f"{direction} draft left out: strength {strength} below "
@@ -184,12 +209,15 @@ def validate_drafts(
                 expires_at=expires_at,
                 market=ctx.asset.market,
                 feature_snapshot_ids=list(snapshot_ids),
+                levels=levels,
+                evaluation_event=evaluation_event,
             )
         )
     return specs, notes
 
 
 __all__ = [
+    "MAX_EVIDENCE",
     "MAX_REASONING",
     "ProposalSpec",
     "ProposalValidationError",

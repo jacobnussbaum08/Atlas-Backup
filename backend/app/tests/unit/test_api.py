@@ -220,6 +220,7 @@ def test_openapi_exposes_no_order_endpoints(build_client):
         "/api/v1/strategies/feature-snapshots/{snapshot_id}",
         "/api/v1/strategies/proposals",
         "/api/v1/strategies/proposals/{proposal_id}",
+        "/api/v1/strategies/conflicts",  # 4B: recorded proposal conflicts, read-only
         "/api/v1/strategies/{strategy_id}",
         "/api/v1/strategies/{strategy_id}/versions",
         "/api/v1/strategies/{strategy_id}/configurations",

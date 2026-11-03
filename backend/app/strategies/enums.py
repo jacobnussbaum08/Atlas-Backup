@@ -1,4 +1,4 @@
-"""Enumerations of the Strategy Laboratory (Phase 4A)."""
+"""Enumerations of the Strategy Laboratory (Phase 4A; signal states and conflicts 4B)."""
 
 from __future__ import annotations
 
@@ -46,6 +46,31 @@ TERMINAL_STATUSES = (
 )
 
 
+class SignalState(StrEnum):
+    """What an evaluation found (Phase 4B), finer than its status.
+
+    PROPOSED evaluations are SIGNAL; NO_PROPOSAL ones are NO_SIGNAL or DUPLICATE; SKIPPED
+    ones could not assess a signal (data or eligibility); FAILED ones are FAILED. Whether a
+    recorded proposal later EXPIRED is a property of the proposal, not of the evaluation.
+    """
+
+    SIGNAL = "SIGNAL"  # one or more valid proposals were recorded
+    NO_SIGNAL = "NO_SIGNAL"  # the inputs were valid; the conditions were not met
+    INSUFFICIENT_DATA = "INSUFFICIENT_DATA"  # not enough history for a required feature
+    MISSING_DATA = "MISSING_DATA"  # a period in a window has no usable bar (gap or stale)
+    UNAVAILABLE_DATA = "UNAVAILABLE_DATA"  # a source did not cover the window or is stale
+    INVALID_DATA = "INVALID_DATA"  # undefined values or inconsistent prices
+    INELIGIBLE_ASSET = "INELIGIBLE_ASSET"  # not tradable / unsupported at the cutoff
+    DUPLICATE = "DUPLICATE"  # the same proposal was already recorded for this event
+    FAILED = "FAILED"  # see strategy_evaluation_errors
+
+
+class ConflictKind(StrEnum):
+    # Overlapping active proposals for the same asset in opposite directions. Recorded,
+    # never resolved here: proposal competition belongs to the Phase 5 coordinator.
+    OPPOSING_DIRECTION = "OPPOSING_DIRECTION"
+
+
 class ErrorStage(StrEnum):
     INPUTS = "INPUTS"  # loading data or computing features
     STRATEGY = "STRATEGY"  # the strategy's own code raised
@@ -77,12 +102,14 @@ class StrengthKind(StrEnum):
 
 __all__ = [
     "TERMINAL_STATUSES",
+    "ConflictKind",
     "Direction",
     "ErrorStage",
     "EvaluationMode",
     "EvaluationStatus",
     "ProposalEventKind",
     "ProposalStatus",
+    "SignalState",
     "StrategyFamily",
     "StrengthKind",
     "TriggerKind",

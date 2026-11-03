@@ -1,7 +1,7 @@
 import { ArrowLeft } from "lucide-react";
 import { Link, useParams } from "react-router";
 
-import { FamilyBadge, ProposalsTable, StrategyStatusBadges } from "../components/strategies";
+import { FamilyBadge, ProposalsTable, SignalStateCounts, StrategyStatusBadges } from "../components/strategies";
 import {
   Badge,
   DataTable,
@@ -19,7 +19,7 @@ import { useApiResource } from "../hooks/useApiResource";
 import { humanize } from "../lib/format";
 import { strategies } from "../services/strategies";
 import type { ParameterValue, StrategyDetail } from "../types/strategies";
-import { EvaluationsPanel } from "./StrategiesPage";
+import { ConflictsPanel, EvaluationsSection } from "./StrategiesPage";
 
 export function StrategyDetailPage() {
   const { strategyId = "" } = useParams();
@@ -73,6 +73,7 @@ function Strategy({ detail }: { detail: StrategyDetail }) {
               { label: "Supported timeframes", value: s.supported_timeframes.join(", ") },
               { label: "Configured timeframes", value: s.configured_timeframes.join(", ") || "—" },
               { label: "Evaluated", value: s.schedule.description },
+              { label: "Results", value: <SignalStateCounts counts={s.signal_states} /> },
               {
                 label: "Status since",
                 value: s.status_changed_at ? <Timestamp iso={s.status_changed_at} /> : "never enabled",
@@ -183,9 +184,10 @@ function Strategy({ detail }: { detail: StrategyDetail }) {
         )}
         {proposals.data && <ProposalsTable proposals={proposals.data.proposals} showStrategy={false} />}
       </Panel>
-      <Panel title="Evaluation history" className="mt-3">
-        <EvaluationsPanel refreshKey={0} strategyId={s.strategy_id} />
-      </Panel>
+      <div className="mt-3 flex flex-col gap-3">
+        <ConflictsPanel refreshKey={0} strategyId={s.strategy_id} />
+        <EvaluationsSection refreshKey={0} strategyId={s.strategy_id} />
+      </div>
     </>
   );
 }

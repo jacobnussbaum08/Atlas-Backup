@@ -172,6 +172,7 @@ def _run(argv: list[str] | None) -> int:
                     "outcome": result.outcome,
                     "evaluation_id": result.evaluation_id,
                     "status": result.status,
+                    "signal_state": result.signal_state,
                     "proposals": result.proposal_ids,
                     "error": result.error,
                 }

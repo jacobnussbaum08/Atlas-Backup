@@ -30,6 +30,7 @@ from app.tests.integration.strategy_support import (
     FailingStrategy,
     NewsFixtureStrategy,
     ProposingStrategy,
+    add_reference,
     make_asset,
     make_lab,
     seed_bars,
@@ -113,15 +114,19 @@ def test_worker_cycle_evaluates_once_and_isolates_failures(fresh_engine):
     worker.sync()
     first = asyncio.run(worker.cycle())
     assert first["updates"] == 1
-    assert first["requests"] == 2  # the six families have no logic: never planned
-    assert statuses(lab) == [
-        ("fixture_failing", EvaluationStatus.FAILED),
-        ("fixture_proposer", EvaluationStatus.PROPOSED),
-    ]
+    # Phase 4B: the six families have logic and are planned on the daily bar close too.
+    assert first["requests"] == 2 + len(discover())
+    states = dict(statuses(lab))
+    assert states["fixture_failing"] is EvaluationStatus.FAILED
+    assert states["fixture_proposer"] is EvaluationStatus.PROPOSED
+    families = {s.strategy_id for s in discover()}
+    assert families <= set(states)
+    # 40 MOCK bars are too few for their windows: every family finished without failing.
+    assert all(states[f] is not EvaluationStatus.FAILED for f in families)
     lab.clock.advance(timedelta(minutes=1))
     second = asyncio.run(worker.cycle())
-    # Same update again: the proposer is a duplicate, the failing one is retried.
-    assert second["outcomes"] == {"DUPLICATE": 1, "FAILED": 1}
+    # Same update again: finished ones are duplicates, the failing one is retried.
+    assert second["outcomes"] == {"DUPLICATE": 1 + len(families), "FAILED": 1}
     with session_scope(lab.factory) as session:
         assert session.scalar(select(func.count()).select_from(StrategyProposalRecord)) == 1
         assert session.scalar(select(func.count()).select_from(StrategyRecord)) == 8
@@ -149,6 +154,8 @@ def test_news_events_trigger_news_scheduled_strategies(fresh_engine):
     news = make_news_env(fresh_engine, now=NOW)
     lab = make_lab(fresh_engine, [NewsFixtureStrategy()])
     asset = news.assets["FXC"]
+    with session_scope(lab.factory) as session:
+        add_reference(session, asset, "FXC")  # point-in-time eligibility (Phase 4B)
     seed_bars(lab.factory, asset, count=40)
     qualify(lab, asset)
     worker = worker_for(lab)

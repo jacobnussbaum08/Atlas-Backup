@@ -1,5 +1,6 @@
 """Technical indicators (Phase 3B; RSI, MACD, Bollinger bands, volume ratio and prior
-extremes added in Phase 4A): pure, causal functions over oldest-first series.
+extremes added in Phase 4A; close location and failed breakouts in Phase 4B): pure, causal
+functions over oldest-first series.
 
 Every function returns a list aligned with its input. Position ``i`` uses inputs ``0..i``
 only (nothing looks ahead), and is ``None`` where there is not enough history or the value
@@ -286,6 +287,43 @@ def prior_extreme(values: Values, n: int, *, highest: bool) -> float | None:
     return max(window) if highest else min(window)
 
 
+def close_location(high: float, low: float, close: float) -> float | None:
+    """Where ``close`` sits in the period's range: 0 at the low, 1 at the high; ``None``
+    when the range is empty (high = low) or the bar is inconsistent."""
+    span = high - low
+    if span <= 0 or not low <= close <= high:
+        return None
+    return (close - low) / span
+
+
+def failed_breakouts(
+    high: Values, low: Values, close: Values, n: int, lookback: int, *, upside: bool
+) -> int | None:
+    """Breakouts among the ``lookback`` periods before the newest one that failed.
+
+    Period ``i`` broke out upwards when ``close[i]`` exceeded the highest high of the ``n``
+    periods before it (downwards: below the lowest low); it failed when any later close up
+    to and including the newest one was back on the other side of that level. ``None``
+    without ``n + lookback + 1`` periods.
+    """
+    _check(n)
+    _check(lookback)
+    _same_length(high, low, close)
+    newest = len(close) - 1
+    if len(close) < n + lookback + 1:
+        return None
+    failed = 0
+    for i in range(newest - lookback, newest):
+        level = max(high[i - n : i]) if upside else min(low[i - n : i])
+        broke = close[i] > level if upside else close[i] < level
+        if not broke:
+            continue
+        later = close[i + 1 : newest + 1]
+        if any(c < level for c in later) if upside else any(c > level for c in later):
+            failed += 1
+    return failed
+
+
 def percentile_rank(history: Values, value: float) -> float | None:
     """Mid-rank percentile of ``value`` within ``history`` (0..1); ties count half."""
     if not history:
@@ -374,8 +412,10 @@ __all__ = [
     "atr",
     "bollinger_bands",
     "bollinger_width",
+    "close_location",
     "directional_movement",
     "ema",
+    "failed_breakouts",
     "log_returns",
     "log_slope",
     "macd",
