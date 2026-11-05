@@ -1272,3 +1272,21 @@ an ADX guard rejected nearly every genuine setup; a longer regression measures a
 configuration that keeps every stored value and writes the new fields' defaults explicitly;
 the version's reason names the added fields. Renamed or removed fields still make sync
 report a problem instead of guessing. All six families kept every Phase 4A parameter name.
+
+## Fix — discovery mapping `created_at` from the injected clock
+
+### D-124 Discovery writes a mapping's `created_at` from its clock
+
+*(Numbered after the Phase 5A/5B decisions D-099–D-123, which were in progress when this fix
+was made.)*
+
+**Decision:** when directory discovery creates an `asset_identifiers` row it sets `created_at`
+to the same `recorded_at` (`max(observed_at, clock.now())`) it writes on the lifecycle events
+and reference versions of that run, instead of leaving it to the database's `now()`.
+`mappings_at` filters `created_at <= as_of` ("mappings Atlas had recorded by then"), so the
+mapping's recording time must come from the same clock as every other point-in-time
+timestamp the service writes. In production the injected clock is the real clock, so the
+stored value is unchanged in practice; under a fixed or replay clock the database time made
+every mapping look recorded after the decision time once the wall clock passed it, and
+qualification rejected each asset on `provider_mapping`. Operator-registered mappings
+(`AssetMappingRepository.register`) keep the database default.

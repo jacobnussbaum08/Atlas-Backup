@@ -547,6 +547,7 @@ class DiscoveryEngine:
                             status=MappingStatus.ACTIVE,
                             valid_from=choice[0],
                             valid_from_basis=choice[1],
+                            created_at=recorded_at,
                         )
                     )
                     taken.append((choice[0], None))
