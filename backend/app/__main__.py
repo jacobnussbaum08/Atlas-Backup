@@ -14,6 +14,7 @@ import sys
 import uvicorn
 from pydantic import ValidationError
 
+from app.accounting.config import get_accounting_settings
 from app.core.config import (
     InvalidSettingsError,
     Settings,
@@ -44,6 +45,7 @@ def _load_configuration() -> Settings:
         service=settings.service_name,
         environment=settings.environment.value,
     )
+    get_accounting_settings()  # ACCOUNTING_* (Phase 6A)
     market_data = get_market_data_settings()
     provider = create_provider(market_data)
     report = provider.validate_configuration(market_data)

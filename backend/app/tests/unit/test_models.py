@@ -109,6 +109,20 @@ def test_expected_tables_exist():
         "llm_token_usage",
         "llm_cost_records",
         "llm_analyses",
+        # Phase 6A portfolio and double-entry accounting
+        "currencies",
+        "fx_rates",
+        "instrument_specs",
+        "ledger_accounts",
+        "posting_templates",
+        "journal_entries",
+        "journal_lines",
+        "asset_quantity_ledger",
+        "currency_balances",
+        "portfolio_snapshots",
+        "portfolio_snapshot_positions",
+        "reconciliation_runs",
+        "reconciliation_results",
     }
 
 

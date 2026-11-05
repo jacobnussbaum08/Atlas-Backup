@@ -3,7 +3,8 @@
 Unit tests never read the developer's real environment or ``.env`` file (which
 may hold real provider credentials): ``clean_env`` removes ``ATLAS_*``,
 ``ALPACA_*``, ``MARKET_DATA_*``, ``HISTORICAL_DATA_*``, ``ASSET_DISCOVERY_*``,
-``MARKET_INTELLIGENCE_*``, ``NEWS_*`` and ``STRATEGY_*`` variables (except
+``MARKET_INTELLIGENCE_*``, ``NEWS_*``, ``STRATEGY_*``, ``ML_*``, ``AI_*`` and ``ACCOUNTING_*``
+variables (except
 ``ATLAS_TEST_*``), settings are built with ``_env_file=None``, and tests that use
 the real loaders first ``chdir`` to an empty temporary directory.
 """
@@ -17,6 +18,7 @@ from typing import Any
 
 import pytest
 
+from app.accounting.config import get_accounting_settings
 from app.ai_engine.config import get_ai_settings
 from app.asset_discovery.config import get_asset_discovery_settings
 from app.core.clocks import FixedClock
@@ -49,6 +51,7 @@ def _clear_settings_caches() -> None:
     get_news_settings.cache_clear()
     get_strategy_settings.cache_clear()
     get_ai_settings.cache_clear()
+    get_accounting_settings.cache_clear()
 
 
 @pytest.fixture(autouse=True)
@@ -69,6 +72,7 @@ _APPLICATION_PREFIXES = (
     "STRATEGY_",
     "ML_",
     "AI_",
+    "ACCOUNTING_",
 )
 
 

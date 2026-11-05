@@ -738,6 +738,86 @@ ATLAS_LIVE_PROVIDER_TESTS=1 ATLAS_TEST_DATABASE_URL=... uv run pytest -m live ba
 `/decisions/{id}/models`, `/conflicts`, `/policies`, `/llm/analyses`, `/llm/requests`,
 `/llm/usage`, `/evaluations`. Dashboard: **Central AI Activity** (`/ai`).
 
+## Portfolio accounting (Phase 6A)
+
+Prerequisites: the database at head (migration 0013). Decisions D-125 to D-137; conventions in
+[`architecture/accounting.md`](architecture/accounting.md). Paper only: there is no broker
+and no execution source. Run from the repository root (it reads `.env` there).
+
+**Create the paper account** with its simulated opening funding (`ACCOUNTING_OPENING_FUNDING`,
+default 100,000.00 USD), then reconcile. Re-running is a no-op; the funding is posted once and
+is contributed capital, never a return:
+
+```bash
+uv run python -m app.accounting.cli init
+```
+
+In Docker Compose:
+
+```bash
+docker compose run --rm backend python -m app.accounting.cli init
+```
+
+**Valuation checkpoint** (posts the changes in valuation adjustments and FX translation from
+fresh prices and rates, writes a snapshot, then reconciles). Stale or missing prices are
+flagged in the snapshot, never substituted:
+
+```bash
+uv run python -m app.accounting.cli checkpoint
+```
+
+**Reconcile** (exit status 1 and a HIGH-severity accounting error when anything disagrees;
+nothing is ever corrected automatically):
+
+```bash
+uv run python -m app.accounting.cli reconcile
+```
+
+**Overview** as JSON:
+
+```bash
+uv run python -m app.accounting.cli show
+```
+
+**Controlled test transactions** exercise the posting templates on a separate
+CONTROLLED_TEST account; the primary paper account never receives them. Instruments need a
+lot size first (registered explicitly, or derived from the provider reference data); FX
+rates are recorded with their provenance (TEST_FIXTURE rates value test accounts only):
+
+```bash
+uv run python -m app.accounting.cli create-test-account --name "Controlled test"
+```
+
+```bash
+uv run python -m app.accounting.cli instrument-spec --symbol AAPL --from-reference
+```
+
+```bash
+uv run python -m app.accounting.cli fx-rate --base EUR --quote USD --rate 1.0850 --observed-at 2026-11-04T21:00:00Z --source TEST_FIXTURE --provenance "test fixture"
+```
+
+```bash
+uv run python -m app.accounting.cli post --account "Controlled test" --template long_purchase --event-id buy-1 --params '{"asset_id": "<asset-id>", "quantity": "10", "price": "150.25", "commission": "1.00"}'
+```
+
+Templates: `long_purchase`, `long_sale`, `short_open`, `short_cover`, `fee`, `financing_cost`,
+`accrual_settlement`, `fx_conversion`. An event ID posts once; repeating it returns the
+original entry, and repeating it with different inputs is refused.
+
+**Corrections** are reversal entries (the original stays):
+
+```bash
+uv run python -m app.accounting.cli reverse --account "Controlled test" --entry <entry-id> --reason "wrong price"
+```
+
+**Read-only API:** `/api/v1/portfolio/{accounts,overview,cash,holdings,pnl,snapshots}` and
+`/api/v1/accounting/{chart,templates,journal,journal/{id},balances,reconciliation,reconciliation/{id},fx-rates}`
+(`account_id` defaults to the primary account). Dashboard: **Portfolio & Accounting**
+(`/portfolio`).
+
+**Immutability:** every ledger table rejects UPDATE, DELETE and TRUNCATE. `currency_balances`
+is a cache that reconciliation re-checks against the journal lines.
+
 ## Backup and restore
 
 ```bash

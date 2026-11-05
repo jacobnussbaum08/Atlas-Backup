@@ -256,18 +256,39 @@ def test_openapi_exposes_no_order_endpoints(build_client):
         "/api/v1/ai/llm/requests",
         "/api/v1/ai/llm/usage",
         "/api/v1/ai/evaluations",
+        # Phase 6A portfolio and accounting: GET only. Postings, funding, checkpoints and
+        # reconciliation are CLI jobs; nothing creates, sizes, approves or submits an order.
+        "/api/v1/portfolio/accounts",
+        "/api/v1/portfolio/overview",
+        "/api/v1/portfolio/cash",
+        "/api/v1/portfolio/holdings",
+        "/api/v1/portfolio/pnl",
+        "/api/v1/portfolio/snapshots",
+        "/api/v1/accounting/chart",
+        "/api/v1/accounting/templates",
+        "/api/v1/accounting/journal",
+        "/api/v1/accounting/journal/{entry_id}",
+        "/api/v1/accounting/balances",
+        "/api/v1/accounting/reconciliation",
+        "/api/v1/accounting/reconciliation/{run_id}",
+        "/api/v1/accounting/fx-rates",
     }
     # Market trades (exchange prints) are read-only market data, not trading: the one
     # allowed path containing "trade" must expose GET only.
     market_data_reads = {"/api/v1/market-data/trades"}
+    # Phase 6A: the double-entry ledger ("accounting") and the list of simulated paper
+    # accounts are read-only records, not brokerage accounts: each must expose GET only.
+    accounting_reads = {p for p in paths if p.startswith("/api/v1/accounting/")} | {
+        "/api/v1/portfolio/accounts"
+    }
+    allowed_reads = market_data_reads | accounting_reads
     forbidden = ("order", "trade", "broker", "position", "account", "execution")
     assert not [
-        p
-        for p in paths
-        if p not in market_data_reads and any(word in p.lower() for word in forbidden)
+        p for p in paths if p not in allowed_reads and any(word in p.lower() for word in forbidden)
     ]
-    for path in market_data_reads:
+    for path in allowed_reads:
         assert set(paths[path]) == {"get"}
+    assert not [p for p in paths if p.startswith("/api/v1/portfolio/") and set(paths[p]) != {"get"}]
     writes = {p for p, methods in paths.items() if set(methods) - {"get"}}
     # Operator-gated actions only: a historical fetch, a request to verify a range (it
     # records gaps; the recovery worker retrieves market data), starting discovery or a

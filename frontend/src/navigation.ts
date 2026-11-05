@@ -28,7 +28,7 @@ export interface NavSection {
   summary: string;
 }
 
-/** Pages backed by real backend data (Phase 1, the Phase 2 market-data engine, Phases 3A-3C, 4A-4B, 5A-5B). */
+/** Pages backed by real backend data (Phase 1, the Phase 2 market-data engine, Phases 3A-3C, 4A-4B, 5A-5B, 6A). */
 export const NAV_SECTIONS: readonly NavSection[] = [
   {
     path: "/",
@@ -95,6 +95,14 @@ export const NAV_SECTIONS: readonly NavSection[] = [
     summary: "Evaluated and ranked opportunities, rejections and their reasons, conflicts, model and news inputs, and LLM usage and cost.",
   },
   {
+    path: "/portfolio",
+    title: "Portfolio & Accounting",
+    icon: Wallet,
+    specSection: "22.4, 22.9",
+    phase: 6,
+    summary: "The simulated paper account's double-entry books: funding, cash by currency, holdings, exposure, P/L, costs, journal, balances and reconciliation.",
+  },
+  {
     path: "/data-health",
     title: "Data Health",
     icon: DatabaseZap,
@@ -133,14 +141,6 @@ export const NAV_SECTIONS: readonly NavSection[] = [
  * phase; their URLs render an explicit "not built" page with no numbers.
  */
 export const UPCOMING_SECTIONS: readonly NavSection[] = [
-  {
-    path: "/portfolio",
-    title: "Portfolio",
-    icon: Wallet,
-    specSection: "22.4",
-    phase: 6,
-    summary: "Open simulated positions, prices, stops, targets and P/L.",
-  },
   {
     path: "/risk",
     title: "Risk Center",

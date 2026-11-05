@@ -1643,3 +1643,117 @@ stored value is unchanged in practice; under a fixed or replay clock the databas
 every mapping look recorded after the decision time once the wall clock passed it, and
 qualification rejected each asset on `provider_mapping`. Operator-registered mappings
 (`AssetMappingRepository.register`) keep the database default.
+
+## Phase 6A — portfolio management and double-entry accounting
+
+The accounting conventions themselves are in [`accounting.md`](accounting.md).
+
+### D-125 Phase 6A builds on Phase 5A/5B; two loose ends fixed first
+
+**Decision:** Phase 6A starts from the Phase 5A/5B commit (`abf1bca`), with the discovery
+`created_at` fix (D-124, a sibling branch) merged and the backend Dockerfile repaired: its
+Phase 5A `RUN useradd ... && mkdir ...` lost its line continuations (an `&&` began a new
+Dockerfile instruction), so `docker compose up --build` could not build the image. The
+uncommitted fix in the main checkout was reproduced exactly.
+
+### D-126 Money is Decimal; functional values in the reporting currency's minor units
+
+**Decision:** every amount is a `Decimal` (floats refused at every input), computed in a
+60-digit trapping context and rounded half-even only at documented points: currency amounts
+to the currency's minor units, functional values to the functional currency's minor units
+(cents), inverted rates to 12 places. Inputs are validated, never rounded.
+
+**Why cents for functional values:** an earlier draft carried functional values to 8 places.
+The seeded random-sequence test found that a conversion's realized FX then has sub-cent
+digits that cannot be posted as an ordinary USD line. Keeping the ledger in the reporting
+currency's own precision is the usual convention; rounding differences land in FX lines.
+
+### D-127 One system chart; balances per account, currency and asset
+
+**Decision:** a fixed chart of 19 ledger accounts (code-defined, seeded by migration 0013,
+append-only). Restricted short proceeds (1010) are separate from cash (1000) so they are never
+available cash. Valuation adjustments (1150, 2150) are adjuncts beside cost (1100, 2100),
+so cost basis and unrealized valuation stay separate. FX translation (1910/4300) uses
+functional-only lines in the foreign currency they relate to.
+
+### D-128 R1 (per currency) and R2 (functional) enforced twice
+
+**Decision:** every entry balances per currency and in functional value, checked in Python and
+by a deferred constraint trigger at COMMIT, together with: lines only in the entry's own
+transaction (`posting_txid`), a gapless per-account sequence, chart line rules and currency
+precision in `atlas_journal_line_guard`, and append-only triggers on every ledger table.
+Reconciliation re-checks it all after the fact.
+
+### D-129 Postings serialize on the portfolio account row; idempotent by event ID
+
+**Decision:** a posting locks its `portfolio_accounts` row `FOR UPDATE`, so balances,
+positions and sequence numbers are read and written consistently (spec 14.3's locking pattern;
+the same row will be the lock target of Phase 6B reservations). `(account, event_id)` is
+unique; a repeat with the same request returns the original entry, a repeat with different
+inputs is refused (`IdempotencyConflictError`). The resulting state must introduce no
+invariant violation (no negative cash, no position/ledger mismatch, no orphan valuation)
+before anything is written. Opening funding is idempotent on the account's funding entry
+whatever the time it is re-run.
+
+### D-130 Templates are pure, versioned and recorded on first use
+
+**Decision:** posting templates are pure functions of (state, inputs, rates, instrument
+specs). A template's code, version, rules and parameter schema are hashed; the row in
+`posting_templates` is written on first use and a stored row whose hash differs from the code
+is refused: a template's rules change only with a new version.
+
+### D-131 Multi-currency: historical carrying value, FX clearing, posted translation
+
+**Decision:** conversions balance each currency against 1900; currencies are relieved at their
+average historical carrying value; realized FX is functional value received minus carrying
+value given up; unrealized translation of each foreign net balance-sheet position is posted at
+checkpoints (1910/4300) and released pro rata when the currency is converted. Valuation and
+postings use only PROVIDER/OPERATOR rates (plus TEST_FIXTURE on test accounts); executed
+CONVERSION rates are documentation only. **Why:** the original amount and currency of every
+line are preserved, no currency is ever added to another without an explicit rate, and the
+clearing account's functional value is always zero (a reconciliation check).
+
+### D-132 Lot sizes are never guessed
+
+**Decision:** a trade needs an effective-dated `instrument_specs` row (increment, minimum,
+multiplier). The CLI can derive one from the provider reference data (`min_trade_increment`,
+or whole units for non-fractionable assets) or register it explicitly; a fractionable asset
+without a reported increment is refused. Multipliers other than 1 are refused until
+derivatives exist.
+
+### D-133 Valuation is posted at checkpoints; stale inputs are flagged, never substituted
+
+**Decision:** unrealized valuation is posted (so the ledger is authoritative for it), only at
+explicit checkpoints, only from fresh unadjusted prices and fresh rates; each checkpoint writes
+an immutable snapshot recording the inputs and their provenance. Stale or missing inputs leave
+the position or currency at its last posted valuation and mark the snapshot STALE or
+INCOMPLETE. A checkpoint is idempotent per `as_of` and cannot predate the latest one.
+
+### D-134 Primary and CONTROLLED_TEST accounts
+
+**Decision:** `portfolio_accounts.purpose` is PRIMARY (the $100,000 paper account) or
+CONTROLLED_TEST. Phase 6A has no execution source, so trades, costs and conversions are posted
+only as CONTROLLED_TEST transactions on CONTROLLED_TEST accounts; the service and the database
+(`atlas_journal_entry_guard`) refuse them on a PRIMARY account. Account type, base currency
+and purpose are immutable; accounts are never deleted.
+
+### D-135 Reconciliation reports, never corrects
+
+**Decision:** reconciliation runs every check under a share lock and stores every result. A
+discrepancy is a FAIL with severity HIGH, an error log line and an audit record; the dashboard
+shows it as an accounting error. Nothing is adjusted: the books stay as they are until an
+operator posts a correcting reversal. `currency_balances` is a cache maintained in the posting
+transaction and is itself reconciled against the lines.
+
+### D-136 Read-only API; the "account" path guard gets an explicit GET-only exception
+
+**Decision:** `/api/v1/portfolio/*` and `/api/v1/accounting/*` are GET only; postings,
+funding, checkpoints and reconciliation are CLI jobs. The OpenAPI safety test forbids
+"account" in paths to keep brokerage-account endpoints out; the ledger ("accounting") and the
+list of simulated paper accounts are allowed explicitly and asserted to expose GET only, like
+the read-only market-data trades path.
+
+### D-137 Display formatting never goes through floating point
+
+**Decision:** the dashboard formats the API's decimal strings with BigInt half-even rounding
+(accepting Python's exponent form, e.g. `0E-8`), so displayed money is exactly the ledger's.

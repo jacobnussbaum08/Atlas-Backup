@@ -7,13 +7,23 @@ derived from it (spec section 16.6).
 
 ``account_type`` is constrained to ``PAPER`` at the database level as a
 defence-in-depth guard for paper-only isolation (spec section 24.1).
+
+Phase 6A (migration 0013) adds:
+
+* ``purpose``: PRIMARY is the paper account Atlas trades (opening funding, valuation and, in a
+  later phase, simulated executions). CONTROLLED_TEST accounts exist so posting templates
+  can be exercised with controlled test transactions without ever touching the primary
+  account's books; the posting service refuses test transactions anywhere else.
+* ``base_currency`` references ``currencies``; it is the account's functional (reporting)
+  currency. ``atlas_portfolio_account_guard`` makes ``account_type``, ``base_currency`` and
+  ``purpose`` immutable and forbids deleting an account.
 """
 
 from __future__ import annotations
 
 from enum import StrEnum
 
-from sqlalchemy import CheckConstraint, String
+from sqlalchemy import CheckConstraint, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin, str_enum
@@ -21,6 +31,11 @@ from app.database.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin, 
 
 class PortfolioAccountType(StrEnum):
     PAPER = "PAPER"
+
+
+class PortfolioAccountPurpose(StrEnum):
+    PRIMARY = "PRIMARY"
+    CONTROLLED_TEST = "CONTROLLED_TEST"
 
 
 class PortfolioAccountStatus(StrEnum):
@@ -44,7 +59,17 @@ class PortfolioAccount(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         default=PortfolioAccountType.PAPER,
         server_default="PAPER",
     )
-    base_currency: Mapped[str] = mapped_column(String(3), default="USD", server_default="USD")
+    base_currency: Mapped[str] = mapped_column(
+        String(3),
+        ForeignKey("currencies.code", ondelete="RESTRICT"),
+        default="USD",
+        server_default="USD",
+    )
+    purpose: Mapped[PortfolioAccountPurpose] = mapped_column(
+        str_enum(PortfolioAccountPurpose, "portfolio_account_purpose"),
+        default=PortfolioAccountPurpose.PRIMARY,
+        server_default="PRIMARY",
+    )
     status: Mapped[PortfolioAccountStatus] = mapped_column(
         str_enum(PortfolioAccountStatus, "portfolio_account_status"),
         default=PortfolioAccountStatus.ACTIVE,

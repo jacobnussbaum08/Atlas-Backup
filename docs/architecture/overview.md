@@ -289,3 +289,27 @@ Frontend modules (`frontend/src`):
 Refresh strategy: stream status 15 s, market status 60 s, snapshots 15 s plus live merges,
 pipeline health 15 s, metrics 30–60 s, job lists 10–15 s; trade tape refetched (25 rows) at
 most every 2 s on live trades. Decisions: D-043 to D-049.
+
+## Portfolio and double-entry accounting (Phase 6A)
+
+`app/accounting` (ledger, templates, posting, reconciliation) and `app/portfolio` (accounts,
+pricing, valuation checkpoints, figures, read models), migration 0013, read-only routers
+`/api/v1/portfolio` and `/api/v1/accounting`, the CLI `python -m app.accounting.cli` and the
+dashboard page `/portfolio`. Full conventions: [`accounting.md`](accounting.md); decisions
+D-125 to D-137.
+
+```text
+CLI (init, post, checkpoint, reconcile)          API (GET only)        Dashboard /portfolio
+        |                                              |                        |
+        v                                              v                        |
+  PostingService --lock account row--> template (pure) -> validate R1/R2 ------+
+        |                                  ^                                    |
+        |                     LedgerState (lines + quantity ledger)             |
+        v                                                                       |
+  journal_entries / journal_lines / asset_quantity_ledger (append-only)  <-----+
+        |          currency_balances (cache)       fx_rates, instrument_specs
+        v
+  ValuationService -> VALUATION entry + portfolio_snapshots
+  ReconciliationService -> reconciliation_runs / results (HIGH on any discrepancy)
+```
+

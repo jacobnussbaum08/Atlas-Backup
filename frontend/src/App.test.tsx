@@ -83,7 +83,7 @@ describe("dashboard shell", () => {
 
   it("always shows the paper-trading, monitoring-only label", () => {
     stubApi({ "/health": "network-error", "/ready": "network-error", "/api/v1/market-data/stream": "network-error", "/api/v1/market-data/market-status": "network-error" });
-    renderAt("/portfolio");
+    renderAt("/risk");
 
     const label = screen.getByRole("status", { name: /paper trading mode/i });
     expect(label).toHaveTextContent(/paper trading/i);
@@ -93,9 +93,9 @@ describe("dashboard shell", () => {
 
   it("shows unbuilt sections explicitly as not built, without numbers", () => {
     stubApi(PAGE_ROUTES);
-    renderAt("/portfolio");
+    renderAt("/risk");
 
-    expect(screen.getByRole("heading", { name: "Portfolio" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Risk Center" })).toBeInTheDocument();
     expect(screen.getByText("No data yet")).toBeInTheDocument();
     expect(screen.getByRole("main").textContent).not.toMatch(/\$|\d+\.\d+%/);
   });
