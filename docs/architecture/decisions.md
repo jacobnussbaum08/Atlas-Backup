@@ -1625,3 +1625,21 @@ Below 30 matured coordinator outcomes the verdict is INSUFFICIENT_EVIDENCE; abov
 t of at least 2 against take-all (with a positive mean) is reported as
 INCREMENTAL_VALUE_OBSERVED: an observation on overlapping, unsized returns, not proof of an
 edge.
+
+## Fix — discovery mapping `created_at` from the injected clock
+
+### D-124 Discovery writes a mapping's `created_at` from its clock
+
+*(Made on a branch alongside Phase 5A/5B, hence numbered after D-099–D-123; merged in
+before Phase 6A.)*
+
+**Decision:** when directory discovery creates an `asset_identifiers` row it sets `created_at`
+to the same `recorded_at` (`max(observed_at, clock.now())`) it writes on the lifecycle events
+and reference versions of that run, instead of leaving it to the database's `now()`.
+`mappings_at` filters `created_at <= as_of` ("mappings Atlas had recorded by then"), so the
+mapping's recording time must come from the same clock as every other point-in-time
+timestamp the service writes. In production the injected clock is the real clock, so the
+stored value is unchanged in practice; under a fixed or replay clock the database time made
+every mapping look recorded after the decision time once the wall clock passed it, and
+qualification rejected each asset on `provider_mapping`. Operator-registered mappings
+(`AssetMappingRepository.register`) keep the database default.
