@@ -108,6 +108,15 @@ from app.database.models.reference_data import (
     ProviderAssetRecord,
     ProviderExchangeCodeRecord,
 )
+from app.database.models.reservations import (
+    RiskReservationApprovalRecord,
+    RiskReservationEventRecord,
+    RiskReservationReconciliationRecord,
+    RiskReservationRecord,
+    RiskReservationRequestRecord,
+    RiskReservationStateRecord,
+    SystemHealthEventRecord,
+)
 from app.database.models.risk import (
     RiskAssessmentReasonRecord,
     RiskAssessmentRecord,
@@ -246,6 +255,12 @@ __all__ = [
     "RiskEventRecord",
     "RiskExposureSnapshotRecord",
     "RiskPeriodBaselineRecord",
+    "RiskReservationApprovalRecord",
+    "RiskReservationEventRecord",
+    "RiskReservationReconciliationRecord",
+    "RiskReservationRecord",
+    "RiskReservationRequestRecord",
+    "RiskReservationStateRecord",
     "ScoringVersionRecord",
     "StrategyConfigurationRecord",
     "StrategyEvaluationErrorRecord",
@@ -261,6 +276,7 @@ __all__ = [
     "StreamGapRecord",
     "StreamSessionRecord",
     "StreamStatusRecord",
+    "SystemHealthEventRecord",
     "UniverseMembershipEventRecord",
     "WatchlistScoreRecord",
 ]

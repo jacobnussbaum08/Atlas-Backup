@@ -6,8 +6,9 @@ consistent ledger, breaker state and configuration, and breaker transitions neve
 
 ``assess`` records every decision with every check and the exact inputs, so it can be
 replayed (``replay``). A PASS_FOR_RESERVATION is **not** an execution approval and reserves
-nothing: two passing assessments may together exceed a limit. Atomic reservations, which
-re-check under the same lock and persist the reserved exposure, are Phase 6C.
+nothing by itself; active reservations (Phase 6C) are part of the assessed state. Only
+``app.risk.reservations.service`` reserves capacity: it runs this same assessment inside
+its own transaction, under the account lock, and persists the reservation atomically.
 """
 
 from __future__ import annotations
@@ -177,7 +178,13 @@ class RiskService:
             preferences=preferences,
             rate_sources=rate_sources(account),
         )
-        held = [p.asset_id for p in evaluated.view.positions]
+        # Held and reserved assets: both count toward the correlated-cluster limit.
+        held = list(
+            dict.fromkeys(
+                [p.asset_id for p in evaluated.view.positions]
+                + [r.asset_id for r in evaluated.view.reservations]
+            )
+        )
         correlations = data.correlations(
             session,
             asset.id,

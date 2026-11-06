@@ -30,13 +30,14 @@ from app.risk import breakers as rules
 from app.risk.assessment import NOT_AN_APPROVAL
 from app.risk.config import DEFAULTS_NOTE
 from app.risk.enums import AssessmentResult, BreakerStatus, BreakerType
-from app.risk.governance import latest_version
+from app.risk.governance import active_configuration, latest_version
 from app.risk.periods import TIMEZONE_POLICY
+from app.risk.reservations import queries as reservation_queries
 from app.risk.state import EvaluatedState, breakdown, breaker_statuses
 
 PAPER_NOTE = (
-    "Simulated paper account. The risk engine assesses proposals; it executes nothing, "
-    "reserves nothing (Phase 6C) and never liquidates positions."
+    "Simulated paper account. The risk engine assesses proposals and reserves capacity for "
+    "approved intents; it executes nothing and never liquidates positions."
 )
 NOT_CONFIGURED = "no risk configuration exists for this account: run `python -m app.risk.cli init`"
 
@@ -374,6 +375,7 @@ def live(state: EvaluatedState) -> dict[str, Any]:
         "margin_used": _s(v.margin_used),
         "pending_exposure": _s(v.pending_exposure),
         "pending_source": v.pending_source,
+        "reservation_issues": v.reservation_issues,
         "of_equity": {
             "long_exposure": share(v.long_exposure),
             "short_exposure": share(v.short_exposure),
@@ -434,10 +436,9 @@ def overview(
         "live": None if state is None else live(state),
         "latest_snapshot": latest_snapshot(session, account),
         "assessment_counts": assessment_counts(session, account),
-        "reserved_exposure": {
-            "amount": "0",
-            "note": "risk reservations do not exist before Phase 6C",
-        },
+        "reserved_exposure": reservation_queries.capacity(
+            session, account, state, active_configuration(session, account.id)
+        ),
         "disclaimer": PAPER_NOTE,
     }
 

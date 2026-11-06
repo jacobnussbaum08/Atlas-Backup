@@ -152,8 +152,131 @@ export interface RiskOverview {
   live: LiveState | null;
   latest_snapshot: Record<string, unknown> | null;
   assessment_counts: Record<AssessmentResult, number>;
-  reserved_exposure: { amount: string; note: string };
+  reserved_exposure: ReservationCapacity;
   disclaimer: string;
+}
+
+// ---- Phase 6C atomic reservations (read-only views)
+export type ReservationStatus =
+  | "PENDING"
+  | "APPROVED"
+  | "PARTIALLY_CONSUMED"
+  | "CONSUMED"
+  | "RELEASED"
+  | "EXPIRED"
+  | "REJECTED"
+  | "FAILED";
+
+export interface ReservationReconciliation {
+  id: string;
+  status: "PASSED" | "FAILED";
+  started_at: string;
+  finished_at: string;
+  account_sequence: number;
+  reservations_checked: number;
+  events_checked: number;
+  unexplained: number;
+  warnings: number;
+  findings: { code: string; message: string; severity: string; reservation_id: string | null }[];
+  totals: Record<string, string>;
+  actor: string;
+}
+
+export type ReservationAvailability =
+  | { computed: false }
+  | {
+      computed: true;
+      as_of: string;
+      mark_status: string;
+      functional_currency: string;
+      equity: string;
+      risk_budget: string | null;
+      risk_budget_before_reservations: string | null;
+      per_trade_budget: string;
+      gross_exposure: string;
+      gross_exposure_limit: string;
+      net_long_room: string;
+      net_short_room: string;
+      short_exposure: string;
+      margin: string;
+      capital: string;
+      positions: number;
+      reservation_issues: Record<string, string>[];
+    };
+
+export interface ReservationCapacity {
+  account_id: string;
+  reserved: {
+    active_count: number;
+    risk: string;
+    gross_exposure: string;
+    long_exposure: string;
+    short_exposure: string;
+    capital: string;
+    margin: string;
+    event_sequence: number;
+  };
+  available: ReservationAvailability;
+  counts: Partial<Record<ReservationStatus, number>>;
+  reconciliation: ReservationReconciliation | null;
+  approvals_blocked: boolean;
+  note: string;
+}
+
+export interface ReservationReason {
+  code: string;
+  outcome: string;
+  check: string;
+  message: string;
+  measured?: string | null;
+  limit?: string | null;
+}
+
+export interface Reservation {
+  id: string;
+  account_id: string;
+  idempotency_key: string;
+  source: string;
+  symbol: string;
+  asset_class: string;
+  direction: "LONG" | "SHORT";
+  functional_currency: string;
+  entry: string;
+  stop: string | null;
+  status: ReservationStatus;
+  active: boolean;
+  proposed_quantity: string | null;
+  approved_quantity: string;
+  consumed_quantity: string;
+  released_quantity: string;
+  remaining_quantity: string;
+  approved: { risk: string; exposure: string; capital: string; margin: string };
+  remaining: { risk: string; exposure: string; capital: string; margin: string };
+  execution_link: "NONE" | "ORDER_ATTACHED" | "UNCERTAIN";
+  order_ref: string | null;
+  expires_at: string;
+  expiry_deferred_at: string | null;
+  reasons: ReservationReason[];
+  requested_by: string;
+  requested_at: string;
+}
+
+export interface ReservationEvent {
+  id: number;
+  reservation_id: string;
+  symbol: string | null;
+  account_sequence: number;
+  reservation_sequence: number;
+  event_type: string;
+  from_status: ReservationStatus | null;
+  to_status: ReservationStatus;
+  quantity: string;
+  risk: string;
+  exposure: string;
+  resolution: string | null;
+  actor: string;
+  reason: string;
+  occurred_at: string;
 }
 
 export interface AssessmentSummary {

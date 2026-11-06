@@ -906,6 +906,55 @@ assessments/{id},circuit-breakers,circuit-breakers/events,configurations,events}
 a passing assessment while a breaker is tripped, against an outdated configuration, above the
 configured risk per trade, or whose stored result does not follow from its stored checks.
 
+## Risk reservations (Phase 6C)
+
+Prerequisites: the database at head (migration 0015), the Phase 6B configuration and a
+passing, current accounting reconciliation. Decisions D-148 to D-155; design in
+[`architecture/reservations.md`](architecture/reservations.md). A reservation holds
+capacity for an approved intent; it is not an order and posts nothing to the ledger.
+
+**Reserve** (the assessment is recomputed inside the reservation transaction; the same
+`--idempotency-key` returns the original result; `--strict` exits 1 unless approved):
+
+```bash
+uv run python -m app.risk.cli reserve --symbol AAPL --direction LONG --entry 150.25 --stop 145.00 --idempotency-key operator:aapl:2026-11-06-1
+```
+
+Strategy proposals and AI decisions: `--proposal-id ID` or `--decision-id ID` instead of
+the levels (their identity, expiry and supersession are checked; one live reservation per
+intent).
+
+**Inspect:** `reservations list [--active]`, `reservations show --id ID`,
+`reservations capacity` (reserved and available, live), `reservations events`.
+
+**Expire due reservations** (only those with no attached order and nothing consumed; others
+are held and reported as held past expiry). Run it on a schedule, e.g. every minute:
+
+```bash
+uv run python -m app.risk.cli reservations expire
+```
+
+**Reconcile** (exit 1 when unexplained inconsistencies are found; a FAILED run writes a
+CRITICAL `system_health_events` row and blocks new approvals until a later run passes):
+
+```bash
+uv run python -m app.risk.cli reservations reconcile
+```
+
+**After a crash or restart:** `reservations recover` (expiry per the rules, then a
+reconciliation). Nothing is released because a worker timed out: reservations with an
+attached order or an uncertain execution state are held until the execution engine (Phase
+7) or an operator resolves them:
+
+```bash
+uv run python -m app.risk.cli reservations release --id ID --resolution OPERATOR --key operator:release:ID --actor operator:jacob --reason "broker confirms no order"
+```
+
+A reconciliation that fails because of a real inconsistency needs investigation: the
+reservation tables are append-only (the projection changes only through its events), so
+the finding stays in the history. Consumption is not available from the CLI: it requires
+a ledger fill (Phase 7).
+
 ## Backup and restore
 
 ```bash

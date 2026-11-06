@@ -65,7 +65,7 @@ def test_state_limits_exposure_and_history(api, risk):
     assert state["live"]["recorded"] is False
     assert state["live"]["mark_status"] == "COMPLETE"
     assert D(state["live"]["equity"]) == D("100000.00")
-    assert state["reserved_exposure"]["amount"] == "0"
+    assert state["reserved_exposure"]["reserved"]["risk"] == "0"  # no reservation yet
     assert state["assessment_counts"]["PASS_FOR_RESERVATION"] == 1
     assert state["assessment_counts"]["REJECTED"] == 1
     assert "not optimal" in state["limits"]["note"]

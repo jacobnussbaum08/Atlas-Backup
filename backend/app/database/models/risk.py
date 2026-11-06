@@ -154,7 +154,8 @@ class RiskExposureSnapshotRecord(UUIDPrimaryKeyMixin, Base):
         CheckConstraint(
             "net_exposure = long_exposure - short_exposure", name="net_is_long_minus_short"
         ),
-        CheckConstraint("pending_exposure = 0", name="no_reservations_before_6c"),
+        # Active risk reservations (Phase 6C); 6B required 0 ("no_reservations_before_6c").
+        CheckConstraint("pending_exposure >= 0", name="pending_non_negative"),
         Index(None, "portfolio_account_id", "as_of"),
         Index(None, "portfolio_account_id", "mark_status", "as_of"),
     )

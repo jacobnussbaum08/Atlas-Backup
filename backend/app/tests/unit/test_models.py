@@ -133,6 +133,14 @@ def test_expected_tables_exist():
         "risk_assessment_reasons",
         "risk_circuit_breaker_events",
         "risk_events",
+        # Phase 6C atomic risk reservations
+        "risk_reservations",
+        "risk_reservation_requests",
+        "risk_reservation_events",
+        "risk_reservation_states",
+        "risk_reservation_approvals",
+        "risk_reservation_reconciliations",
+        "system_health_events",
     }
 
 

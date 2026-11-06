@@ -96,6 +96,10 @@ class ReasonCode(StrEnum):
     COST_ASSUMPTIONS = "COST_ASSUMPTIONS"
     STOP_ASSUMED = "STOP_ASSUMED"
     PENDING_EXPOSURE = "PENDING_EXPOSURE"
+    # Phase 6C reservations
+    RESERVED_CAPACITY = "RESERVED_CAPACITY"
+    OPPOSITE_RESERVATION_ACTIVE = "OPPOSITE_RESERVATION_ACTIVE"
+    RESERVATION_VALUATION_UNKNOWN = "RESERVATION_VALUATION_UNKNOWN"
 
 
 class _Frozen(BaseModel):
@@ -188,6 +192,33 @@ class HeldPosition(_Frozen):
     cluster: str | None = None
 
 
+class ReservedExposure(_Frozen):
+    """The unconsumed remainder of an active risk reservation (Phase 6C), functional currency.
+
+    It counts against every limit exactly like a position would once it fills, and stops
+    counting as it is consumed (the fill is then in the ledger) or released. Amounts are the
+    approval-time amounts scaled to the remaining quantity, re-converted at the current rate
+    when that is higher (never lower) for a foreign instrument.
+    """
+
+    reservation_id: uuid.UUID
+    asset_id: uuid.UUID
+    symbol: str
+    asset_class: str
+    direction: TradeDirection
+    sector: str | None = None
+    cluster: str | None = None
+    remaining_quantity: StrictDecimal
+    # Notional at the adverse entry fill (gross exposure).
+    exposure: StrictDecimal
+    # Available capital it commits (a long: notional and entry costs; a short: collateral
+    # beyond its restricted proceeds and entry costs).
+    capital: StrictDecimal
+    margin: StrictDecimal = Decimal(0)
+    # Potential loss at the stop, costs included.
+    risk: StrictDecimal
+
+
 class Correlation(_Frozen):
     """|correlation| of a held asset with the candidate, or None when not measured."""
 
@@ -224,10 +255,13 @@ class PortfolioView(_Frozen):
     peak_equity: StrictDecimal | None = None
     drawdown: StrictDecimal | None = None
     available_risk_budget: StrictDecimal | None = None
-    # Exposure already committed but not yet in the ledger. Reservations do not exist before
-    # Phase 6C, so this is zero and says so; nothing is invented.
+    # Exposure already committed but not yet in the ledger: the gross exposure of the active
+    # risk reservations (Phase 6C), each listed in ``reservations``.
     pending_exposure: StrictDecimal = Decimal(0)
-    pending_source: str = "none: risk reservations arrive in Phase 6C"
+    pending_source: str = "none: no active risk reservation"
+    reservations: list[ReservedExposure] = Field(default_factory=list)
+    # Reservations that could not be valued (no fresh rate for a foreign one): no approval.
+    reservation_issues: list[dict[str, Any]] = Field(default_factory=list)
     active_breakers: list[BreakerType] = Field(default_factory=list)
     reconciliation_status: str | None = None
     reconciliation_current: bool = False
@@ -283,4 +317,5 @@ __all__ = [
     "PortfolioView",
     "Proposal",
     "ReasonCode",
+    "ReservedExposure",
 ]

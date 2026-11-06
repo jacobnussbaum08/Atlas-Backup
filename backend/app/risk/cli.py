@@ -20,8 +20,20 @@ Assessment and monitoring:
 * ``replay --assessment ID``: re-run a stored assessment from its stored inputs.
 * ``show``: the risk state as JSON (live figures are not recorded).
 
+Reservations (Phase 6C):
+
+* ``reserve --idempotency-key K`` with the ``assess`` proposal options: an atomic
+  reservation (the assessment is recomputed inside the reservation transaction).
+* ``reservations list [--active] | show --id ID | capacity | events``.
+* ``reservations release --id ID --resolution R --key K --actor A --reason TEXT``.
+* ``reservations expire``: expire due reservations (never one an order depends on).
+* ``reservations reconcile`` / ``reservations recover``: reconciliation; recovery after a
+  restart (expiry per the rules, then reconciliation). Nothing is released silently.
+
 Exit status 0 on success, 1 when refused (or an assessment does not pass with ``assess
---strict``), 2 on bad configuration. Nothing here can submit, reserve or execute an order.
+--strict``, or a reservation is rejected with ``reserve --strict``, or a reconciliation
+fails), 2 on bad configuration. Nothing here can submit or execute an order, and nothing
+consumes a reservation: consumption needs a ledger fill (Phase 7).
 """
 
 from __future__ import annotations
@@ -58,12 +70,17 @@ from app.risk.enums import (
     BreakerType,
     ClassificationSource,
     ProposalSource,
+    ReconciliationOutcome,
+    ReleaseResolution,
+    ReservationStatus,
     RiskEventType,
     Severity,
     TradeDirection,
 )
 from app.risk.models import Proposal
+from app.risk.reservations import queries as reservation_queries
 from app.risk.runtime import RiskContext, build_risk_context
+from app.risk.state import evaluate
 
 
 def _timestamp(value: str) -> datetime:
@@ -113,7 +130,27 @@ def _parser() -> argparse.ArgumentParser:
     cmd = sub.add_parser("reset")
     cmd.add_argument("--breaker", type=BreakerType, choices=list(BreakerType), required=True)
     operator(cmd)
-    cmd = sub.add_parser("assess")
+    for name in ("assess", "reserve"):
+        _proposal_options(sub.add_parser(name))
+    cmd = sub.add_parser("reservations")
+    cmd.add_argument(
+        "action",
+        choices=["list", "show", "capacity", "events", "release", "expire", "reconcile", "recover"],
+    )
+    cmd.add_argument("--id")
+    cmd.add_argument("--active", action="store_true")
+    cmd.add_argument("--resolution", type=ReleaseResolution, choices=list(ReleaseResolution))
+    cmd.add_argument("--key", help="idempotency key of the command")
+    cmd.add_argument("--actor", default="operator:cli")
+    cmd.add_argument("--reason")
+    sub.add_parser("monitor")
+    cmd = sub.add_parser("replay")
+    cmd.add_argument("--assessment", required=True)
+    sub.add_parser("show")
+    return parser
+
+
+def _proposal_options(cmd: argparse.ArgumentParser) -> None:
     cmd.add_argument("--requested-by", default="operator:cli")
     cmd.add_argument("--symbol")
     cmd.add_argument("--asset-id")
@@ -126,12 +163,8 @@ def _parser() -> argparse.ArgumentParser:
     cmd.add_argument("--proposal-id")
     cmd.add_argument("--decision-id")
     cmd.add_argument("--request-key")
+    cmd.add_argument("--idempotency-key", help="reserve: required idempotency key")
     cmd.add_argument("--strict", action="store_true", help="exit 1 unless it passes")
-    sub.add_parser("monitor")
-    cmd = sub.add_parser("replay")
-    cmd.add_argument("--assessment", required=True)
-    sub.add_parser("show")
-    return parser
 
 
 def _print(value: Any) -> None:
@@ -278,6 +311,26 @@ def run(ctx: RiskContext, args: argparse.Namespace) -> int:
         if args.strict and stored.result is not AssessmentResult.PASS_FOR_RESERVATION:
             return 1
         return 0
+    if args.command == "reserve":
+        if not args.idempotency_key:
+            raise AtlasError("reserve needs --idempotency-key")
+        assert ctx.reservations is not None  # noqa: S101  # built by build_risk_context
+        reserved = ctx.reservations.reserve(
+            account.id,
+            _proposal(ctx, args),
+            idempotency_key=args.idempotency_key,
+            requested_by=args.requested_by,
+        )
+        with session_scope(ctx.session_factory) as session:
+            _print(
+                reservation_queries.reservation(session, reserved.reservation_id)
+                | {"created": reserved.created, "decision": reserved.decision.value}
+            )
+        if args.strict and reserved.decision is not ReservationStatus.APPROVED:
+            return 1
+        return 0
+    if args.command == "reservations":
+        return _reservations(ctx, account, args)
     if args.command == "monitor":
         state = ctx.service.monitor(account.id)
         _print(
@@ -300,6 +353,61 @@ def run(ctx: RiskContext, args: argparse.Namespace) -> int:
             _print(queries.overview(session, account, state))
         return 0
     raise AssertionError(args.command)  # pragma: no cover
+
+
+def _reservations(ctx: RiskContext, account: PortfolioAccount, args: argparse.Namespace) -> int:
+    assert ctx.reservations is not None  # noqa: S101  # built by build_risk_context
+    assert ctx.reconciler is not None  # noqa: S101
+    action = args.action
+    if action in ("list", "show", "capacity", "events"):
+        with session_scope(ctx.session_factory) as session:
+            if action == "list":
+                _print(reservation_queries.reservations(session, account, 100, None, args.active))
+            elif action == "show":
+                if not args.id:
+                    raise AtlasError("show needs --id")
+                _print(reservation_queries.reservation(session, uuid.UUID(args.id)))
+            elif action == "events":
+                _print(reservation_queries.events(session, account, 100))
+            else:
+                config = governance.active_configuration(session, account.id)
+                live = evaluate(
+                    session, account, ctx.clock.now(), config, ctx.accounting, persist=False
+                )
+                _print(reservation_queries.capacity(session, account, live, config))
+        return 0
+    if action == "release":
+        if not (args.id and args.resolution and args.key and args.reason):
+            raise AtlasError("release needs --id, --resolution, --key and --reason")
+        done = ctx.reservations.release(
+            uuid.UUID(args.id),
+            resolution=args.resolution,
+            idempotency_key=args.key,
+            actor=args.actor,
+            reason=args.reason,
+        )
+        _print({"reservation_id": str(done.reservation_id), "status": done.status.value})
+        return 0
+    if action == "expire":
+        summary = ctx.reservations.expire_due(account.id)
+        _print({"expired": summary.expired, "held_past_expiry": summary.deferred})
+        return 0
+    recovered: dict[str, Any] = {}
+    if action == "recover":
+        summary = ctx.reservations.expire_due(account.id)
+        recovered = {"expired": summary.expired, "held_past_expiry": summary.deferred}
+    result = ctx.reconciler.run(account.id, actor=args.actor)
+    _print(
+        recovered
+        | {
+            "run_id": str(result.run_id),
+            "status": result.status.value,
+            "unexplained": result.unexplained,
+            "warnings": result.warnings,
+            "totals": result.totals,
+        }
+    )
+    return 0 if result.status is ReconciliationOutcome.PASSED else 1
 
 
 def _values(pairs: list[tuple[str, str]]) -> dict[str, Any]:

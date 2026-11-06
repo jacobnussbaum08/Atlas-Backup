@@ -15,14 +15,22 @@ Order of evaluation (every check is recorded, passing or not):
    lot size known; for a short, shorts enabled, shortable, borrowable, margin known;
 5. market data: fresh price and FX rate, entry near the market, stop not already breached,
    spread within limit, liquidity measured;
-6. portfolio: no opposite position, open-position count;
+6. portfolio: no opposite position or opposite reservation, open-position count (held and
+   reserved assets);
 7. sizing (only when nothing above failed): risk budget, then every capacity limit
    (capital, gross, leverage, net, single asset, asset class, sector, correlated cluster,
    short exposure, margin, liquidity), the smallest wins, floored to the lot and verified.
 
+Active risk reservations (Phase 6C, ``PortfolioView.reservations``) count like positions
+that have not filled yet: their reserved risk reduces the loss allowance, and their
+exposure, capital and margin use every capacity, so capacity is the limit minus actual
+positions minus outstanding reservations. Opposite-direction reservations are never
+assumed to offset (the net limit counts only those that make it worse).
+
 Result precedence: any HALT -> RISK_HALTED; else any FAIL -> REJECTED; else any UNKNOWN ->
-INSUFFICIENT_DATA; else PASS_FOR_RESERVATION. A pass is **not** an execution approval: Phase
-6C's atomic reservation must re-check under the account lock.
+INSUFFICIENT_DATA; else PASS_FOR_RESERVATION. A pass is **not** an execution approval by
+itself: only an APPROVED reservation, whose assessment ran inside the reservation
+transaction under the account lock, authorizes an order intent (Phase 6C).
 """
 
 from __future__ import annotations
@@ -48,6 +56,7 @@ from app.risk.models import (
     Check,
     HeldPosition,
     ReasonCode,
+    ReservedExposure,
 )
 from app.risk.sizing import (
     BPS,
@@ -65,11 +74,11 @@ from app.risk.sizing import (
     verified_quantity,
 )
 
-ENGINE_VERSION = "6B.1"
+ENGINE_VERSION = "6C.1"
 NOT_AN_APPROVAL = (
-    "PASS_FOR_RESERVATION is not an execution approval: the atomic reservation and final "
-    "order authorization belong to Phase 6C, which must re-check every limit under the "
-    "account lock."
+    "PASS_FOR_RESERVATION is not an execution approval by itself: only an APPROVED risk "
+    "reservation, whose assessment was recomputed inside the reservation transaction under "
+    "the account lock, authorizes an order intent (Phase 6C)."
 )
 UNCLASSIFIED = "UNCLASSIFIED"
 
@@ -100,6 +109,29 @@ class _Assessment:
         self.i = inputs
         self.checks: list[Check] = []
         self.calc: dict[str, Any] = {"engine_version": ENGINE_VERSION}
+        self.res: list[ReservedExposure] = list(inputs.portfolio.reservations)
+
+    # ------------------------------------------------------------------ reservations
+    def _reserved(self, attr: str, keep: Any = None) -> Decimal:
+        return sum(
+            (getattr(r, attr) for r in self.res if keep is None or keep(r)),
+            ZERO,
+        )
+
+    def _allowance(self) -> Decimal | None:
+        """Loss allowance left before a loss limit, after the risk already reserved."""
+        budget = self.i.portfolio.available_risk_budget
+        if budget is None:
+            return None
+        return budget - self._reserved("risk")
+
+    @staticmethod
+    def _side(direction: TradeDirection) -> Any:
+        return lambda r: r.direction is direction
+
+    def _details(self, amount: Decimal) -> dict[str, Any]:
+        """How much of a usage figure is reserved (recorded only when reservations exist)."""
+        return {"reserved": amount} if self.res else {}
 
     # ------------------------------------------------------------------ recording
     def add(
@@ -247,14 +279,44 @@ class _Assessment:
                 "daily loss, weekly loss or drawdown could not be measured",
                 ReasonCode.LOSS_STATE_UNKNOWN,
             )
-        if p.available_risk_budget is not None and p.available_risk_budget <= ZERO:
+        allowance = self._allowance()
+        if allowance is not None and allowance <= ZERO:
             self.add(
                 "available_risk_budget",
                 CheckOutcome.FAIL,
-                "no loss allowance is left before a loss limit",
+                "no loss allowance is left before a loss limit"
+                + (
+                    f" after the {self._reserved('risk')} reserved by {len(self.res)} active "
+                    "reservation(s)"
+                    if self.res
+                    else ""
+                ),
                 ReasonCode.RISK_BUDGET_EXHAUSTED,
-                measured=p.available_risk_budget,
+                measured=allowance,
                 unit=p.functional_currency,
+            )
+        if p.reservation_issues:
+            self.add(
+                "reserved_capacity",
+                CheckOutcome.UNKNOWN,
+                f"{len(p.reservation_issues)} active reservation(s) could not be valued at the "
+                "assessment time: capacity is unknown",
+                ReasonCode.RESERVATION_VALUATION_UNKNOWN,
+                issues=p.reservation_issues,
+            )
+        elif self.res:
+            self.add(
+                "reserved_capacity",
+                CheckOutcome.INFO,
+                f"{len(self.res)} active reservation(s) count against every limit: risk "
+                f"{self._reserved('risk')}, exposure {self._reserved('exposure')} (long "
+                f"{self._reserved('exposure', self._side(TradeDirection.LONG))}, short "
+                f"{self._reserved('exposure', self._side(TradeDirection.SHORT))}), capital "
+                f"{self._reserved('capital')}, margin {self._reserved('margin')}",
+                ReasonCode.RESERVED_CAPACITY,
+                measured=self._reserved("exposure"),
+                unit=p.functional_currency,
+                reservations=[str(r.reservation_id) for r in self.res],
             )
 
     # ------------------------------------------------------------------ 3. proposal
@@ -621,6 +683,7 @@ class _Assessment:
 
     def _portfolio(self, limits: HardLimits) -> None:
         held = self._held()
+        candidate = self.i.proposal.asset_id
         if held is not None and held.direction is not self.i.proposal.direction:
             self.add(
                 "opposite_position",
@@ -629,13 +692,29 @@ class _Assessment:
                 "first (risk-reducing operations belong to the execution phases)",
                 ReasonCode.OPPOSITE_POSITION_HELD,
             )
-        count = len(self.i.portfolio.positions)
-        after = count if held is not None else count + 1
+        opposite = [
+            r
+            for r in self.res
+            if r.asset_id == candidate and r.direction is not self.i.proposal.direction
+        ]
+        if opposite:
+            self.add(
+                "opposite_reservation",
+                CheckOutcome.FAIL,
+                f"an active {opposite[0].direction.value} reservation for the asset exists "
+                f"({opposite[0].reservation_id}): opposite reservations are never netted",
+                ReasonCode.OPPOSITE_RESERVATION_ACTIVE,
+            )
+        held_ids = {q.asset_id for q in self.i.portfolio.positions}
+        reserved_ids = {r.asset_id for r in self.res} - held_ids
+        count = len(held_ids) + len(reserved_ids)
+        after = count if (candidate in held_ids or candidate in reserved_ids) else count + 1
+        pending_note = f" ({len(reserved_ids)} reserved, not yet filled)" if reserved_ids else ""
         if after > limits.max_open_positions:
             self.add(
                 "open_positions",
                 CheckOutcome.FAIL,
-                f"{after} open positions would exceed the maximum",
+                f"{after} open positions would exceed the maximum{pending_note}",
                 ReasonCode.MAX_OPEN_POSITIONS,
                 measured=Decimal(after),
                 limit=Decimal(limits.max_open_positions),
@@ -645,7 +724,7 @@ class _Assessment:
             self.add(
                 "open_positions",
                 CheckOutcome.PASS,
-                f"{after} open position(s) after the trade",
+                f"{after} open position(s) after the trade{pending_note}",
                 measured=Decimal(after),
                 limit=Decimal(limits.max_open_positions),
                 unit="positions",
@@ -761,15 +840,20 @@ class _Assessment:
         with money_context():
             base_budget = floor_to(p.equity * base_pct, f_places)
         budget = base_budget
-        if p.available_risk_budget is not None:
-            budget = min(budget, floor_to(p.available_risk_budget, f_places))
+        allowance = self._allowance()
+        if allowance is not None:
+            budget = min(budget, floor_to(allowance, f_places))
+        reserved_risk = self._reserved("risk")
+        reserved_note = (
+            f" = {p.available_risk_budget} - {reserved_risk} reserved" if reserved_risk else ""
+        )
         self.add(
             "risk_budget",
             CheckOutcome.RESTRICT if budget < base_budget else CheckOutcome.PASS,
             (
                 f"risk budget {budget} {functional} = equity {p.equity} x {base_pct}"
                 + (
-                    f", capped by the loss allowance left ({p.available_risk_budget})"
+                    f", capped by the loss allowance left ({allowance}{reserved_note})"
                     if budget < base_budget
                     else ""
                 )
@@ -918,12 +1002,26 @@ class _Assessment:
             limit=budget,
             unit=functional,
         )
+        capital_unit, fixed = self._capital_unit(unit, costs, rate, margin_rate)
+        with money_context():
+            capital = ceil_to(quantity * capital_unit + fixed, f_places)
+            margin = ceil_to(margin_rate * notional, f_places) if self._is_short else ZERO
         self.calc.update(
             {
                 "permitted_quantity": str(quantity),
                 "potential_loss": str(loss),
                 "notional": str(notional),
                 "estimated_costs": str(estimated_costs),
+                # What an approved reservation of this quantity holds (functional, rounded
+                # against Atlas); the database checks the reservation against these.
+                "reservation": {
+                    "quantity": str(quantity),
+                    "risk": str(loss),
+                    "exposure": str(notional),
+                    "capital": str(capital),
+                    "margin": str(margin),
+                    "worst_entry_price": str(entry_adj),
+                },
             }
         )
         return self.outcome(
@@ -952,7 +1050,8 @@ class _Assessment:
         e = p.equity
         functional = p.functional_currency
         mult = ins.multiplier
-        pending = p.pending_exposure
+        pending = self._reserved("exposure")
+        reserved = self._details
         with money_context():
             exposure_unit = unit.exposure_price * mult * rate
             fixed = costs.min_commission * rate
@@ -982,19 +1081,11 @@ class _Assessment:
             )
 
         # Available capital: a long pays notional and entry costs; a short commits collateral
-        # beyond its restricted proceeds plus entry costs. Neither may use more than is free.
-        with money_context():
-            if self._is_short:
-                capital_unit = (
-                    margin_rate * unit.exposure_price * mult
-                    + unit.entry_costs
-                    + costs.commission_per_unit
-                ) * rate
-            else:
-                capital_unit = (
-                    unit.entry_fill * mult + unit.entry_costs + costs.commission_per_unit
-                ) * rate
-        free = p.available_capital - pending
+        # beyond its restricted proceeds plus entry costs. Neither may use more than is free
+        # after what active reservations already committed.
+        capital_unit, _ = self._capital_unit(unit, costs, rate, margin_rate)
+        capital_reserved = self._reserved("capital")
+        free = p.available_capital - capital_reserved
         cap(
             "available_capital",
             ReasonCode.AVAILABLE_CAPITAL,
@@ -1003,6 +1094,7 @@ class _Assessment:
             free,
             free,
             fixed_cost=fixed,
+            **reserved(capital_reserved),
         )
         with money_context():
             gross_limit = limits.max_gross_exposure_pct * e
@@ -1015,6 +1107,7 @@ class _Assessment:
             exposure_unit,
             p.gross_exposure + pending,
             gross_limit,
+            **reserved(pending),
         )
         cap(
             "leverage",
@@ -1023,18 +1116,29 @@ class _Assessment:
             exposure_unit,
             p.gross_exposure + pending,
             leverage_limit,
+            **reserved(pending),
         )
-        net_room = net_limit + p.net_exposure if self._is_short else net_limit - p.net_exposure
+        # Worst case: same-direction reservations fill, opposite ones do not.
+        if self._is_short:
+            same_side = self._reserved("exposure", self._side(TradeDirection.SHORT))
+            net_now = p.net_exposure - same_side
+            net_room = net_limit + net_now
+        else:
+            same_side = self._reserved("exposure", self._side(TradeDirection.LONG))
+            net_now = p.net_exposure + same_side
+            net_room = net_limit - net_now
         cap(
             "net_exposure",
             ReasonCode.NET_EXPOSURE,
             net_room,
             exposure_unit,
-            p.net_exposure,
+            net_now,
             net_limit,
+            **reserved(same_side),
         )
         held = self._held()
-        held_exposure = held.exposure if held is not None else ZERO
+        asset_reserved = self._reserved("exposure", lambda r: r.asset_id == ins.asset_id)
+        held_exposure = (held.exposure if held is not None else ZERO) + asset_reserved
         with money_context():
             single_limit = limits.max_single_asset_pct * e
             class_limit = limits.asset_class_limit(ins.asset_class) * e
@@ -1047,9 +1151,12 @@ class _Assessment:
             exposure_unit,
             held_exposure,
             single_limit,
+            **reserved(asset_reserved),
         )
-        class_used = sum(
-            (q.exposure for q in p.positions if q.asset_class == ins.asset_class), ZERO
+        class_reserved = self._reserved("exposure", lambda r: r.asset_class == ins.asset_class)
+        class_used = (
+            sum((q.exposure for q in p.positions if q.asset_class == ins.asset_class), ZERO)
+            + class_reserved
         )
         cap(
             "asset_class_exposure",
@@ -1059,10 +1166,13 @@ class _Assessment:
             class_used,
             class_limit,
             asset_class=ins.asset_class,
+            **reserved(class_reserved),
         )
         sector = ins.sector or UNCLASSIFIED
-        sector_used = sum(
-            (q.exposure for q in p.positions if (q.sector or UNCLASSIFIED) == sector), ZERO
+        sector_reserved = self._reserved("exposure", lambda r: (r.sector or UNCLASSIFIED) == sector)
+        sector_used = (
+            sum((q.exposure for q in p.positions if (q.sector or UNCLASSIFIED) == sector), ZERO)
+            + sector_reserved
         )
         cap(
             "sector_exposure",
@@ -1073,8 +1183,13 @@ class _Assessment:
             sector_limit,
             sector=sector,
             classified=ins.sector is not None,
+            **reserved(sector_reserved),
         )
         correlated, members = self._correlated()
+        reserved_ids = {str(r.reservation_id): r.exposure for r in self.res}
+        corr_reserved = sum(
+            (reserved_ids[m["reservation_id"]] for m in members if "reservation_id" in m), ZERO
+        )
         cap(
             "correlated_exposure",
             ReasonCode.CORRELATED_EXPOSURE,
@@ -1083,45 +1198,73 @@ class _Assessment:
             correlated,
             corr_limit,
             members=members,
+            **reserved(corr_reserved),
         )
         if self._is_short:
             with money_context():
                 short_limit = limits.max_short_exposure_pct * e
                 margin_limit = limits.max_margin_usage_pct * e
                 margin_unit = margin_rate * exposure_unit
+            short_reserved = self._reserved("exposure", self._side(TradeDirection.SHORT))
+            margin_reserved = self._reserved("margin")
             cap(
                 "short_exposure",
                 ReasonCode.SHORT_EXPOSURE,
-                short_limit - p.short_exposure,
+                short_limit - p.short_exposure - short_reserved,
                 exposure_unit,
-                p.short_exposure,
+                p.short_exposure + short_reserved,
                 short_limit,
+                **reserved(short_reserved),
             )
             if margin_unit > ZERO:
                 cap(
                     "margin_usage",
                     ReasonCode.MARGIN_USAGE,
-                    margin_limit - p.margin_used,
+                    margin_limit - p.margin_used - margin_reserved,
                     margin_unit,
-                    p.margin_used,
+                    p.margin_used + margin_reserved,
                     margin_limit,
                     margin_rate=margin_rate,
+                    **reserved(margin_reserved),
                 )
         assert m.adv_quote is not None  # noqa: S101  # checked before sizing
         with money_context():
             adv_functional = m.adv_quote * rate
             liquidity_limit = limits.max_adv_participation_pct * adv_functional
+        # Reservations of the same asset will trade in the same market: they share the limit.
         cap(
             "liquidity",
             ReasonCode.LIQUIDITY,
-            liquidity_limit,
+            liquidity_limit - asset_reserved,
             exposure_unit,
             adv_functional,
             liquidity_limit,
             adv_metric=m.adv_metric,
             adv_as_of=m.adv_as_of.isoformat() if m.adv_as_of else None,
+            **reserved(asset_reserved),
         )
         return caps
+
+    def _capital_unit(
+        self, unit: UnitEconomics, costs: CostAssumptions, rate: Decimal, margin_rate: Decimal
+    ) -> tuple[Decimal, Decimal]:
+        """Available capital one unit commits, and the fixed part (minimum commission)."""
+        ins = self.i.instrument
+        assert ins is not None  # noqa: S101  # checked before sizing
+        mult = ins.multiplier
+        with money_context():
+            if self._is_short:
+                per_unit = (
+                    margin_rate * unit.exposure_price * mult
+                    + unit.entry_costs
+                    + costs.commission_per_unit
+                ) * rate
+            else:
+                per_unit = (
+                    unit.entry_fill * mult + unit.entry_costs + costs.commission_per_unit
+                ) * rate
+            fixed = costs.min_commission * rate
+        return per_unit, fixed
 
     def _correlated(self) -> tuple[Decimal, list[dict[str, Any]]]:
         """Exposure of held positions economically linked to the candidate (not netted).
@@ -1156,14 +1299,44 @@ class _Assessment:
             if why is not None:
                 total += pos.exposure
                 members.append({"asset_id": str(pos.asset_id), "symbol": pos.symbol, "why": why})
+        for r in self.res:
+            why = None
+            if r.asset_id == ins.asset_id:
+                why = "same asset (reserved)"
+            elif ins.cluster is not None and r.cluster == ins.cluster:
+                why = f"cluster {ins.cluster} (reserved)"
+            else:
+                corr = measured.get(r.asset_id)
+                if corr is not None and corr.value is not None:
+                    if abs(corr.value) >= threshold:
+                        why = f"|correlation| {abs(corr.value)} >= {threshold} (reserved)"
+                elif policy is MissingCorrelationPolicy.ASSUME_CORRELATED:
+                    why = "no correlation measurement (ASSUMED correlated; reserved)"
+            if why is not None:
+                total += r.exposure
+                members.append(
+                    {
+                        "asset_id": str(r.asset_id),
+                        "symbol": r.symbol,
+                        "why": why,
+                        "reservation_id": str(r.reservation_id),
+                    }
+                )
         return total, members
 
     def _exposure_after(self, notional: Decimal, margin_rate: Decimal) -> dict[str, Any]:
+        """Exposure once this trade and every active reservation fill (worst case)."""
         p = self.i.portfolio
-        long_after = p.long_exposure + (ZERO if self._is_short else notional)
-        short_after = p.short_exposure + (notional if self._is_short else ZERO)
+        res_long = self._reserved("exposure", self._side(TradeDirection.LONG))
+        res_short = self._reserved("exposure", self._side(TradeDirection.SHORT))
+        long_after = p.long_exposure + res_long + (ZERO if self._is_short else notional)
+        short_after = p.short_exposure + res_short + (notional if self._is_short else ZERO)
         with money_context():
-            margin_after = p.margin_used + (margin_rate * notional if self._is_short else ZERO)
+            margin_after = (
+                p.margin_used
+                + self._reserved("margin")
+                + (margin_rate * notional if self._is_short else ZERO)
+            )
         gross_after = long_after + short_after
         net_after = long_after - short_after
         values = {
@@ -1175,8 +1348,21 @@ class _Assessment:
         }
         out: dict[str, Any] = {k: str(v) for k, v in values.items()}
         out["of_equity"] = {k: _s(_pct(v, p.equity)) for k, v in values.items()}
-        held = self._held()
-        out["open_positions"] = len(p.positions) + (0 if held is not None else 1)
+        open_ids = (
+            {q.asset_id for q in p.positions}
+            | {r.asset_id for r in self.res}
+            | {self.i.proposal.asset_id}
+        )
+        out["open_positions"] = len(open_ids)
+        if self.res:
+            out["reserved"] = {
+                "count": len(self.res),
+                "risk": str(self._reserved("risk")),
+                "long_exposure": str(res_long),
+                "short_exposure": str(res_short),
+                "capital": str(self._reserved("capital")),
+                "margin": str(self._reserved("margin")),
+            }
         return out
 
 

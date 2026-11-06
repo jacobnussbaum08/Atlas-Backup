@@ -1874,3 +1874,91 @@ transaction; every risk table is append-only. Services take the portfolio accoun
 **Not guaranteed:** a pass reserves nothing, so two passes may together exceed a limit;
 the guards read committed state only and cannot recompute a sizing. Phase 6C must re-check
 under the lock and persist the reservation in the same transaction.
+
+## Phase 6C — atomic risk reservations
+
+### D-148 One lock protocol per account; READ COMMITTED; a database backstop
+
+**Decision:** every reservation command is one PostgreSQL transaction at READ COMMITTED
+that locks, in this order: the `portfolio_accounts` row (`FOR UPDATE`, the lock every 6A
+posting and 6B assessment/monitor/breaker action already takes), then the account's
+`risk_reservation_states` row, then reservation rows in id order. One lock per account
+serializes all financial writers of that account, and the fixed order rules out deadlocks.
+Under READ COMMITTED each statement after the lock sees everything committed before it was
+granted. The state row carries a gapless event counter read *before* any capacity input; the
+event trigger refuses an event whose number is not the next one with SQLSTATE 40001, so a
+path that skipped the lock fails instead of committing a decision made on stale data.
+**Why not SERIALIZABLE:** it would add retries without adding safety over the explicit lock,
+and 6A/6B already rely on the same row lock. **Why not Redis:** spec 3.2; Redis is not used
+for reservations at all.
+
+### D-149 A reservation is capacity, not money
+
+**Decision:** reservations hold risk budget (potential loss at the stop), gross exposure,
+available capital and short margin in their own tables. Nothing is posted to the ledger:
+the 6A ledger changes only when a fill is posted (Phase 7). The risk view adds active
+remainders to actual positions for every limit; a consumption must reference a ledger fill
+of the same asset, direction and quantity, so the consumed part moves from "reserved" to
+"held" without being counted twice or disappearing.
+
+### D-150 The assessment is recomputed inside the reservation transaction
+
+**Decision:** `reserve` runs the 6B evaluation and the pure assessment inside its own
+transaction under the lock, with the active reservations in the state, and approves exactly
+the permitted quantity. The database refuses an approval unless a PASS_FOR_RESERVATION
+assessment recorded *in the same transaction* permitted exactly that quantity, loss,
+notional, capital and margin, no breaker is tripped and the latest reservation
+reconciliation did not fail. Earlier assessments by a worker are never trusted. Proposed and
+approved quantities are stored separately; every reduction (RESTRICT checks) and rejection
+(FAIL/UNKNOWN/HALT checks, identity refusals) is stored with the reservation.
+
+### D-151 Reserved capacity in the assessment
+
+**Decision:** reserved risk reduces the loss allowance (the room before the daily, weekly or
+drawdown limit); reserved exposure counts toward gross, leverage, single-asset, asset-class,
+sector, correlated-cluster and liquidity limits, reserved short exposure and margin toward
+the short and margin limits, reserved capital against available capital, reserved assets
+toward the position count. For the net limit only same-direction reservations count (worst
+case: they fill, the others do not); an opposite reservation on the same asset is refused.
+Foreign reservations are re-converted at the current rate when that is higher, never lower;
+without a fresh rate new approvals are INSUFFICIENT_DATA. Assessment engine version 6C.1.
+**Limitation (inherited from 6B):** open-position risk to the stop is not tracked, so a
+reservation's risk stops counting against the allowance once it is consumed.
+
+### D-152 Lifecycle and expiry
+
+**Decision:** states PENDING → APPROVED | REJECTED; APPROVED → PARTIALLY_CONSUMED → CONSUMED;
+APPROVED / PARTIALLY_CONSUMED → RELEASED | EXPIRED | FAILED. PENDING never commits (a
+deferred trigger refuses it), so an interrupted transaction leaves nothing. A reservation
+expires at its assessment's validity (300 s by default) or the proposal's expiry, whichever
+is first, and only if no order was ever attached and nothing consumed. Once an order is
+attached (Phase 7 interface) or the execution state is flagged uncertain, it never expires
+or releases on its own: it is marked EXPIRY_DEFERRED once and held until the execution state
+is resolved (consume, release with a confirmed resolution, fail, or an operator release).
+A release gives back only the unconsumed remainder; fills are never reversed by it.
+
+### D-153 Idempotency
+
+**Decision:** every command (reserve, attach, consume, release, fail, flag) carries an
+idempotency key, unique in `risk_reservation_requests` with the request's SHA-256. The key is
+looked up after the lock: a retry with the same request returns the original decision and
+the current state, a different request under the same key is a 409. A partial unique index
+allows one live reservation per strategy proposal or AI decision. A lost uniqueness race is
+retried once and then returns the committed winner; serialization failures and deadlocks are
+retried.
+
+### D-154 Reconciliation blocks approvals; nothing is repaired automatically
+
+**Decision:** `ReservationReconciler` replays every event independently of the trigger and
+compares the projection, the per-account totals, gapless numbering, approvals against their
+assessments, idempotency records and every consumption against the asset-quantity ledger.
+Any mismatch FAILS the run, writes a CRITICAL `system_health_events` row and a
+RESERVATION_MISMATCH risk event, and blocks new approvals (service and database) until a
+later run passes. Expiry due, held past expiry and uncertain execution are warnings.
+
+### D-155 Read-only API; execution interfaces for Phase 7
+
+**Decision:** `/api/v1/risk/reservations*` is GET only. Reserving is a service call (and an
+operator CLI command); attach/consume/release/fail/flag are service interfaces for the
+execution engine (`consume_in` runs inside the transaction that posts the fill). In 6C they
+are exercised only by controlled test events.

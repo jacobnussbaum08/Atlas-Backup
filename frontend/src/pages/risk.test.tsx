@@ -5,7 +5,16 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { App } from "../App";
 import { DisplayZoneProvider } from "../lib/time";
 import { installFakeLive, LAYOUT_ROUTES, stubApi } from "../test/marketFixtures";
-import type { AssessmentDetail, AssessmentSummary, BreakerEvent, ConfigVersion, RiskOverview } from "../types/risk";
+import type {
+  AssessmentDetail,
+  AssessmentSummary,
+  BreakerEvent,
+  ConfigVersion,
+  Reservation,
+  ReservationCapacity,
+  ReservationEvent,
+  RiskOverview,
+} from "../types/risk";
 
 // TEST FIXTURES: payloads shaped like /api/v1/risk responses. No market data.
 const BREAKERS = [
@@ -33,6 +42,93 @@ const VERSION: ConfigVersion = {
   reason: "starting values",
   created_at: "2026-11-04T21:00:00Z",
 };
+
+// TEST FIXTURE reservation payloads (shaped like /api/v1/risk/reservations responses).
+const CAPACITY: ReservationCapacity = {
+  account_id: "acct-1",
+  reserved: {
+    active_count: 1,
+    risk: "499.45000000",
+    gross_exposure: "9188.46000000",
+    long_exposure: "9188.46000000",
+    short_exposure: "0",
+    capital: "9190.84000000",
+    margin: "0",
+    event_sequence: 4,
+  },
+  available: {
+    computed: true,
+    as_of: "2026-11-04T22:30:00Z",
+    mark_status: "COMPLETE",
+    functional_currency: "USD",
+    equity: "96000.00000000",
+    risk_budget: "1500.55000000",
+    risk_budget_before_reservations: "2000.00",
+    per_trade_budget: "480.00",
+    gross_exposure: "50931.54000000",
+    gross_exposure_limit: "96000.00",
+    net_long_room: "50931.54",
+    net_short_room: "131880.00",
+    short_exposure: "28800.00",
+    margin: "48000.00",
+    capital: "50929.16000000",
+    positions: 6,
+    reservation_issues: [],
+  },
+  counts: { APPROVED: 1, REJECTED: 1, EXPIRED: 0 },
+  reconciliation: null,
+  approvals_blocked: false,
+  note: "A reservation holds risk budget, exposure, capital and margin for an approved trade intent. It is not an order.",
+};
+
+const RESERVATION: Reservation = {
+  id: "rsv-1",
+  account_id: "acct-1",
+  idempotency_key: "worker-1:proposal-1",
+  source: "STRATEGY_PROPOSAL",
+  symbol: "RSKB",
+  asset_class: "EQUITY",
+  direction: "LONG",
+  functional_currency: "USD",
+  entry: "99.7000000000",
+  stop: "94.7000000000",
+  status: "PARTIALLY_CONSUMED",
+  active: true,
+  proposed_quantity: "500",
+  approved_quantity: "92",
+  consumed_quantity: "40",
+  released_quantity: "0",
+  remaining_quantity: "52",
+  approved: { risk: "499.45", exposure: "9188.46", capital: "9190.84", margin: "0" },
+  remaining: { risk: "282.30", exposure: "5193.48", capital: "5194.82", margin: "0" },
+  execution_link: "ORDER_ATTACHED",
+  order_ref: "order-1",
+  expires_at: "2026-11-04T22:35:00Z",
+  expiry_deferred_at: null,
+  reasons: [{ code: "REQUESTED_QUANTITY_REDUCED", outcome: "RESTRICT", check: "requested_quantity", message: "requested 500, permitted 92" }],
+  requested_by: "system:strategy-worker",
+  requested_at: "2026-11-04T22:30:00Z",
+};
+
+const RESERVATION_EVENTS: ReservationEvent[] = [
+  {
+    id: 2,
+    reservation_id: "rsv-2",
+    symbol: "RSKC",
+    account_sequence: 4,
+    reservation_sequence: 2,
+    event_type: "REJECTED",
+    from_status: "PENDING",
+    to_status: "REJECTED",
+    quantity: "0",
+    risk: "0",
+    exposure: "0",
+    resolution: null,
+    actor: "system:risk-reservations",
+    reason: "rejected: ASSESSMENT_REJECTED, MISSING_STOP",
+    occurred_at: "2026-11-04T22:31:00Z",
+  },
+];
 
 function overview(tripped: string[] = []): RiskOverview {
   return {
@@ -78,7 +174,7 @@ function overview(tripped: string[] = []): RiskOverview {
       net_exposure: "35880.00000000",
       margin_used: "0",
       pending_exposure: "0",
-      pending_source: "none: risk reservations arrive in Phase 6C",
+      pending_source: "1 active risk reservation(s)",
       of_equity: { gross_exposure: "0.37375", net_exposure: "0.37375", long_exposure: "0.37375", short_exposure: "0", margin_used: "0" },
       open_positions: 1,
       daily_loss: "4000.00000000",
@@ -120,7 +216,7 @@ function overview(tripped: string[] = []): RiskOverview {
     },
     latest_snapshot: null,
     assessment_counts: { PASS_FOR_RESERVATION: 1, REJECTED: 1, INSUFFICIENT_DATA: 0, RISK_HALTED: 0 },
-    reserved_exposure: { amount: "0", note: "risk reservations do not exist before Phase 6C" },
+    reserved_exposure: CAPACITY,
     disclaimer: "Simulated paper account. The risk engine assesses proposals; it executes nothing.",
   };
 }
@@ -179,6 +275,8 @@ function routes(state: RiskOverview, extra: Record<string, unknown> = {}) {
     "/api/v1/risk/assessments/as-1": { body: DETAIL },
     "/api/v1/risk/circuit-breakers/events": { body: EVENTS },
     "/api/v1/risk/configurations": { body: [VERSION] },
+    "/api/v1/risk/reservations": { body: [RESERVATION] },
+    "/api/v1/risk/reservations/events": { body: RESERVATION_EVENTS },
     ...extra,
   };
 }
@@ -209,8 +307,25 @@ describe("Risk Center", () => {
     const positions = screen.getByRole("table", { name: "Positions" });
     expect(within(positions).getByText("RSKA")).toBeInTheDocument();
     expect(within(positions).getByText("37.38%")).toBeInTheDocument();
-    expect(screen.getByText("risk reservations do not exist before Phase 6C")).toBeInTheDocument();
     expect(screen.getByText(/configuration version 1/)).toBeInTheDocument();
+  });
+
+  it("shows reserved risk, available capacity, active reservations and their history", async () => {
+    stubApi(routes(overview()) as never);
+    renderRisk();
+    const panel = (await screen.findByRole("heading", { name: "Risk reservations" })).closest("section") ?? document.body;
+    const scope = within(panel as HTMLElement);
+    expect(scope.getByText("499.45 USD")).toBeInTheDocument();
+    expect(scope.getByText("1,500.55 USD")).toBeInTheDocument();
+    expect(scope.getByText("50,931.54 USD")).toBeInTheDocument();
+    const active = await screen.findByRole("table", { name: "Active reservations" });
+    expect(within(active).getByText("RSKB")).toBeInTheDocument();
+    expect(within(active).getByText("Partially consumed")).toBeInTheDocument();
+    expect(within(active).getByText("282.30 USD")).toBeInTheDocument();
+    const history = await screen.findByRole("table", { name: "Reservation events" });
+    expect(within(history).getByText(/MISSING_STOP/)).toBeInTheDocument();
+    // Read-only: nothing on the page reserves, releases or consumes.
+    expect(screen.queryByRole("button", { name: /reserve|release|consume/i })).toBeNull();
   });
 
   it("lists assessments with their reasons and expands the recorded checks", async () => {

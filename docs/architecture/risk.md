@@ -7,8 +7,9 @@ D-138 to D-147 in [`decisions.md`](decisions.md) give the reasons; operations ar
 [`../operations.md`](../operations.md#risk-engine-phase-6b).
 
 **A PASS_FOR_RESERVATION is not an execution approval.** Nothing in Phase 6B reserves,
-submits, executes or liquidates anything. Atomic reservations and final order authorization
-are Phase 6C.
+submits, executes or liquidates anything. Phase 6C adds atomic reservations
+([`reservations.md`](reservations.md)): the assessment is re-run inside the reservation
+transaction, with active reservations counted against every limit (engine 6C.1).
 
 ## Modules
 
@@ -131,7 +132,7 @@ The ledger (6A `load_state`) is marked to market **in memory** with the 6A valua
 template and fresh prices/rates (6A pricing rules); nothing is posted. Per asset: long =
 1100 + 1150, short = 2100 + 2150 (functional). Gross = long + short; net = long − short;
 class, sector and cluster exposures are gross (never netted). Margin used = Σ short exposure
-x collateral rate. Pending exposure = 0 with its reason (no reservations before 6C).
+x collateral rate. Pending exposure = the gross exposure of active reservations (Phase 6C).
 
 Correlated with the candidate: same asset, same operator cluster tag, |correlation| ≥ 0.70
 (newest OK Phase 3B PAIR measurement), or unmeasured under ASSUME_CORRELATED. Sector and
@@ -194,7 +195,9 @@ passes while a breaker is tripped, passes against an old configuration or over t
 configured budget, passes whose checks failed, late checks, and any UPDATE/DELETE/TRUNCATE
 of risk records. Concurrent assessments and breaker trips serialize on the account row.
 
-Not guaranteed: a pass reserves nothing; two passes may together exceed a limit. The
+Not guaranteed by an assessment alone: a pass reserves nothing; two passes may together
+exceed a limit. Phase 6C reservations close this (see [`reservations.md`](reservations.md)). The
 database cannot recompute a sizing, so a direct insert by someone with database write
-access could still record a pass that satisfies the guards but not every limit. Phase 6C
-must re-check under the lock and persist the reservation atomically.
+access could still record a pass that satisfies the guards but not every limit; a
+reservation, however, is approved only from an assessment recorded in its own transaction
+under the lock (Phase 6C).

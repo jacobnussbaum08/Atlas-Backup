@@ -25,6 +25,7 @@ import { MISSING, humanize } from "../lib/format";
 import { formatDecimal, formatMoney, formatQuantityExact } from "../lib/money";
 import { ApiError } from "../services/api";
 import { risk } from "../services/risk";
+import { ReservationsPanel } from "./RiskReservationsPanel";
 import type {
   AssessmentResult,
   AssessmentSummary,
@@ -77,7 +78,7 @@ export function RiskCenterPage() {
     <section aria-labelledby="page-title">
       <PageHeader
         title="Risk Center"
-        description="The deterministic risk engine: hard limits, live exposure from the ledger, daily and weekly loss, drawdown, circuit breakers, the kill switch and every recorded risk decision. AI models and strategies cannot change any of it."
+        description="The deterministic risk engine: hard limits, live exposure from the ledger, reserved capacity, daily and weekly loss, drawdown, circuit breakers, the kill switch and every recorded risk decision. AI models and strategies cannot change any of it."
         actions={<RefreshButton onClick={() => setRefresh((n) => n + 1)} loading={state.loading} />}
       />
       {state.status === "loading" && <Loading label="Loading the risk state…" />}
@@ -119,6 +120,7 @@ function RiskState({ data, refreshKey, onChanged }: { data: RiskOverview; refres
         <KillSwitchPanel data={data} onChanged={onChanged} />
       </div>
       {live && <LossPanel live={live} data={data} />}
+      <ReservationsPanel capacity={data.reserved_exposure} cur={data.account.base_currency} refreshKey={refreshKey} />
       {live && <ExposurePanel live={live} />}
       <LimitsPanel data={data} />
       <AssessmentsPanel counts={data.assessment_counts} refreshKey={refreshKey} />
@@ -147,7 +149,11 @@ function Headline({ live, reserved }: { live: LiveState; reserved: RiskOverview[
         value={formatMoney(live.available_risk_budget, cur)}
         hint="Loss allowance before the nearest limit"
       />
-      <Stat label="Reserved exposure" value={formatMoney(reserved.amount, cur)} hint={reserved.note} />
+      <Stat
+        label="Reserved exposure"
+        value={formatMoney(reserved.reserved.gross_exposure, cur)}
+        hint={`${reserved.reserved.active_count} active reservation(s)`}
+      />
     </div>
   );
 }

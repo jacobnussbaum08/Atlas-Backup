@@ -12,6 +12,10 @@ sector, correlation cluster), short collateral (margin used), available capital,
 and weekly loss against their stored baselines, peak equity and drawdown, and the loss
 allowance. With ``persist`` it locks the account row, fixes period baselines, records
 breaker transitions and writes an exposure snapshot, all in the caller's transaction.
+
+Active risk reservations (Phase 6C) are read in the same evaluation: their unconsumed
+remainders are the view's ``reservations`` and ``pending_exposure``, so every capacity is
+the limit minus actual positions minus outstanding reservations.
 """
 
 from __future__ import annotations
@@ -94,9 +98,10 @@ from app.risk.periods import (
     peak_equity,
     period,
 )
+from app.risk.reservations.exposure import reserved_exposures
 
 logger = get_logger(__name__)
-ENGINE_VERSION = "6B.1"
+ENGINE_VERSION = "6C.1"
 MONITOR_ACTOR = "system:risk-monitor"
 
 
@@ -619,6 +624,10 @@ def evaluate(
             daily_base, weekly_base = ls.daily_baseline, ls.weekly_baseline
             budget = ls.available_risk_budget
 
+    reserved, reserved_issues = reserved_exposures(
+        session, account.id, functional, as_of, accounting, rate_sources(account)
+    )
+    pending = sum((r.exposure for r in reserved), ZERO)
     recon_status, recon_current, recon_run = _reconciliation(session, account.id, sequence)
     statuses = breaker_statuses(session, account.id)
     found = rules.conditions(
@@ -681,6 +690,14 @@ def evaluate(
         peak_equity=peak,
         drawdown=drawdown,
         available_risk_budget=budget,
+        pending_exposure=pending,
+        pending_source=(
+            f"{len(reserved)} active risk reservation(s)"
+            if reserved
+            else "none: no active risk reservation"
+        ),
+        reservations=reserved,
+        reservation_issues=reserved_issues,
         active_breakers=[b for b, s in statuses.items() if s is BreakerStatus.TRIPPED],
         reconciliation_status=recon_status,
         reconciliation_current=recon_current,
@@ -761,7 +778,26 @@ def breakdown(state: EvaluatedState) -> dict[str, Any]:
             for name, v in sorted(buckets.items())
         ]
 
+    reserved = [
+        {
+            "reservation_id": str(r.reservation_id),
+            "asset_id": str(r.asset_id),
+            "symbol": r.symbol,
+            "asset_class": r.asset_class,
+            "direction": r.direction.value,
+            "remaining_quantity": str(r.remaining_quantity),
+            "exposure": str(r.exposure),
+            "of_equity": share(r.exposure),
+            "capital": str(r.capital),
+            "margin": str(r.margin),
+            "risk": str(r.risk),
+            "sector": r.sector,
+            "cluster": r.cluster,
+        }
+        for r in state.view.reservations
+    ]
     return {
+        "reservations": reserved,
         "assets": [
             {
                 "asset_id": str(p.asset.id),

@@ -1,10 +1,15 @@
-"""Risk Center API (Phase 6B).
+"""Risk Center API (Phases 6B, 6C).
 
 Read-only, except one fail-safe control: ``POST /risk/kill-switch/engage`` (operator token,
 audited) can only *block* new entries. Nothing here changes a limit, releases the kill
-switch, resets a breaker, assesses, reserves, approves or submits anything: configuration
-changes, resets and releases are operator CLI actions (decision D-146). Without
+switch, resets a breaker, assesses, reserves, consumes, releases a reservation, approves or
+submits anything: configuration changes, resets, releases and reservation commands are
+operator CLI actions or service interfaces (decisions D-146, D-155). Without
 ``account_id`` the primary paper account is used.
+
+Reservations (Phase 6C): active and historical reservations, their events (rejections,
+expirations, releases, consumptions), reserved and available capacity, and reconciliation
+runs. Reading is all the API does with them.
 
 "Live" figures are an evaluation that writes nothing; recorded breaker state, snapshots,
 assessments and configuration history come from the append-only risk tables.
@@ -24,7 +29,8 @@ from app.core.exceptions import DependencyUnavailableError
 from app.database.sessions import session_scope
 from app.portfolio.queries import resolve_account
 from app.risk import governance, queries
-from app.risk.enums import AssessmentResult, BreakerType
+from app.risk.enums import AssessmentResult, BreakerType, ReservationEventType, ReservationStatus
+from app.risk.reservations import queries as reservation_queries
 from app.risk.runtime import RiskContext
 from app.risk.state import evaluate
 
@@ -150,6 +156,63 @@ def risk_events(
 ) -> list[dict[str, Any]]:
     with session_scope(ctx.session_factory) as session:
         return queries.events(session, resolve_account(session, account_id), limit)
+
+
+@router.get("/reservations")
+def list_reservations(
+    ctx: Context,
+    account_id: AccountId = None,
+    status: ReservationStatus | None = None,
+    active: bool = False,
+    limit: Limit = 50,
+) -> list[dict[str, Any]]:
+    """Reservations, newest first (``active=true``: only those holding capacity)."""
+    with session_scope(ctx.session_factory) as session:
+        return reservation_queries.reservations(
+            session, resolve_account(session, account_id), limit, status, active
+        )
+
+
+@router.get("/reservations/capacity")
+def reservation_capacity(ctx: Context, account_id: AccountId = None) -> dict[str, Any]:
+    """Reserved risk and exposure, and what is available after positions and reservations
+    (live evaluation, nothing recorded)."""
+    with session_scope(ctx.session_factory) as session:
+        account = resolve_account(session, account_id)
+        config = governance.active_configuration(session, account.id)
+        live = evaluate(session, account, ctx.clock.now(), config, ctx.accounting, persist=False)
+        return reservation_queries.capacity(session, account, live, config)
+
+
+@router.get("/reservations/events")
+def reservation_events(
+    ctx: Context,
+    account_id: AccountId = None,
+    event_type: ReservationEventType | None = None,
+    limit: Limit = 100,
+) -> list[dict[str, Any]]:
+    """Reservation lifecycle history (filter e.g. REJECTED, EXPIRED, RELEASED, CONSUMED)."""
+    with session_scope(ctx.session_factory) as session:
+        return reservation_queries.events(
+            session, resolve_account(session, account_id), limit, event_type
+        )
+
+
+@router.get("/reservations/reconciliations")
+def reservation_reconciliations(
+    ctx: Context, account_id: AccountId = None, limit: Limit = 20
+) -> list[dict[str, Any]]:
+    with session_scope(ctx.session_factory) as session:
+        return reservation_queries.reconciliations(
+            session, resolve_account(session, account_id), limit
+        )
+
+
+@router.get("/reservations/{reservation_id}")
+def get_reservation(ctx: Context, reservation_id: uuid.UUID) -> dict[str, Any]:
+    """One reservation with its events, approval record, idempotency records and assessment."""
+    with session_scope(ctx.session_factory) as session:
+        return reservation_queries.reservation(session, reservation_id)
 
 
 @router.post(

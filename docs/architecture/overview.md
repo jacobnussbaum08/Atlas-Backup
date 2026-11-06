@@ -314,6 +314,16 @@ CLI (init, post, checkpoint, reconcile)          API (GET only)        Dashboard
 ```
 
 
+## Atomic risk reservations (Phase 6C)
+
+`app/risk/reservations` (service, exposure, reconciliation, read models), migration 0015,
+GET routes under `/api/v1/risk/reservations`, CLI commands `reserve` and `reservations`, and
+the Reservations panel of the Risk Center. Every reservation path locks the portfolio
+account row, then the account's reservation state row, then reservation rows; the
+assessment is recomputed inside that transaction with active reservations counted against
+every limit, and database triggers maintain the projection from append-only events.
+Design: [`reservations.md`](reservations.md); decisions D-148 to D-155.
+
 ## Deterministic risk engine (Phase 6B)
 
 `app/risk` (configuration, governance, pure sizing and assessment, periods, breakers,

@@ -597,10 +597,10 @@ def test_equity_and_loss_allowance():
     assert check(capped, "risk_budget").outcome is CheckOutcome.RESTRICT
 
 
-def test_pending_exposure_is_zero_and_says_why():
+def test_pending_exposure_is_zero_without_reservations_and_says_why():
     out = assess(inputs())
     pending = check(out, "pending_exposure")
-    assert "Phase 6C" in pending.message
+    assert "no active risk reservation" in pending.message
 
 
 def test_exposure_after_is_reported():

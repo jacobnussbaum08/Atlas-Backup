@@ -285,6 +285,13 @@ def test_openapi_exposes_no_order_endpoints(build_client):
         "/api/v1/risk/configurations",
         "/api/v1/risk/events",
         "/api/v1/risk/kill-switch/engage",
+        # Phase 6C reservations: GET only. Reserving, consuming and releasing are service
+        # interfaces (the execution phase) and operator CLI actions, never API writes.
+        "/api/v1/risk/reservations",
+        "/api/v1/risk/reservations/capacity",
+        "/api/v1/risk/reservations/events",
+        "/api/v1/risk/reservations/reconciliations",
+        "/api/v1/risk/reservations/{reservation_id}",
     }
     # Market trades (exchange prints) are read-only market data, not trading: the one
     # allowed path containing "trade" must expose GET only.
@@ -326,6 +333,10 @@ def test_openapi_exposes_no_order_endpoints(build_client):
     # Phase 6B: the only risk write can only halt; it cannot release, reset or loosen.
     assert set(paths["/api/v1/risk/kill-switch/engage"]) == {"post"}
     assert not [p for p in paths if p.startswith("/api/v1/risk/") and "release" in p]
+    # Phase 6C: reservations are read-only through the API.
+    assert not [
+        p for p in paths if p.startswith("/api/v1/risk/reservations") and set(paths[p]) != {"get"}
+    ]
     assert not [
         p
         for p in paths
