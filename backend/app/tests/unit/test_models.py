@@ -123,6 +123,16 @@ def test_expected_tables_exist():
         "portfolio_snapshot_positions",
         "reconciliation_runs",
         "reconciliation_results",
+        # Phase 6B deterministic risk engine
+        "risk_configurations",
+        "risk_configuration_versions",
+        "risk_asset_classifications",
+        "risk_exposure_snapshots",
+        "risk_period_baselines",
+        "risk_assessments",
+        "risk_assessment_reasons",
+        "risk_circuit_breaker_events",
+        "risk_events",
     }
 
 

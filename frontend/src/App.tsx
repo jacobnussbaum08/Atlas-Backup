@@ -16,6 +16,7 @@ import { NewsArticlePage } from "./pages/NewsArticlePage";
 import { NewsPage } from "./pages/NewsPage";
 import { OverviewPage } from "./pages/OverviewPage";
 import { PortfolioPage } from "./pages/PortfolioPage";
+import { RiskCenterPage } from "./pages/RiskCenterPage";
 import { SectionPlaceholderPage } from "./pages/SectionPlaceholderPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { StrategiesPage } from "./pages/StrategiesPage";
@@ -51,6 +52,7 @@ export function App({ pollIntervalMs }: { pollIntervalMs?: number }) {
         <Route path="/ml" element={<MLPage />} />
         <Route path="/ai" element={<AIActivityPage />} />
         <Route path="/portfolio" element={<PortfolioPage />} />
+        <Route path="/risk" element={<RiskCenterPage />} />
         <Route path="/data-health" element={<DataHealthPage />} />
         <Route path="/ingestion" element={<IngestionPage />} />
         <Route path="/system-health" element={<SystemHealthPage />} />

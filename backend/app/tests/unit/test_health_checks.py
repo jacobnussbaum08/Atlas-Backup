@@ -65,4 +65,4 @@ def test_database_unreachable_is_reported_not_raised():
 
 
 def test_expected_migration_heads_come_from_the_code_base():
-    assert expected_migration_heads() == frozenset({"0013"})
+    assert expected_migration_heads() == frozenset({"0014"})
