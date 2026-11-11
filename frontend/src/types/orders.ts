@@ -406,3 +406,16 @@ export interface PaperBrokerStatus {
     occurred_at: string;
   }[];
 }
+
+/** One execution-model version (GET /paper-execution/models). */
+export interface ExecutionModelVersion {
+  id: number;
+  code: string;
+  version: number;
+  simulated: boolean;
+  sha256: string;
+  description: string;
+  definition: Record<string, unknown>;
+  created_at: string;
+  current: boolean;
+}

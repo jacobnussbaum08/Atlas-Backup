@@ -1,5 +1,6 @@
 import type {
   ExecutionAnalytics,
+  ExecutionModelVersion,
   ExecutionRequest,
   OrderEvent,
   OrderGroup,
@@ -50,4 +51,5 @@ export const positions = {
 export const execution = {
   analytics: (accountId: string | null, opts: Opts = {}) =>
     getJson<ExecutionAnalytics>(buildUrl("/api/v1/paper-execution/analytics", account(accountId)), opts),
+  models: (opts: Opts = {}) => getJson<ExecutionModelVersion[]>("/api/v1/paper-execution/models", opts),
 };

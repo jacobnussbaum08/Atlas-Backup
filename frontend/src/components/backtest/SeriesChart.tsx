@@ -11,8 +11,11 @@ function themeColor(name: string, fallback: string): string {
 export interface ChartLine {
   label: string;
   tone: "accent" | "info" | "caution" | "negative" | "neutral";
-  /** [session date (YYYY-MM-DD), value]; values are numbers for drawing only. */
-  points: readonly (readonly [string, number])[];
+  /**
+   * [session date (YYYY-MM-DD) or UTC instant in epoch seconds, value], ascending and unique;
+   * values are numbers for drawing only.
+   */
+  points: readonly (readonly [string | number, number])[];
   area?: boolean;
 }
 

@@ -22,10 +22,16 @@ import {
   Wallet,
 } from "lucide-react";
 
+export type NavGroup = "Monitor" | "Decisions" | "Paper trading" | "Research" | "Operations";
+
+/** Sidebar groups, in display order. */
+export const NAV_GROUPS: readonly NavGroup[] = ["Monitor", "Decisions", "Paper trading", "Research", "Operations"];
+
 export interface NavSection {
   path: string;
   title: string;
   icon: LucideIcon;
+  group: NavGroup;
   /** Spec section describing this page (ATLAS_MASTER_SPEC_V2 §22). */
   specSection: string;
   /** Roadmap phase that delivers the page's data. */
@@ -33,26 +39,29 @@ export interface NavSection {
   summary: string;
 }
 
-/** Pages backed by real backend data (Phase 1, the Phase 2 market-data engine, Phases 3A-3C, 4A-4B, 5A-5B, 6A-6C, 7A-7B, 8A-8B). */
+/** Pages backed by real backend data (Phase 1, the Phase 2 market-data engine, Phases 3A-3C, 4A-4B, 5A-5B, 6A-6C, 7A-7B, 8A-8B, completed in Phase 9). */
 export const NAV_SECTIONS: readonly NavSection[] = [
   {
     path: "/",
+    group: "Monitor",
     title: "Overview",
     icon: LayoutDashboard,
     specSection: "22.1",
-    phase: 2,
-    summary: "Market session, data pipeline and monitored assets at a glance.",
+    phase: 9,
+    summary: "Paper equity, P/L and exposure, risk and system status, market session, data pipeline and monitored assets at a glance.",
   },
   {
     path: "/markets",
+    group: "Monitor",
     title: "Markets",
     icon: CandlestickChart,
     specSection: "22.2",
-    phase: 2,
-    summary: "Monitored assets, prices, charts and data freshness.",
+    phase: 9,
+    summary: "Monitored assets, live prices, market regime, the active watchlist, charts and data freshness.",
   },
   {
     path: "/discovery",
+    group: "Monitor",
     title: "Asset Discovery",
     icon: Telescope,
     specSection: "8",
@@ -61,6 +70,7 @@ export const NAV_SECTIONS: readonly NavSection[] = [
   },
   {
     path: "/intelligence",
+    group: "Monitor",
     title: "Market Intelligence",
     icon: Radar,
     specSection: "9",
@@ -69,6 +79,7 @@ export const NAV_SECTIONS: readonly NavSection[] = [
   },
   {
     path: "/news",
+    group: "Monitor",
     title: "News & Events",
     icon: Newspaper,
     specSection: "17",
@@ -77,6 +88,7 @@ export const NAV_SECTIONS: readonly NavSection[] = [
   },
   {
     path: "/strategies",
+    group: "Decisions",
     title: "Strategy Laboratory",
     icon: Activity,
     specSection: "11",
@@ -85,6 +97,7 @@ export const NAV_SECTIONS: readonly NavSection[] = [
   },
   {
     path: "/ml",
+    group: "Research",
     title: "Machine Learning",
     icon: Cpu,
     specSection: "12.2",
@@ -93,6 +106,7 @@ export const NAV_SECTIONS: readonly NavSection[] = [
   },
   {
     path: "/ai",
+    group: "Decisions",
     title: "Central AI Activity",
     icon: BrainCircuit,
     specSection: "22.3",
@@ -101,6 +115,7 @@ export const NAV_SECTIONS: readonly NavSection[] = [
   },
   {
     path: "/portfolio",
+    group: "Paper trading",
     title: "Portfolio & Accounting",
     icon: Wallet,
     specSection: "22.4, 22.9",
@@ -109,6 +124,7 @@ export const NAV_SECTIONS: readonly NavSection[] = [
   },
   {
     path: "/risk",
+    group: "Paper trading",
     title: "Risk Center",
     icon: ShieldAlert,
     specSection: "22.8",
@@ -117,6 +133,7 @@ export const NAV_SECTIONS: readonly NavSection[] = [
   },
   {
     path: "/paper-orders",
+    group: "Paper trading",
     title: "Paper Orders",
     icon: ClipboardList,
     specSection: "15",
@@ -125,6 +142,7 @@ export const NAV_SECTIONS: readonly NavSection[] = [
   },
   {
     path: "/positions",
+    group: "Paper trading",
     title: "Open Positions",
     icon: Layers,
     specSection: "13, 15",
@@ -133,6 +151,7 @@ export const NAV_SECTIONS: readonly NavSection[] = [
   },
   {
     path: "/positions/closed",
+    group: "Paper trading",
     title: "Closed Positions",
     icon: History,
     specSection: "13, 15",
@@ -141,6 +160,7 @@ export const NAV_SECTIONS: readonly NavSection[] = [
   },
   {
     path: "/execution-analytics",
+    group: "Paper trading",
     title: "Execution Analytics",
     icon: Gauge,
     specSection: "15.3",
@@ -149,6 +169,7 @@ export const NAV_SECTIONS: readonly NavSection[] = [
   },
   {
     path: "/backtesting",
+    group: "Research",
     title: "Backtesting",
     icon: FlaskConical,
     specSection: "22.7",
@@ -157,6 +178,7 @@ export const NAV_SECTIONS: readonly NavSection[] = [
   },
   {
     path: "/research",
+    group: "Research",
     title: "Research & Validation",
     icon: ShieldCheck,
     specSection: "18.2, 19",
@@ -165,6 +187,7 @@ export const NAV_SECTIONS: readonly NavSection[] = [
   },
   {
     path: "/data-health",
+    group: "Operations",
     title: "Data Health",
     icon: DatabaseZap,
     specSection: "22.10",
@@ -173,6 +196,7 @@ export const NAV_SECTIONS: readonly NavSection[] = [
   },
   {
     path: "/ingestion",
+    group: "Operations",
     title: "Ingestion",
     icon: ServerCog,
     specSection: "7",
@@ -181,19 +205,21 @@ export const NAV_SECTIONS: readonly NavSection[] = [
   },
   {
     path: "/system-health",
+    group: "Operations",
     title: "System Health",
     icon: HeartPulse,
     specSection: "22.10",
-    phase: 1,
-    summary: "API, database, migrations and Redis status.",
+    phase: 9,
+    summary: "API, database, migrations, Redis, background workers, providers, recent errors and recovery activity.",
   },
   {
     path: "/settings",
+    group: "Operations",
     title: "Settings",
     icon: Settings,
     specSection: "22.11",
-    phase: 2,
-    summary: "Market-data configuration (read-only) and display preferences.",
+    phase: 9,
+    summary: "System information, paper-only safeguards, worker switches, risk and execution configuration, market-data configuration (all read-only) and display preferences.",
   },
 ];
 

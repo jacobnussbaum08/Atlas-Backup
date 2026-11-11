@@ -1,8 +1,14 @@
-import { Badge, ErrorState, KeyValues, Loading, Notice, PageHeader, Panel, Segmented } from "../components/ui";
+import { OriginBadge } from "../components/provenance";
+import { Badge, ErrorState, KeyValues, Loading, Notice, PageHeader, Panel, Segmented, Timestamp } from "../components/ui";
 import { useApiResource } from "../hooks/useApiResource";
+import { useDashboardStatus } from "../layouts/DashboardLayout";
 import { humanize, MISSING } from "../lib/format";
 import { type DisplayZone, useDisplayZone, zoneLabel } from "../lib/time";
+import { allowNotFound } from "../services/api";
 import { marketData } from "../services/marketData";
+import { execution } from "../services/orders";
+import { risk } from "../services/risk";
+import { system } from "../services/system";
 
 const CREDENTIAL_TONES = {
   NOT_CONFIGURED: "negative",
@@ -20,6 +26,160 @@ function list(values: readonly string[]) {
   return values.length ? <span className="num">{values.join(", ")}</span> : <span className="text-ink-faint">none</span>;
 }
 
+/** A configuration value as text: scalars as-is, small objects compactly. */
+function configValue(value: unknown): string {
+  if (value === null || value === undefined) return MISSING;
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+function SystemPanels() {
+  const { health, readiness } = useDashboardStatus();
+  const workers = useApiResource((signal) => system.workers({ signal }), []);
+  const limits = useApiResource((signal) => allowNotFound(risk.limits({ signal })), []);
+  const models = useApiResource((signal) => execution.models({ signal }), []);
+  const migrations = readiness?.components.find((c) => c.name === "migrations");
+  const l = limits.data;
+  const current = models.data?.find((m) => m.current) ?? null;
+  const started = health ? new Date(Date.parse(health.time) - health.uptime_seconds * 1000).toISOString() : null;
+
+  return (
+    <div className="mb-3 grid gap-3 lg:grid-cols-2">
+      <Panel title="System information">
+        <KeyValues
+          items={[
+            { label: "Service", value: health ? <span className="num">{health.service} v{health.version}</span> : MISSING },
+            { label: "Environment", value: health ? <span className="num">{health.environment}</span> : MISSING },
+            { label: "API started", value: <Timestamp iso={started} /> },
+            { label: "Readiness", value: readiness ? humanize(readiness.status) : MISSING },
+            { label: "Database schema", value: migrations ? <span className="num">{migrations.detail ?? migrations.status}</span> : MISSING },
+          ]}
+        />
+      </Panel>
+
+      <Panel title="Paper-only safeguards" subtitle={<OriginBadge origin="SIMULATED" />}>
+        <KeyValues
+          items={[
+            { label: "Trading mode", value: <Badge tone="caution">{(health?.trading_mode ?? "PAPER") + " · simulated only"}</Badge> },
+            {
+              label: "Live brokerage",
+              value: "None. No broker adapter, credential or live mode exists; the API route guard test fails if an order-submitting endpoint appears.",
+            },
+            { label: "Paper broker", value: "Isolated simulator; its database rows are pinned to simulated=true by CHECK constraints." },
+            {
+              label: "Dashboard writes",
+              value: "Read-only by default. Operator-token actions only: historical retrieval, discovery, intelligence and validation runs, strategy/model status, and engaging (never releasing) the kill switch.",
+            },
+            { label: "Credentials", value: "Never sent to the browser; only configured/verified status is shown." },
+          ]}
+        />
+      </Panel>
+
+      <Panel title="Worker switches" subtitle="as configured in the API's environment">
+        {workers.error && !workers.data ? (
+          <ErrorState message={workers.error} onRetry={workers.reload} compact />
+        ) : !workers.data ? (
+          <Loading />
+        ) : (
+          <KeyValues
+            items={workers.data.workers.map((w) => ({
+              label: w.title,
+              title: w.purpose,
+              value:
+                w.enabled_in_api_env === null ? (
+                  <span className="text-ink-muted">no switch (runs whenever its process runs)</span>
+                ) : (
+                  yesNo(w.enabled_in_api_env)
+                ),
+            }))}
+          />
+        )}
+        <p className="text-ink-faint mt-2 text-2xs">
+          Changed only in the server environment followed by a restart, never from the browser. Live state: System Health.
+        </p>
+      </Panel>
+
+      <Panel title="Risk configuration" subtitle="hard limits (read-only)">
+        {limits.error && !l ? (
+          <ErrorState message={limits.error} onRetry={limits.reload} compact />
+        ) : !l ? (
+          <Loading />
+        ) : !l.found ? (
+          <p className="text-ink-muted text-xs">No paper account yet: {l.message}</p>
+        ) : !l.data.configured || !l.data.active ? (
+          <Notice tone="caution">
+            {l.data.message ?? "No stored risk configuration: the engine defaults apply."} {l.data.note}
+          </Notice>
+        ) : (
+          <>
+            <KeyValues
+              items={[
+                {
+                  label: "Active version",
+                  value: <span className="num">{`v${l.data.active.version} · ${humanize(l.data.active.change_kind)}`}</span>,
+                },
+                {
+                  label: "Recorded",
+                  value: (
+                    <span>
+                      <Timestamp iso={l.data.active.created_at} /> by {l.data.active.actor}
+                    </span>
+                  ),
+                },
+                ...Object.entries(l.data.active.hard_limits)
+                  .slice(0, 14)
+                  .map(([key, value]) => ({ label: humanize(key), value: <span className="num">{configValue(value)}</span> })),
+              ]}
+            />
+            <p className="text-ink-faint mt-2 text-2xs">{l.data.governance}</p>
+          </>
+        )}
+      </Panel>
+
+      <Panel title="Execution model" subtitle="assumptions simulated fills are derived under">
+        {models.error && !models.data ? (
+          <ErrorState message={models.error} onRetry={models.reload} compact />
+        ) : !models.data ? (
+          <Loading />
+        ) : models.data.length === 0 ? (
+          <p className="text-ink-muted text-xs">
+            No execution-model version has been recorded yet (one is stored with the first simulated fill).
+          </p>
+        ) : (
+          <KeyValues
+            items={[
+              {
+                label: "Paper model",
+                value: current ? (
+                  <span className="num">{`${current.code} v${current.version}`}</span>
+                ) : (
+                  <span className="text-ink-muted">
+                    not recorded yet (it is stored with the first simulated paper fill)
+                  </span>
+                ),
+              },
+              ...(current
+                ? [
+                    { label: "Description", value: current.description },
+                    { label: "Definition hash", value: <span className="num">{current.sha256.slice(0, 16)}…</span> },
+                  ]
+                : []),
+              {
+                label: "Stored versions",
+                value: (
+                  <span className="num">
+                    {models.data.map((m) => `${m.code} v${m.version}`).join(", ")}
+                  </span>
+                ),
+              },
+            ]}
+          />
+        )}
+      </Panel>
+    </div>
+  );
+}
+
 export function SettingsPage() {
   const { zone, setZone } = useDisplayZone();
   const config = useApiResource((signal) => marketData.configuration({ signal }), []);
@@ -31,7 +191,7 @@ export function SettingsPage() {
     <section aria-labelledby="page-title">
       <PageHeader
         title="Settings"
-        description="Effective market-data configuration as reported by the backend. Read-only: provider, feed and streaming change only through the server environment and a restart, never silently from the browser."
+        description="System information, safeguards and effective configuration as reported by the backend. Read-only: configuration changes only through the server environment, the CLI and a restart, never silently from the browser."
       />
 
       <Panel title="Display" className="mb-3">
@@ -51,6 +211,9 @@ export function SettingsPage() {
         </div>
       </Panel>
 
+      <SystemPanels />
+
+      <h2 className="text-ink-muted mt-4 mb-2 text-2xs font-semibold tracking-wider uppercase">Market data</h2>
       {config.error && <ErrorState message={config.error} onRetry={config.reload} />}
       {!c && !config.error && <Loading />}
       {c && (
@@ -109,7 +272,7 @@ export function SettingsPage() {
               items={[
                 { label: "Environment", value: <span className="num">{c.environment}</span> },
                 { label: "Trading mode", value: <Badge tone="caution">{c.trading_mode} · simulated only</Badge> },
-                { label: "Order execution", value: <span>None. Atlas has no broker or order endpoints.</span> },
+                { label: "Order execution", value: <span>Simulated paper orders only, through the isolated paper broker; the API exposes them read-only. No brokerage connection.</span> },
                 {
                   label: "Operator token",
                   value: c.operator_token_configured

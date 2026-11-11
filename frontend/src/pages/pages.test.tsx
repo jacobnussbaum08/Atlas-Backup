@@ -20,6 +20,7 @@ import {
   stubApi,
 } from "../test/marketFixtures";
 import type { DataGap } from "../types/marketData";
+import { PHASE9_ROUTES } from "../test/systemFixtures";
 
 // lightweight-charts draws on canvas, which jsdom lacks: record what the app asks of it.
 const chartMock = vi.hoisted(() => {
@@ -78,6 +79,7 @@ function renderAt(path: string) {
 
 const BASE_ROUTES = {
   ...LAYOUT_ROUTES,
+  ...PHASE9_ROUTES,
   "/api/v1/market-data/snapshots": { body: snapshots() },
   "/api/v1/market-data/pipeline-health": { body: PIPELINE_HEALTH },
   "/api/v1/market-data/metrics": { body: METRICS },

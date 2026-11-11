@@ -18,6 +18,7 @@ import {
   MOMENTUM_DETAIL,
   PROPOSALS,
 } from "../test/strategyFixtures";
+import { PHASE9_ROUTES } from "../test/systemFixtures";
 
 function renderAt(path: string) {
   return render(
@@ -31,6 +32,7 @@ function renderAt(path: string) {
 
 const EMPTY_ROUTES = {
   ...LAYOUT_ROUTES,
+  ...PHASE9_ROUTES,
   "/api/v1/strategies": { body: CATALOG },
   "/api/v1/strategies/proposals": { body: EMPTY_PROPOSALS },
   "/api/v1/strategies/evaluations": { body: EMPTY_EVALUATIONS },
@@ -90,7 +92,8 @@ describe("Strategy Laboratory", () => {
     expect(await screen.findByText("No evaluations")).toBeInTheDocument();
     const main = screen.getByRole("main");
     expect(main.textContent).not.toMatch(/win rate|profit factor|sharpe|drawdown|P\/L|expectancy/i);
-    expect(main.textContent).toMatch(/No performance statistics are shown/);
+    expect(await screen.findByText("No completed walk-forward validation yet")).toBeInTheDocument();
+    expect(main.textContent).toMatch(/No strategy has paper-trading results yet/);
     for (const name of [/buy/i, /sell/i, /submit/i, /execute/i, /enable/i]) {
       expect(within(main).queryByRole("button", { name })).toBeNull();
     }

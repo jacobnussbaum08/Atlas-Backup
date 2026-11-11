@@ -2,12 +2,19 @@ import { Columns3, Search } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { AssetTable, COLUMNS, type ColumnKey, DEFAULT_COLUMNS } from "../components/market/AssetTable";
+import { MarketContextStrip, WatchlistPanel } from "../components/markets";
+import { OriginBadge } from "../components/provenance";
 import { Button, EmptyState, ErrorState, Loading, PageHeader, Panel, RefreshButton } from "../components/ui";
+import { useApiResource } from "../hooks/useApiResource";
 import { useNow } from "../hooks/useNow";
 import { useSnapshots } from "../hooks/useSnapshots";
 import { formatAge, humanize } from "../lib/format";
+import { discovery } from "../services/discovery";
+import { intelligence } from "../services/intelligence";
 
 const COLUMNS_KEY = "atlas.markets.columns";
+/** Regime runs and watchlist scoring are daily jobs: a slow refresh is enough. */
+export const CONTEXT_POLL_MS = 300_000;
 
 function storedColumns(): ColumnKey[] {
   try {
@@ -30,6 +37,12 @@ export function MarketsPage() {
   const [query, setQuery] = useState("");
   const [columns, setColumns] = useState<ColumnKey[]>(storedColumns);
   const [chooserOpen, setChooserOpen] = useState(false);
+  const market = useApiResource((signal) => intelligence.market({ signal }), [], { refreshMs: CONTEXT_POLL_MS });
+  const watchlist = useApiResource(
+    (signal) => discovery.assets("ACTIVE_WATCHLIST", { sort: "rank", order: "asc", limit: 50 }, { signal }),
+    [],
+    { refreshMs: CONTEXT_POLL_MS },
+  );
 
   const rows = useMemo(() => {
     const q = query.trim().toUpperCase();
@@ -56,7 +69,7 @@ export function MarketsPage() {
     <section aria-labelledby="page-title">
       <PageHeader
         title="Markets"
-        description="Assets with an active mapping at the configured provider. Select a row for its chart, quotes and trades."
+        description="Monitored assets with live prices from stored data, the recorded market regime and the active watchlist. Select a row for its chart, quotes and trades."
         actions={
           <>
             <label className="border-border-strong bg-panel focus-within:border-accent flex h-7 items-center gap-1.5 rounded-sm border px-2">
@@ -98,8 +111,10 @@ export function MarketsPage() {
         }
       />
 
+      <MarketContextStrip market={market} />
+
       <Panel
-        title="Asset universe"
+        title={<span className="inline-flex items-center gap-1.5">Monitored assets <OriginBadge origin="LIVE" title="Snapshots computed by the backend from the newest stored trades, quotes and bars; updated over the live feed while it is connected." /></span>}
         subtitle={
           data
             ? `${data.snapshots.length} asset(s) · ${data.provider} · ${data.feed.toUpperCase()} · updated ${formatAge(data.checked_at, now)} · live feed ${humanize(live)}`
@@ -130,6 +145,7 @@ export function MarketsPage() {
           </div>
         )}
       </Panel>
+      <WatchlistPanel watchlist={watchlist} />
       {data && (
         <ul className="text-ink-faint mt-2 space-y-0.5 text-2xs">
           {data.notes.map((note) => (

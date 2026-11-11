@@ -1,39 +1,53 @@
-import { lazy, Suspense } from "react";
+import { type ComponentType, lazy, Suspense } from "react";
 import { Route, Routes } from "react-router";
 
 import { Loading } from "./components/ui";
 import { DashboardLayout } from "./layouts/DashboardLayout";
 import { UPCOMING_SECTIONS } from "./navigation";
-import { AIActivityPage } from "./pages/AIActivityPage";
-import { BacktestDetailPage } from "./pages/BacktestDetailPage";
-import { BacktestingPage } from "./pages/BacktestingPage";
-import { ValidationPage } from "./pages/ValidationPage";
-import { ValidationRunPage } from "./pages/ValidationRunPage";
-import { DataHealthPage } from "./pages/DataHealthPage";
-import { DiscoveryAssetPage } from "./pages/DiscoveryAssetPage";
-import { DiscoveryPage } from "./pages/DiscoveryPage";
-import { IngestionPage } from "./pages/IngestionPage";
-import { IntelligencePage } from "./pages/IntelligencePage";
 import { MarketsPage } from "./pages/MarketsPage";
-import { MLPage } from "./pages/MLPage";
-import { NewsArticlePage } from "./pages/NewsArticlePage";
-import { NewsPage } from "./pages/NewsPage";
 import { OverviewPage } from "./pages/OverviewPage";
-import { ExecutionAnalyticsPage } from "./pages/ExecutionAnalyticsPage";
-import { PaperOrdersPage } from "./pages/PaperOrdersPage";
-import { ClosedPositionsPage, OpenPositionsPage } from "./pages/PaperPositionsPage";
-import { PortfolioPage } from "./pages/PortfolioPage";
-import { RiskCenterPage } from "./pages/RiskCenterPage";
 import { SectionPlaceholderPage } from "./pages/SectionPlaceholderPage";
 import { SettingsPage } from "./pages/SettingsPage";
-import { StrategiesPage } from "./pages/StrategiesPage";
-import { StrategyDetailPage } from "./pages/StrategyDetailPage";
 import { SystemHealthPage } from "./pages/SystemHealthPage";
 
-// The chart library is only needed on the asset page: load it with that page.
-const AssetDetailPage = lazy(() =>
-  import("./pages/AssetDetailPage").then((module) => ({ default: module.AssetDetailPage })),
-);
+/**
+ * Sections other than the landing pages load on first visit, so the first screen does not
+ * download every page (and the chart library) up front. Created once at module scope, so a
+ * re-render never remounts a page.
+ */
+function lazyPage<K extends string>(load: () => Promise<Record<K, ComponentType>>, name: K): ComponentType {
+  const Component = lazy<ComponentType>(() => load().then((module) => ({ default: module[name] })));
+  return function LazyPage() {
+    return (
+      <Suspense fallback={<Loading label="Loading page…" />}>
+        <Component />
+      </Suspense>
+    );
+  };
+}
+
+const AssetDetailPage = lazyPage(() => import("./pages/AssetDetailPage"), "AssetDetailPage");
+const DiscoveryPage = lazyPage(() => import("./pages/DiscoveryPage"), "DiscoveryPage");
+const DiscoveryAssetPage = lazyPage(() => import("./pages/DiscoveryAssetPage"), "DiscoveryAssetPage");
+const IntelligencePage = lazyPage(() => import("./pages/IntelligencePage"), "IntelligencePage");
+const NewsPage = lazyPage(() => import("./pages/NewsPage"), "NewsPage");
+const NewsArticlePage = lazyPage(() => import("./pages/NewsArticlePage"), "NewsArticlePage");
+const StrategiesPage = lazyPage(() => import("./pages/StrategiesPage"), "StrategiesPage");
+const StrategyDetailPage = lazyPage(() => import("./pages/StrategyDetailPage"), "StrategyDetailPage");
+const MLPage = lazyPage(() => import("./pages/MLPage"), "MLPage");
+const AIActivityPage = lazyPage(() => import("./pages/AIActivityPage"), "AIActivityPage");
+const PortfolioPage = lazyPage(() => import("./pages/PortfolioPage"), "PortfolioPage");
+const RiskCenterPage = lazyPage(() => import("./pages/RiskCenterPage"), "RiskCenterPage");
+const PaperOrdersPage = lazyPage(() => import("./pages/PaperOrdersPage"), "PaperOrdersPage");
+const OpenPositionsPage = lazyPage(() => import("./pages/PaperPositionsPage"), "OpenPositionsPage");
+const ClosedPositionsPage = lazyPage(() => import("./pages/PaperPositionsPage"), "ClosedPositionsPage");
+const ExecutionAnalyticsPage = lazyPage(() => import("./pages/ExecutionAnalyticsPage"), "ExecutionAnalyticsPage");
+const BacktestingPage = lazyPage(() => import("./pages/BacktestingPage"), "BacktestingPage");
+const BacktestDetailPage = lazyPage(() => import("./pages/BacktestDetailPage"), "BacktestDetailPage");
+const ValidationPage = lazyPage(() => import("./pages/ValidationPage"), "ValidationPage");
+const ValidationRunPage = lazyPage(() => import("./pages/ValidationRunPage"), "ValidationRunPage");
+const DataHealthPage = lazyPage(() => import("./pages/DataHealthPage"), "DataHealthPage");
+const IngestionPage = lazyPage(() => import("./pages/IngestionPage"), "IngestionPage");
 
 export function App({ pollIntervalMs }: { pollIntervalMs?: number }) {
   return (
@@ -41,21 +55,20 @@ export function App({ pollIntervalMs }: { pollIntervalMs?: number }) {
       <Route element={<DashboardLayout {...(pollIntervalMs === undefined ? {} : { pollIntervalMs })} />}>
         <Route index element={<OverviewPage />} />
         <Route path="/markets" element={<MarketsPage />} />
-        <Route
-          path="/markets/:symbol"
-          element={
-            <Suspense fallback={<Loading label="Loading chart…" />}>
-              <AssetDetailPage />
-            </Suspense>
-          }
-        />
+        <Route path="/markets/:symbol" element={<AssetDetailPage />} />
         <Route path="/discovery" element={<DiscoveryPage />} />
-        <Route path="/discovery/assets/:assetId" element={<DiscoveryAssetPage />} />
+        <Route
+          path="/discovery/assets/:assetId"
+          element={<DiscoveryAssetPage />}
+        />
         <Route path="/intelligence" element={<IntelligencePage />} />
         <Route path="/news" element={<NewsPage />} />
         <Route path="/news/articles/:articleId" element={<NewsArticlePage />} />
         <Route path="/strategies" element={<StrategiesPage />} />
-        <Route path="/strategies/:strategyId" element={<StrategyDetailPage />} />
+        <Route
+          path="/strategies/:strategyId"
+          element={<StrategyDetailPage />}
+        />
         <Route path="/ml" element={<MLPage />} />
         <Route path="/ai" element={<AIActivityPage />} />
         <Route path="/portfolio" element={<PortfolioPage />} />
@@ -63,7 +76,10 @@ export function App({ pollIntervalMs }: { pollIntervalMs?: number }) {
         <Route path="/paper-orders" element={<PaperOrdersPage />} />
         <Route path="/positions" element={<OpenPositionsPage />} />
         <Route path="/positions/closed" element={<ClosedPositionsPage />} />
-        <Route path="/execution-analytics" element={<ExecutionAnalyticsPage />} />
+        <Route
+          path="/execution-analytics"
+          element={<ExecutionAnalyticsPage />}
+        />
         <Route path="/backtesting" element={<BacktestingPage />} />
         <Route path="/backtesting/:runId" element={<BacktestDetailPage />} />
         <Route path="/research" element={<ValidationPage />} />

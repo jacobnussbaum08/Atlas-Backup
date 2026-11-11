@@ -29,6 +29,7 @@ import { useApiResource } from "../hooks/useApiResource";
 import { formatCount, humanize } from "../lib/format";
 import { strategies } from "../services/strategies";
 import type { Direction, ParameterValue, ProposalStatus, SignalState, StrategySummary } from "../types/strategies";
+import { StrategyEvidencePanel } from "../components/strategyEvidence";
 
 type ProposalFilter = "ALL" | ProposalStatus;
 type DirectionFilter = "ALL" | Direction;
@@ -84,8 +85,8 @@ export function StrategiesPage() {
             </Notice>
           ))}
           <p className="text-ink-faint text-2xs">
-            No performance statistics are shown: no strategy has traded or been backtested (Phase 8).
-            Default parameters are conventional starting points, not optimized values. Signal strength is
+            No strategy has paper-trading results yet; the research evidence below comes from replays of stored
+            history. Default parameters are conventional starting points, not optimized values. Signal strength is
             an uncalibrated score, not a probability.
           </p>
           <ul aria-label="Strategy catalog" className="grid gap-3 md:grid-cols-2 2xl:grid-cols-3">
@@ -95,6 +96,7 @@ export function StrategiesPage() {
               </li>
             ))}
           </ul>
+          <StrategyEvidencePanel strategyIds={catalog.data.strategies.map((x) => x.strategy_id)} />
           <ProposalsPanel refreshKey={refresh} />
           <ConflictsPanel refreshKey={refresh} />
           <EvaluationsSection refreshKey={refresh} />

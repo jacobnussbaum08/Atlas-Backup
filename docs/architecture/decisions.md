@@ -2431,3 +2431,45 @@ performance BREACH disables the strategy, recorded as the monitor acting under t
 never suspends. The monitor never enables, never changes risk limits and never promotes.
 Retiring a strategy champion without a replacement also disables the strategy.
 **Why:** prompt section 8: warnings or suspension under previously approved safety rules only.
+
+## Phase 9 — complete dashboard and system integration
+
+### D-200 Worker status is read from what each worker recorded, never assumed
+
+**Decision:** a read-only `GET /api/v1/system/workers` (`app/monitoring/workers.py`) reports all
+eight background workers from their own PostgreSQL records. HEARTBEAT workers (market-data stream
+and recovery, news stream, paper broker) are RUNNING only with a heartbeat younger than a stated
+threshold; an older one is STALE whatever state was last written. ACTIVITY workers (strategy, AI,
+position monitor, discovery between jobs) record no heartbeat, so they are never reported running:
+their newest recorded output is shown as NO_HEARTBEAT. Error texts are redacted. Nothing controls a
+worker.
+**Why:** prompt section 4 asks for actual worker health and honesty about unavailable subsystems.
+The API cannot see other processes; claiming liveness without a heartbeat would be invented. The
+alternative (seven frontend requests to per-subsystem endpoints, several of which do not expose
+heartbeats) would duplicate derivation logic in the browser and multiply polling.
+
+### D-201 Overview P/L follows the risk engine's live evaluation, with ledger P/L beside it
+
+**Decision:** equity, daily and weekly P/L, drawdown, cash and exposure on the Overview come from
+`GET /risk/state` `live` (marked now, not recorded); realized and unrealized P/L from the ledger
+(`/portfolio/overview`). Daily/weekly P/L is the negated `daily_loss`/`weekly_loss` (positive =
+loss in the risk engine), negated exactly on the decimal string. Cumulative return is
+`(equity − contributed capital) / contributed capital`, subtracted exactly; only the final
+percentage is a float for display. A missing paper account (HTTP 404) is an explicit "not
+initialized" state, not an error and never zeros.
+**Why:** no new calculation of record in the browser (prompt section 6); the risk engine already
+defines these measures for its circuit breakers.
+
+### D-202 The equity curve draws recorded COMPLETE valuation checkpoints only
+
+**Decision:** the Overview's equity history plots `portfolio_snapshots` with complete marks at their
+recorded instants; stale or incomplete valuations are counted but not drawn, and nothing is
+interpolated.
+**Why:** prompt section 4: charts must stay historically accurate.
+
+### D-203 Sections load as route chunks
+
+**Decision:** every section except Overview, Markets, System Health and Settings is a lazy route
+chunk, and the chart library loads with the first chart. Test `findBy*` timeouts are raised to 4 s
+because chunk imports can exceed 1 s under a full parallel run.
+**Why:** the single bundle had reached 895 kB (build warning); the main chunk is now 351 kB.

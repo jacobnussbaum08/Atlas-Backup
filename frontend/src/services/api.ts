@@ -104,6 +104,23 @@ export async function postJson<T>(
   return (await response.json()) as T;
 }
 
+/** A record that may legitimately not exist yet (HTTP 404), as opposed to a failure. */
+export type Maybe<T> = { found: true; data: T } | { found: false; message: string };
+
+/**
+ * Resolve a request whose 404 means "not created yet" (e.g. no paper account before
+ * `accounting init`): that becomes ``{found: false}`` with the backend's explanation; every
+ * other failure is still an error.
+ */
+export async function allowNotFound<T>(request: Promise<T>): Promise<Maybe<T>> {
+  try {
+    return { found: true, data: await request };
+  } catch (reason) {
+    if (reason instanceof ApiError && reason.status === 404) return { found: false, message: reason.message };
+    throw reason;
+  }
+}
+
 export function fetchHealth(): Promise<HealthResponse> {
   return getJson<HealthResponse>("/health");
 }

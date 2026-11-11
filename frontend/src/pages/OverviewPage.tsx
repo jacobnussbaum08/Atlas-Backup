@@ -1,6 +1,7 @@
 import { Link } from "react-router";
 
 import { AssetTable, type ColumnKey } from "../components/market/AssetTable";
+import { EquityHistoryPanel, PaperAccountPanel, RiskStatusPanel, SystemStatusPanel } from "../components/overview";
 import { DimensionBadge, PIPELINE_TONES, SessionBadge, streamTone } from "../components/status";
 import {
   Badge,
@@ -22,7 +23,11 @@ import { useSnapshots } from "../hooks/useSnapshots";
 import { useDashboardStatus } from "../layouts/DashboardLayout";
 import { formatAge, formatCount, formatSessionTime, humanize, MISSING } from "../lib/format";
 import { useDisplayZone } from "../lib/time";
+import { allowNotFound } from "../services/api";
 import { marketData } from "../services/marketData";
+import { portfolio } from "../services/portfolio";
+import { risk as riskApi } from "../services/risk";
+import { system } from "../services/system";
 
 const OVERVIEW_COLUMNS: ColumnKey[] = [
   "symbol",
@@ -39,6 +44,8 @@ const OVERVIEW_COLUMNS: ColumnKey[] = [
 ];
 
 export const HEALTH_POLL_MS = 15_000;
+/** Account, risk and worker summaries: the backend recomputes them; a minute-scale view is enough. */
+export const ACCOUNT_POLL_MS = 30_000;
 /** Stream health values in which the recorded auth/subscription states are history. */
 const DISCONNECTED = new Set(["NOT_RUNNING", "RECONNECTING", "FAILED", "DISABLED", "STARTING"]);
 
@@ -56,12 +63,20 @@ function LastKnown({ value, connected }: { value: string | null; connected: bool
 export function OverviewPage() {
   const now = useNow(1_000);
   const { zone } = useDisplayZone();
-  const { stream, market } = useDashboardStatus();
+  const { stream, market, readiness, error: apiError } = useDashboardStatus();
   const { resource, data, live } = useSnapshots();
   const health = useApiResource((signal) => marketData.pipelineHealth({ signal }), [], {
     refreshMs: HEALTH_POLL_MS,
   });
   const metrics = useApiResource((signal) => marketData.metrics({ signal }), [], { refreshMs: 60_000 });
+  const risk = useApiResource((signal) => allowNotFound(riskApi.state({ signal })), [], { refreshMs: ACCOUNT_POLL_MS });
+  const ledger = useApiResource((signal) => allowNotFound(portfolio.overview(null, { signal })), [], {
+    refreshMs: ACCOUNT_POLL_MS,
+  });
+  const snapshots = useApiResource((signal) => allowNotFound(portfolio.snapshots(null, { signal })), [], {
+    refreshMs: 120_000,
+  });
+  const workers = useApiResource((signal) => system.workers({ signal }), [], { refreshMs: ACCOUNT_POLL_MS });
 
   const s = stream.data;
   const m = market.data;
@@ -80,13 +95,17 @@ export function OverviewPage() {
     <section aria-labelledby="page-title">
       <PageHeader
         title="Overview"
-        description="Market session, data pipeline and monitored assets. Stored data only; nothing is estimated."
+        description="Simulated paper account, risk and system status, market session, data pipeline and monitored assets. Stored or backend-computed data only; nothing is estimated."
         actions={
           <RefreshButton
-            loading={resource.loading || health.loading}
+            loading={resource.loading || health.loading || risk.loading}
             onClick={() => {
               resource.reload();
               health.reload();
+              risk.reload();
+              ledger.reload();
+              snapshots.reload();
+              workers.reload();
               stream.reload();
               market.reload();
             }}
@@ -94,7 +113,15 @@ export function OverviewPage() {
         }
       />
 
-      <div className="grid gap-3 lg:grid-cols-3">
+      <PaperAccountPanel risk={risk} ledger={ledger} />
+
+      <div className="mt-3 grid gap-3 lg:grid-cols-3">
+        <RiskStatusPanel risk={risk} />
+        <SystemStatusPanel readiness={readiness} apiError={apiError} workers={workers} />
+        <EquityHistoryPanel snapshots={snapshots} />
+      </div>
+
+      <div className="mt-3 grid gap-3 lg:grid-cols-3">
         <Panel title="Market status" subtitle={m ? "NYSE calendar (backend)" : undefined}>
           {market.error && !m ? (
             <ErrorState message={market.error} onRetry={market.reload} compact />

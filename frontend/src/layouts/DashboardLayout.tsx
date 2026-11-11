@@ -2,6 +2,7 @@ import { Lock } from "lucide-react";
 import { NavLink, Outlet, useOutletContext } from "react-router";
 
 import { PaperModeBadge } from "../components/PaperModeBadge";
+import { DisconnectedBanner } from "../components/provenance";
 import { streamTone } from "../components/status";
 import { SystemStatusIndicator } from "../components/SystemStatusIndicator";
 import { Badge, StatusDot } from "../components/ui";
@@ -10,7 +11,7 @@ import { useNow } from "../hooks/useNow";
 import { type SystemStatus, useSystemStatus } from "../hooks/useSystemStatus";
 import { formatClock, formatDateTime, humanize } from "../lib/format";
 import { useDisplayZone } from "../lib/time";
-import { NAV_SECTIONS, UPCOMING_SECTIONS } from "../navigation";
+import { NAV_GROUPS, NAV_SECTIONS, UPCOMING_SECTIONS } from "../navigation";
 import { marketData } from "../services/marketData";
 import type { MarketStatus, StreamStatus } from "../types/marketData";
 
@@ -38,6 +39,7 @@ export function DashboardLayout({ pollIntervalMs }: { pollIntervalMs?: number })
       <Sidebar version={system.health?.version ?? null} />
       <div className="flex min-w-0 flex-1 flex-col">
         <TopBar status={context} />
+        {system.error && <DisconnectedBanner message={system.error} onRetry={system.refresh} />}
         <main className="flex-1 px-3 py-4 md:px-5">
           <Outlet context={context} />
         </main>
@@ -48,7 +50,7 @@ export function DashboardLayout({ pollIntervalMs }: { pollIntervalMs?: number })
 
 function Sidebar({ version }: { version: string | null }) {
   return (
-    <aside className="border-border bg-panel shrink-0 border-b md:sticky md:top-0 md:h-screen md:w-52 md:border-r md:border-b-0">
+    <aside className="border-border bg-panel shrink-0 border-b md:sticky md:top-0 md:h-screen md:w-52 md:overflow-y-auto md:border-r md:border-b-0">
       <div className="flex items-center gap-2 px-3 py-3">
         <img src="/atlas.svg" alt="" className="size-6" />
         <div className="leading-tight">
@@ -58,24 +60,33 @@ function Sidebar({ version }: { version: string | null }) {
       </div>
       <nav aria-label="Dashboard sections" className="pb-3">
         <ul className="flex gap-0.5 overflow-x-auto px-2 md:flex-col md:overflow-visible">
-          {NAV_SECTIONS.map(({ path, title, icon: Icon }) => (
-            <li key={path}>
-              <NavLink
-                to={path}
-                // Exact match when another section lives below this path (/positions vs
-                // /positions/closed), so only one entry is highlighted.
-                end={path === "/" || NAV_SECTIONS.some((s) => s.path.startsWith(`${path}/`))}
-                className={({ isActive }) =>
-                  `flex items-center gap-2 rounded-sm px-2.5 py-1.5 text-xs whitespace-nowrap transition-colors ${
-                    isActive
-                      ? "bg-accent/12 text-ink shadow-[inset_2px_0_0_var(--color-accent)]"
-                      : "text-ink-muted hover:bg-panel-raised hover:text-ink"
-                  }`
-                }
-              >
-                <Icon aria-hidden className="size-3.5" />
-                {title}
-              </NavLink>
+          {NAV_GROUPS.map((group, index) => (
+            <li key={group} className="contents md:block">
+              <p className={`text-ink-faint mb-1 hidden px-2.5 text-2xs font-semibold tracking-wider uppercase md:block ${index === 0 ? "" : "mt-3"}`}>
+                {group}
+              </p>
+              <ul aria-label={group} className="contents md:flex md:flex-col md:gap-0.5">
+                {NAV_SECTIONS.filter((section) => section.group === group).map(({ path, title, icon: Icon }) => (
+                  <li key={path}>
+                    <NavLink
+                      to={path}
+                      // Exact match when another section lives below this path (/positions vs
+                      // /positions/closed), so only one entry is highlighted.
+                      end={path === "/" || NAV_SECTIONS.some((s) => s.path.startsWith(`${path}/`))}
+                      className={({ isActive }) =>
+                        `flex items-center gap-2 rounded-sm px-2.5 py-1.5 text-xs whitespace-nowrap transition-colors ${
+                          isActive
+                            ? "bg-accent/12 text-ink shadow-[inset_2px_0_0_var(--color-accent)]"
+                            : "text-ink-muted hover:bg-panel-raised hover:text-ink"
+                        }`
+                      }
+                    >
+                      <Icon aria-hidden className="size-3.5" />
+                      {title}
+                    </NavLink>
+                  </li>
+                ))}
+              </ul>
             </li>
           ))}
         </ul>

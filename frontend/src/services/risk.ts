@@ -5,6 +5,7 @@ import type {
   BreakerEvent,
   ConfigVersion,
   KillSwitchResult,
+  Limits,
   Reservation,
   ReservationEvent,
   RiskOverview,
@@ -21,6 +22,7 @@ type Opts = { signal?: AbortSignal };
 
 export const risk = {
   state: (opts: Opts = {}) => getJson<RiskOverview>("/api/v1/risk/state", opts),
+  limits: (opts: Opts = {}) => getJson<Limits>("/api/v1/risk/limits", opts),
   assessments: (result: AssessmentResult | null, opts: Opts = {}) =>
     getJson<AssessmentSummary[]>(buildUrl("/api/v1/risk/assessments", { result, limit: 50 }), opts),
   assessment: (id: string, opts: Opts = {}) =>

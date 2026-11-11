@@ -5,6 +5,7 @@ import type {
   Holding,
   PnlBreakdown,
   PortfolioOverview,
+  PortfolioSnapshot,
   ReconciliationRun,
   RunSummary,
   TrialBalance,
@@ -21,6 +22,9 @@ export const portfolio = {
     getJson<PortfolioOverview>(buildUrl("/api/v1/portfolio/overview", account(accountId)), opts),
   holdings: (accountId: string | null, opts: Opts = {}) =>
     getJson<Holding[]>(buildUrl("/api/v1/portfolio/holdings", account(accountId)), opts),
+  /** Recorded valuation checkpoints, newest first (at most 200). */
+  snapshots: (accountId: string | null, opts: Opts = {}) =>
+    getJson<PortfolioSnapshot[]>(buildUrl("/api/v1/portfolio/snapshots", { ...account(accountId), limit: 200 }), opts),
   pnl: (accountId: string | null, opts: Opts = {}) =>
     getJson<PnlBreakdown>(buildUrl("/api/v1/portfolio/pnl", account(accountId)), opts),
   journal: (accountId: string | null, opts: Opts = {}) =>

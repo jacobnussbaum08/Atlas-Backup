@@ -72,6 +72,58 @@ export function signOf(value: string | null | undefined): -1 | 0 | 1 | null {
   return match[1] === "-" ? -1 : 1;
 }
 
+/**
+ * The decimal string with its sign flipped, exactly (no floating point). Used where the
+ * backend reports a loss as a positive number and the dashboard shows P/L.
+ */
+export function negateDecimal(value: string | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  const plain = toPlain(value);
+  const match = DECIMAL.exec(plain);
+  if (!match) return null;
+  if (signOf(plain) === 0) return plain.replace(/^[+-]/, "");
+  return match[1] === "-" ? plain.slice(1) : `-${plain.replace(/^\+/, "")}`;
+}
+
+function scaled(value: string): { units: bigint; places: number } | null {
+  const match = DECIMAL.exec(toPlain(value));
+  if (!match) return null;
+  const fraction = match[3] ?? "";
+  const units = BigInt(`${match[2] ?? "0"}${fraction}`);
+  return { units: match[1] === "-" ? -units : units, places: fraction.length };
+}
+
+/** ``a - b`` of two decimal strings, exactly (BigInt), as a plain decimal string. */
+export function subtractDecimal(a: string | null | undefined, b: string | null | undefined): string | null {
+  if (a === null || a === undefined || b === null || b === undefined) return null;
+  const x = scaled(a);
+  const y = scaled(b);
+  if (!x || !y) return null;
+  const places = Math.max(x.places, y.places);
+  const diff = x.units * 10n ** BigInt(places - x.places) - y.units * 10n ** BigInt(places - y.places);
+  const negative = diff < 0n;
+  const digits = (negative ? -diff : diff).toString().padStart(places + 1, "0");
+  const text = places > 0 ? `${digits.slice(0, -places)}.${digits.slice(-places)}` : digits;
+  return negative ? `-${text}` : text;
+}
+
+/**
+ * ``numerator / denominator`` as a percentage for display only (2 places by default).
+ * Money of record is never derived from this; it is a ratio of two exact decimals shown
+ * rounded. Missing or zero denominators give null, never 0 or infinity.
+ */
+export function percentOf(
+  numerator: string | null | undefined,
+  denominator: string | null | undefined,
+): number | null {
+  if (numerator === null || numerator === undefined || denominator === null || denominator === undefined) return null;
+  if (!DECIMAL.test(toPlain(numerator)) || !DECIMAL.test(toPlain(denominator))) return null;
+  const d = Number(toPlain(denominator));
+  if (!Number.isFinite(d) || d === 0) return null;
+  const n = Number(toPlain(numerator));
+  return Number.isFinite(n) ? (n / d) * 100 : null;
+}
+
 /** Trims trailing zeros of a quantity ("60.000000000000000000" -> "60"). */
 export function formatQuantityExact(value: string | null | undefined): string {
   if (value === null || value === undefined || !DECIMAL.test(toPlain(value))) return MISSING;

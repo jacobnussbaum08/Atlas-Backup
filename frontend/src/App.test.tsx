@@ -16,6 +16,7 @@ import {
   snapshots,
   stubApi,
 } from "./test/marketFixtures";
+import { PHASE9_ROUTES } from "./test/systemFixtures";
 
 function renderAt(path: string) {
   return render(
@@ -29,6 +30,7 @@ function renderAt(path: string) {
 
 const PAGE_ROUTES = {
   ...LAYOUT_ROUTES,
+  ...PHASE9_ROUTES,
   "/api/v1/market-data/snapshots": { body: snapshots() },
   "/api/v1/market-data/pipeline-health": { body: PIPELINE_HEALTH },
   "/api/v1/market-data/metrics": { body: METRICS },

@@ -368,6 +368,9 @@ def test_openapi_exposes_no_order_endpoints(build_client):
         # comparison, record lifecycle decisions and run the monitor; nothing promotes itself.
         *VALIDATION_READS,
         *VALIDATION_WRITES,
+        # Phase 9 dashboard: what the background workers recorded (GET only; it controls
+        # nothing).
+        "/api/v1/system/workers",
     }
     # Market trades (exchange prints) are read-only market data, not trading: the one
     # allowed path containing "trade" must expose GET only.

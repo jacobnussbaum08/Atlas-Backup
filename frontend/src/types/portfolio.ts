@@ -100,6 +100,24 @@ export interface CheckResult {
   message: string;
 }
 
+/** One recorded valuation checkpoint (GET /portfolio/snapshots). */
+export interface PortfolioSnapshot {
+  id: string;
+  as_of: string;
+  valuation_status: "COMPLETE" | "STALE" | "INCOMPLETE";
+  entry_sequence: number;
+  valuation_entry_id: string | null;
+  equity: Decimal;
+  contributed_capital: Decimal;
+  investment_return: Decimal;
+  cash: Decimal;
+  long_value: Decimal;
+  short_liability: Decimal;
+  realized_pnl: Decimal;
+  unrealized_pnl: Decimal;
+  issues: ValuationIssue[];
+}
+
 export interface PortfolioOverview {
   account: AccountView;
   figures: PortfolioFigures;
