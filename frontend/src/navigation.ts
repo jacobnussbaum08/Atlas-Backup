@@ -32,7 +32,7 @@ export interface NavSection {
   summary: string;
 }
 
-/** Pages backed by real backend data (Phase 1, the Phase 2 market-data engine, Phases 3A-3C, 4A-4B, 5A-5B, 6A-6C, 7A-7B). */
+/** Pages backed by real backend data (Phase 1, the Phase 2 market-data engine, Phases 3A-3C, 4A-4B, 5A-5B, 6A-6C, 7A-7B, 8A). */
 export const NAV_SECTIONS: readonly NavSection[] = [
   {
     path: "/",
@@ -147,6 +147,14 @@ export const NAV_SECTIONS: readonly NavSection[] = [
     summary: "Simulated slippage, fill rates, partial fills, estimated costs and the versioned execution-model assumptions.",
   },
   {
+    path: "/backtesting",
+    title: "Backtesting",
+    icon: FlaskConical,
+    specSection: "22.7",
+    phase: 8,
+    summary: "Configure, run, inspect and compare reproducible event-driven backtests of stored history.",
+  },
+  {
     path: "/data-health",
     title: "Data Health",
     icon: DatabaseZap,
@@ -184,13 +192,4 @@ export const NAV_SECTIONS: readonly NavSection[] = [
  * Systems that do not exist yet. Shown disabled in the navigation with their roadmap
  * phase; their URLs render an explicit "not built" page with no numbers.
  */
-export const UPCOMING_SECTIONS: readonly NavSection[] = [
-  {
-    path: "/backtesting",
-    title: "Backtesting",
-    icon: FlaskConical,
-    specSection: "22.7",
-    phase: 8,
-    summary: "Configure, run and compare reproducible historical backtests.",
-  },
-];
+export const UPCOMING_SECTIONS: readonly NavSection[] = [];

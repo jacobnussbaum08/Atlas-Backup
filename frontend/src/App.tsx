@@ -5,6 +5,8 @@ import { Loading } from "./components/ui";
 import { DashboardLayout } from "./layouts/DashboardLayout";
 import { UPCOMING_SECTIONS } from "./navigation";
 import { AIActivityPage } from "./pages/AIActivityPage";
+import { BacktestDetailPage } from "./pages/BacktestDetailPage";
+import { BacktestingPage } from "./pages/BacktestingPage";
 import { DataHealthPage } from "./pages/DataHealthPage";
 import { DiscoveryAssetPage } from "./pages/DiscoveryAssetPage";
 import { DiscoveryPage } from "./pages/DiscoveryPage";
@@ -60,6 +62,8 @@ export function App({ pollIntervalMs }: { pollIntervalMs?: number }) {
         <Route path="/positions" element={<OpenPositionsPage />} />
         <Route path="/positions/closed" element={<ClosedPositionsPage />} />
         <Route path="/execution-analytics" element={<ExecutionAnalyticsPage />} />
+        <Route path="/backtesting" element={<BacktestingPage />} />
+        <Route path="/backtesting/:runId" element={<BacktestDetailPage />} />
         <Route path="/data-health" element={<DataHealthPage />} />
         <Route path="/ingestion" element={<IngestionPage />} />
         <Route path="/system-health" element={<SystemHealthPage />} />

@@ -158,6 +158,22 @@ def test_expected_tables_exist():
         "paper_positions",
         "position_events",
         "position_close_requests",
+        # Phase 8A backtesting (simulations over stored history; insert-only results)
+        "backtest_runs",
+        "backtest_strategy_versions",
+        "backtest_event_cursors",
+        "backtest_proposals",
+        "backtest_rejections",
+        "backtest_orders",
+        "backtest_fills",
+        "backtest_trades",
+        "backtest_equity_snapshots",
+        "backtest_metrics",
+        "backtest_benchmark_results",
+        "backtest_run_events",
+        "backtest_run_errors",
+        "backtest_journal_entries",
+        "backtest_evaluation_counts",
     }
 
 

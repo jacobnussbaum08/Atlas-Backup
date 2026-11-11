@@ -24,7 +24,8 @@ one deployable backend, with modules separated by package boundaries rather than
 | `ai_engine`, `ml_engine` | Decision coordinator, ML models, async LLM news features | 5 |
 | `portfolio`, `accounting`, `risk` | Portfolio state, double-entry ledger, deterministic risk | 6 |
 | `execution`, `paper_broker` | Order state machine, simulated broker | 7 |
-| `backtesting`, `learning` | Backtests, champion/challenger | 8 |
+| `backtesting` | Event-driven historical replay through the shared strategy, risk, execution and accounting cores; point-in-time data; metrics, benchmarks, reproducibility | 8A ✅ |
+| `learning` | Champion/challenger, walk-forward validation | 8B |
 | `notifications` | Dashboard notifications, later Telegram/email | 9+ |
 
 Future modules exist only as packages with a docstring that states their boundary. They contain
@@ -355,3 +356,15 @@ point-in-time data, marked state, service, read models), migration 0014, the rou
 `python -m app.risk.cli` and the dashboard page `/risk`. Conventions:
 [`risk.md`](risk.md); decisions D-138 to D-147. The risk engine reads stored rows only and
 imports no strategy, ML, LLM or AI code; none of those import it.
+
+
+## Event-driven backtesting (Phase 8A)
+
+`app/backtesting` (configuration, point-in-time dataset, replay engine, simulated broker,
+risk book, in-memory ledger, metrics, service, read models, CLI), migration 0018, the router
+`/api/v1/backtests` (GET, plus the operator-gated create and reproduce), and the pages
+`/backtesting` and `/backtesting/:runId`. A run replays stored daily bars session by session
+through `strategies.engine.decide` (now also used by the live `StrategyEngine`), the 6B
+assessment, 6C reservation amounts, the 7A state machine, the 7B fill model and the 6A
+templates on an in-memory ledger; results go to the `backtest_*` tables (insert-only while
+the run runs). Design: [`backtesting.md`](backtesting.md); decisions D-173 to D-184.

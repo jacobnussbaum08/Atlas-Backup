@@ -2152,3 +2152,150 @@ skipping orders with no observation newly available since their last evaluation,
 nothing while the broker is not RUNNING. The position-monitor worker passes every 5 s by
 default; it evaluates *all* trades and bars since its cursor, so a longer interval delays an
 exit but misses no touch. Equity protection is evaluated on regular-session data only.
+
+
+---
+
+## Phase 8A — event-driven historical backtesting
+
+### D-173 Phase 8A builds on the uncommitted 7A–7B work, brought in as a baseline commit
+
+**Decision:** this branch started at Phase 4B (`main`). Phases 5A–6C existed only on commit
+`0023e5e`, and 7A–7B only as uncommitted files in the `atlas-phase-7a-execution` worktree. With
+the operator's approval the branch was reset to `0023e5e`, and the 7A–7B working tree was copied
+unchanged and committed as `30b9749` ("Phase 7A-7B ... (baseline)"). The full suite on that
+commit passed: 3,321 passed, 1 skipped (Redis), the 7B report's count.
+**Why:** 8A must reuse 6A accounting, 6B/6C risk and reservations and the 7B fill model. Building
+on 4B would have meant a second, disconnected trading system.
+
+### D-174 One replay engine in memory, reusing the pure cores; results in `backtest_*` only
+
+**Decision:** a backtest is an in-memory, single-threaded, event-driven replay
+(`app.backtesting.engine`). It calls the same code paths paper trading uses:
+`app.strategies.engine.decide` (extracted from `StrategyEngine.run`, which now calls it too),
+`compute_features`, the 6B `assess()` with a 6B `PortfolioView`, the 6C reservation amounts and
+proportional consumption, the 7A order state machine (`next_status`), the 7B `fill_model.evaluate`
+with a versioned `ExecutionModel`, and the 6A posting templates with the posting service's
+validation and invariant checks. It does not use the database-bound services (`RiskService`,
+`ReservationService`, `ExecutionService`, `PostingService`), and it never writes to a live trading
+table. Results are stored in fourteen `backtest_*` tables.
+**Why:** the live services read "now" (fresh quotes, current liquidity and correlation
+measurements, the latest configuration, breaker tables) and serialize on database locks built for
+concurrent live traffic. Historical decisions need the same rules evaluated on point-in-time
+inputs. Writing replays into `orders`, `journal_entries` or `risk_reservations` would mix
+simulations with the paper account's records. The pure cores are where the rules live, so
+reusing them keeps one set of rules. A parity test runs the 4B `StrategyEngine` (HISTORICAL,
+RECONSTRUCTED) and the replay on the same inputs and finds identical proposals.
+
+### D-175 Time, availability and ordering
+
+**Decision:** a session's information becomes known at one instant,
+`t = regular close + settle_seconds` (default 3,600 s, the 4A strategy setting). At `t` the replay
+processes, in a fixed order: corporate actions, execution against the session's bar, entry expiry,
+valuation and borrow, reconciliation, the equity snapshot and the risk monitor, horizon exits, and
+then strategy decisions. Orders arrive `latency` after `t`, and a bar is used only by orders that
+arrived before it started. An entry can therefore never fill on the bar that produced its signal.
+Ties are broken by fixed keys (timeframe, strategy, symbol, direction, sequence). There is no
+randomness; the seed is recorded and seeds an unused generator.
+**Why:** prompt sections 1–2. Only completed and settled candles are visible, events are
+chronological, and a replay of the same inputs produces the same results.
+
+### D-176 A REST backfill's retrieval time is never an availability time
+
+**Decision:** a historical daily bar is usable from its session close plus `settle_seconds`,
+derived from the calendar. Its `available_at` (the retrieval time) is used only to exclude data
+Atlas obtained after the run's knowledge time. Backfilled news counts only if published at least
+`news_delay_minutes` (default 5) before the cutoff; this needed a backwards-compatible
+`news_delay` on `StoredContext` and `compute_features` (default 0: 4A behaviour unchanged).
+Bar revisions are RECONSTRUCTED: the newest revision ingested by the knowledge time. That is a
+stated limitation.
+**Why:** prompt section 2: when the original availability is unknown, apply a documented
+conservative policy.
+
+### D-177 The dataset is frozen at the run's knowledge time and fingerprinted
+
+**Decision:** `data_known_at` (default: the creation time) is resolved once and stored. The loader
+reads only rows ingested and available by then: bars, reference versions, instrument
+specifications and classifications. A `dataset_sha256` over the identities and revisions of every
+row read is stored with the run. A reproduction re-executes the stored resolved configuration
+(nothing re-resolved) and records whether its result hash equals the original's.
+**Why:** later ingestion cannot change a replay; reproducibility can be checked rather than
+assumed (prompt section 9).
+
+### D-178 Point-in-time split adjustment, and positions carried through splits
+
+**Decision:** strategy features use the provider's SPLIT series rescaled by
+`C(T) = raw_close(T) / split_close(T)` of the newest completed session. History therefore appears
+at the price level it traded at on that session, and no later split leaks backwards. A change in
+`C` between consecutive sessions is a split effective at the later session's open. An open position
+is carried with existing 6A templates only: a zero-cost sale at the last pre-split close and a
+purchase of `floor(q x ratio)` at `close / ratio`; the remainder is cash in lieu. Working entries
+in the asset are cancelled and protective levels rescaled. Execution, valuation and accounting use
+RAW prices. Dividends are not modelled.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+### D-179 Execution on daily bars: the 7B model plus three stated rules
+
+**Decision:** the backtest's execution model is the 7B model with `bar_timeframe = 1Day`, plus
+rules added to its content hash. Each session is one evaluation on that session's bar, with no
+quotes or trades. Gap rule: a stop triggered by a bar that opened beyond it fills no better than
+the open, adjusted adversely by the slippage; the 7B bar fallback alone caps at the stop, which is
+optimistic after a gap. Bracket: the protective stop is active from the entry's arrival and is
+evaluated in the entry's bar, while a take-profit is never filled in its entry's bar (stop first).
+Entries are LIMIT orders at the approval's worst entry price by default (MARKET, STOP and
+STOP_LIMIT are selectable), always bounded by that price as in 7A/7B. Exits at the holding horizon
+are market orders that fill on the next session's bar.
+**Why:** prompt section 5. Candle prices do not guarantee fills, and no intrabar path is invented.
+The gap rule is a finding for 7B (its bar fallback has the same optimism at one-minute scale); 7B
+is not changed here.
+
+### D-180 Breakers without an operator; data the live risk engine reads "now"
+
+**Decision:** breaker trips and automatic resets use 6B `transitions` unchanged. Manual breakers
+are reset by a simulated operator (`breaker_reset_policy`, default `NEXT_SESSION_IF_CLEAR`, or
+`NEVER`) only after the session of the trip and only once `reset_allowed`; every reset is recorded
+with the actor `backtest:simulated-operator`. Liquidity (median daily dollar volume) is recomputed
+point in time with the 3A `metrics.compute` on the decision's bars. Correlations and sector
+classifications use the 6B point-in-time readers. Correlations are therefore usually missing for
+past dates, and `ASSUME_CORRELATED` applies, as it would live. The price is the session's RAW close
+(FRESH by the 6A rule after the close). There is no quote, so the spread is the configured
+assumption.
+**Why:** 6B stays unchanged and identical; the backtest supplies its inputs point in time.
+
+### D-181 Read-only backtest records under `/api/v1/backtests`; two operator-gated writes
+
+**Decision:** `POST /backtests` (create and queue a run) and `POST /backtests/{id}/reproduce` need
+the operator token, like the other operational writes. The paths
+`/backtests/{id}/orders|fills|trades` are GET-only, and the route-guard tests allow them
+explicitly, as D-136 did for the paper-order pages. Runs execute on one background thread per API
+process, in submission order. At start-up, runs whose process died are failed and runs that never
+started are resumed.
+**Why:** a replay's simulated orders are not orders. The guard tests still forbid anything that
+could submit or execute.
+
+### D-182 Results are immutable and written only while their run runs
+
+**Decision:** database triggers allow `backtest_runs` to change only status and progress, along
+QUEUED -> RUNNING -> COMPLETED | FAILED; configuration columns never change, a final run never
+changes, and nothing is deleted. Result tables accept INSERT only while their run is RUNNING
+(strategy versions: while QUEUED) and refuse UPDATE, DELETE and TRUNCATE. All results are stored
+in one transaction with the COMPLETED status and the result hash. A failed run stores its fatal
+error, not partial results.
+**Why:** prompt section 9: historical records remain immutable.
+
+### D-183 Metrics are withheld, not estimated, on short samples
+
+**Decision:** annualized returns need at least 252 sessions; volatility, Sharpe and Sortino need at
+least 126 daily returns. Below that they are stored with no value and status
+INSUFFICIENT_SAMPLE or NOT_APPLICABLE. Trade statistics with fewer than 30 closed trades are shown
+and flagged. Net figures are after all simulated costs; gross figures add costs back. Benchmarks
+are price returns bought at the first session's open, over exactly the run's sessions.
+**Why:** prompt sections 7–8.
+
+### D-184 No ML or LLM in the backtest decision path (Phase 8A)
+
+**Decision:** decisions flow strategy proposal -> 6B assessment -> reservation -> order. Model
+versions validated by the knowledge time are recorded with the run, and the stated model usage is
+"none".
+**Why:** the risk engine already accepts strategy proposals directly (6B `from_strategy_proposal`).
+Model evaluation, champion/challenger and walk-forward validation are Phase 8B.

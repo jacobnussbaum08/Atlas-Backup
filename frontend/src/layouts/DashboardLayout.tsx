@@ -79,9 +79,11 @@ function Sidebar({ version }: { version: string | null }) {
             </li>
           ))}
         </ul>
-        <p className="text-ink-faint mt-4 hidden px-4 text-2xs font-semibold tracking-wider uppercase md:block">
-          Later phases
-        </p>
+        {UPCOMING_SECTIONS.length > 0 && (
+          <p className="text-ink-faint mt-4 hidden px-4 text-2xs font-semibold tracking-wider uppercase md:block">
+            Later phases
+          </p>
+        )}
         <ul aria-label="Not yet built" className="mt-1 hidden flex-col gap-0.5 px-2 md:flex">
           {UPCOMING_SECTIONS.map(({ path, title, icon: Icon, phase }) => (
             <li key={path}>

@@ -212,6 +212,7 @@ def compute_features(
     basis: KnowledgeBasis,
     series: BarSeries,
     bar_source: DailyBarSource = query_daily_bars,
+    news_delay: timedelta = timedelta(0),
 ) -> FeatureInputs:
     if known_at < data_cutoff:
         raise ValueError("the knowledge time cannot precede the data cutoff")
@@ -258,7 +259,7 @@ def compute_features(
     if stored_features:
         newest = completed_daily(series.calendar, data_cutoff, SESSION_CLOSES, series.settle)
         closes = tuple(s.regular_close for s in newest)
-        ctx = StoredContext(asset_id, data_cutoff, known_at, basis, closes)
+        ctx = StoredContext(asset_id, data_cutoff, known_at, basis, closes, news_delay)
         values.update(compute_stored_features(session, stored_features, ctx))
     return FeatureInputs(
         asset_id=asset_id,

@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from app.accounting.runtime import AccountingContext
     from app.ai_engine.runtime import AIContext
     from app.asset_discovery.runtime import AssetDiscoveryContext
+    from app.backtesting.runtime import BacktestContext
     from app.execution.runtime import ExecutionContext
     from app.market_intelligence.runtime import IntelligenceContext
     from app.ml_engine.runtime import MLContext
@@ -143,6 +144,17 @@ def _build_execution_context(
     return build_execution_context(session_factory, clock)
 
 
+def _build_backtest_context(
+    session_factory: sessionmaker[Session], clock: Clock
+) -> BacktestContext:
+    from app.backtesting.runtime import build_backtest_context
+
+    # Replays of stored historical data; results go to the backtest_* tables only.
+    context = build_backtest_context(session_factory, clock)
+    context.resume()
+    return context
+
+
 def create_app(
     settings: Settings | None = None,
     *,
@@ -158,6 +170,7 @@ def create_app(
     accounting: AccountingContext | None = None,
     risk: RiskContext | None = None,
     execution: ExecutionContext | None = None,
+    backtesting: BacktestContext | None = None,
 ) -> FastAPI:
     """Build the application.
 
@@ -207,6 +220,7 @@ def create_app(
             app.state.accounting_factory = lambda: _build_accounting_context(session_factory, clock)
             app.state.risk_factory = lambda: _build_risk_context(session_factory, clock)
             app.state.execution_factory = lambda: _build_execution_context(session_factory, clock)
+            app.state.backtesting_factory = lambda: _build_backtest_context(session_factory, clock)
             _recover_interrupted_jobs(session_factory, clock)
             sweeper = asyncio.create_task(_sweep_interrupted_jobs(session_factory, clock))
         else:
@@ -226,6 +240,9 @@ def create_app(
                 sweeper.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await sweeper
+            backtester = getattr(app.state, "backtesting", None)
+            if backtester is not None:
+                backtester.shutdown()
             live_hub = getattr(app.state, "live_hub", None)
             if live_hub is not None:
                 await live_hub.close()
@@ -254,6 +271,7 @@ def create_app(
     app.state.accounting = accounting
     app.state.risk = risk
     app.state.execution = execution
+    app.state.backtesting = backtesting
     app.state.version = app.version
     app.state.started_at = clock.now()
 

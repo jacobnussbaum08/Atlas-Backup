@@ -5,6 +5,7 @@ from fastapi import APIRouter
 from app.api.v1 import (
     ai,
     assets,
+    backtests,
     discovery,
     intelligence,
     market_data,
@@ -40,5 +41,6 @@ router.include_router(paper_orders.orders_router)
 router.include_router(paper_orders.broker_router)
 router.include_router(paper_orders.positions_router)
 router.include_router(paper_orders.execution_router)
+router.include_router(backtests.router)
 
 __all__ = ["router"]

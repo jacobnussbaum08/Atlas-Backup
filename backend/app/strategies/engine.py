@@ -48,7 +48,7 @@ from sqlalchemy import exists, func, insert, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.asset_discovery.sessions import CALENDARS
+from app.asset_discovery.sessions import CALENDARS, ExchangeCalendar
 from app.core.clocks import Clock
 from app.core.logging import get_logger
 from app.core.security.redaction import redact_text
@@ -112,6 +112,131 @@ def data_state(statuses: Iterable[FeatureStatus]) -> SignalState:
         if status in found:
             return state
     return SignalState.INVALID_DATA
+
+
+def ineligibility(strategy: Strategy, params: StrategyParameters, asset: AssetView) -> str | None:
+    """Why the asset cannot be evaluated at all, or None (Phase 4B)."""
+    if asset.asset_class not in strategy.supported_asset_classes:
+        return f"{asset.asset_class.value} is not supported by {strategy.strategy_id}"
+    if asset.eligibility is None:
+        return None
+    blocked = [asset.eligibility.direction_reason(d) for d in params.directions]
+    if all(reason is not None for reason in blocked):
+        return "; ".join(dict.fromkeys(r for r in blocked if r is not None))
+    return None
+
+
+class EvaluationStageError(Exception):
+    """A failure in one stage of :func:`decide` (the strategy, or proposal validation)."""
+
+    def __init__(self, stage: ErrorStage, error: BaseException) -> None:
+        super().__init__(str(error))
+        self.stage, self.error = stage, error
+
+
+@dataclass(frozen=True)
+class Decision:
+    """What one evaluation decided from its point-in-time inputs (nothing persisted)."""
+
+    status: EvaluationStatus
+    state: SignalState
+    specs: list[ProposalSpec]
+    skip_reasons: list[dict[str, Any]]
+    notes: list[str]
+    reason: str | None
+    checks: list[dict[str, Any]]
+
+
+def decide(
+    strategy: Strategy,
+    params: StrategyParameters,
+    resolved: Sequence[ResolvedFeature],
+    asset: AssetView,
+    inputs: FeatureInputs,
+    *,
+    timeframe: str,
+    mode: EvaluationMode,
+    basis: KnowledgeBasis,
+    data_cutoff: datetime,
+    trigger: TriggerKind,
+    trigger_ref: str,
+    registry: StrategyRegistry,
+    calendar: ExchangeCalendar,
+    snapshot_ids: Sequence[uuid.UUID | None],
+) -> Decision:
+    """The pure part of an evaluation, shared by the live engine and the Phase 8A backtester:
+    required features must be VALID, the strategy is called with an
+    :class:`EvaluationContext` only, and its drafts are validated into proposals.
+
+    Raises :class:`EvaluationStageError` (STRATEGY or VALIDATION) when a stage fails."""
+    invalid = [
+        {"feature": f.key, "status": v.status.value, "reason": v.reason}
+        for f in resolved
+        if not f.optional and not (v := inputs.values[f.key]).valid
+    ]
+    if invalid:
+        state = data_state(
+            inputs.values[f.key].status
+            for f in resolved
+            if not f.optional and not inputs.values[f.key].valid
+        )
+        return Decision(
+            EvaluationStatus.SKIPPED,
+            state,
+            [],
+            invalid,
+            [],
+            "; ".join(f"{i['feature']}: {i['status']}" for i in invalid)[:2000],
+            [],
+        )
+    ctx = EvaluationContext(
+        asset=asset,
+        timeframe=timeframe,
+        mode=mode,
+        basis=basis,
+        data_cutoff=data_cutoff,
+        features=inputs.values,
+        trigger=trigger,
+        registry=registry.features,
+    )
+    try:
+        outcome = strategy.evaluate(ctx, params)
+        if not isinstance(outcome, StrategyOutcome):
+            raise TypeError("evaluate() must return a StrategyOutcome")
+    except Exception as exc:
+        raise EvaluationStageError(ErrorStage.STRATEGY, exc) from exc
+    checks = [c.to_json() for c in outcome.checks][:MAX_CHECKS]
+    if outcome.invalid_data is not None:
+        return Decision(
+            EvaluationStatus.SKIPPED,
+            SignalState.INVALID_DATA,
+            [],
+            [],
+            list(outcome.notes),
+            outcome.invalid_data,
+            checks,
+        )
+    try:
+        expiry = expires_at(calendar, timeframe, data_cutoff, params.signal_ttl_periods)
+        specs, notes = validate_drafts(
+            outcome.proposals,
+            ctx,
+            params,
+            expires_at=expiry,
+            snapshot_ids=[s for s in snapshot_ids if s is not None],
+            evaluation_event=f"{trigger.value}:{trigger_ref}",
+        )
+    except (ProposalValidationError, ValueError) as exc:
+        raise EvaluationStageError(ErrorStage.VALIDATION, exc) from exc
+    return Decision(
+        EvaluationStatus.PROPOSED if specs else EvaluationStatus.NO_PROPOSAL,
+        SignalState.SIGNAL if specs else SignalState.NO_SIGNAL,
+        specs,
+        [],
+        [*outcome.notes, *notes],
+        None if specs else (outcome.reason or "; ".join(notes) or None),
+        checks,
+    )
 
 
 @dataclass(frozen=True)
@@ -355,84 +480,35 @@ class StrategyEngine:
                 snapshot = self._store_snapshot(inputs)
             except Exception as exc:
                 raise _Failure(ErrorStage.INPUTS, exc, snapshot) from exc
-            invalid = [
-                {"feature": f.key, "status": v.status.value, "reason": v.reason}
-                for f in resolved
-                if not f.optional and not (v := inputs.values[f.key]).valid
-            ]
-            if invalid:
-                state = data_state(
-                    inputs.values[f.key].status
-                    for f in resolved
-                    if not f.optional and not inputs.values[f.key].valid
-                )
-                return self._finalize(
-                    claim,
-                    EvaluationStatus.SKIPPED,
-                    [],
-                    snapshot,
-                    invalid,
-                    [],
-                    state=state,
-                    reason="; ".join(f"{i['feature']}: {i['status']}" for i in invalid)[:2000],
-                    eligibility=asset.eligibility,
-                )
-            ctx = EvaluationContext(
-                asset=asset,
-                timeframe=request.timeframe,
-                mode=request.mode,
-                basis=request.basis,
-                data_cutoff=claim.data_cutoff,
-                features=inputs.values,
-                trigger=request.trigger,
-                registry=self.strategies.features,
-            )
             try:
-                outcome = strategy.evaluate(ctx, params)
-                if not isinstance(outcome, StrategyOutcome):
-                    raise TypeError("evaluate() must return a StrategyOutcome")
-            except Exception as exc:
-                raise _Failure(ErrorStage.STRATEGY, exc, snapshot) from exc
-            checks = [c.to_json() for c in outcome.checks][:MAX_CHECKS]
-            if outcome.invalid_data is not None:
-                return self._finalize(
-                    claim,
-                    EvaluationStatus.SKIPPED,
-                    [],
-                    snapshot,
-                    [],
-                    outcome.notes,
-                    state=SignalState.INVALID_DATA,
-                    reason=outcome.invalid_data,
-                    checks=checks,
-                    eligibility=asset.eligibility,
-                )
-            try:
-                expiry = expires_at(
-                    self.calendar, request.timeframe, claim.data_cutoff, params.signal_ttl_periods
-                )
-                specs, notes = validate_drafts(
-                    outcome.proposals,
-                    ctx,
+                decision = decide(
+                    strategy,
                     params,
-                    expires_at=expiry,
+                    resolved,
+                    asset,
+                    inputs,
+                    timeframe=request.timeframe,
+                    mode=request.mode,
+                    basis=request.basis,
+                    data_cutoff=claim.data_cutoff,
+                    trigger=request.trigger,
+                    trigger_ref=request.trigger_ref,
+                    registry=self.strategies,
+                    calendar=self.calendar,
                     snapshot_ids=[snapshot],
-                    evaluation_event=f"{request.trigger.value}:{request.trigger_ref}",
                 )
-            except (ProposalValidationError, ValueError) as exc:
-                raise _Failure(ErrorStage.VALIDATION, exc, snapshot) from exc
-            status = EvaluationStatus.PROPOSED if specs else EvaluationStatus.NO_PROPOSAL
-            reason = None if specs else (outcome.reason or "; ".join(notes) or None)
+            except EvaluationStageError as exc:
+                raise _Failure(exc.stage, exc.error, snapshot) from exc.error
             return self._finalize(
                 claim,
-                status,
-                specs,
+                decision.status,
+                decision.specs,
                 snapshot,
-                [],
-                [*outcome.notes, *notes],
-                state=SignalState.SIGNAL if specs else SignalState.NO_SIGNAL,
-                reason=reason,
-                checks=checks,
+                decision.skip_reasons,
+                decision.notes,
+                state=decision.state,
+                reason=decision.reason,
+                checks=decision.checks,
                 eligibility=asset.eligibility,
             )
         except _Failure as failure:
@@ -529,14 +605,7 @@ class StrategyEngine:
     @staticmethod
     def _ineligible(strategy: Strategy, params: StrategyParameters, asset: AssetView) -> str | None:
         """Why the asset cannot be evaluated at all, or None (Phase 4B)."""
-        if asset.asset_class not in strategy.supported_asset_classes:
-            return f"{asset.asset_class.value} is not supported by {strategy.strategy_id}"
-        if asset.eligibility is None:
-            return None
-        blocked = [asset.eligibility.direction_reason(d) for d in params.directions]
-        if all(reason is not None for reason in blocked):
-            return "; ".join(dict.fromkeys(r for r in blocked if r is not None))
-        return None
+        return ineligibility(strategy, params, asset)
 
     def _finalize(
         self,
@@ -852,9 +921,13 @@ def worker_identity() -> str:
 
 __all__ = [
     "Claim",
+    "Decision",
     "EvaluationRequest",
     "EvaluationResult",
+    "EvaluationStageError",
     "MarketUpdate",
     "StrategyEngine",
+    "decide",
+    "ineligibility",
     "worker_identity",
 ]

@@ -1053,6 +1053,63 @@ data was insufficient; NO_FILL codes (`LIMIT_NOT_THROUGH`, `WAITING_FOR_QUOTE`,
 order did not execute. A position with `monitor_status = STALE` has no fresh price: its
 protection waits for one (no exit at a stale or invented price).
 
+## Backtesting (Phase 8A)
+
+Prerequisites: the database at head (migration 0018), the strategy catalog synced
+(`python -m app.strategies.cli sync`), RAW **and** SPLIT daily bars for the symbols (the
+default point-in-time split adjustment needs both), and an instrument specification (lot size)
+per symbol. Lot sizes are never guessed: register one with
+`python -m app.accounting.cli instrument-spec --symbol S --increment 1` or `--from-reference`.
+Decisions D-173 to D-184; design in [`architecture/backtesting.md`](architecture/backtesting.md).
+**Backtests are simulations over stored historical data**: nothing is ordered, filled or
+posted to the paper account.
+
+**Run from the dashboard:** `/backtesting`. Choose dates, capital, strategies, timeframes,
+directions, universe, entry and stop order types, benchmark and seed, then submit with the
+operator token if the server sets one. The run executes on the API process's backtest
+thread; its page shows progress, then the results. Select two or more completed runs to
+compare them. **Reproduce** on a run's page re-executes it from its stored configuration and
+reports whether the results are identical.
+
+**Run from the CLI** (the request is the API body as JSON):
+
+```bash
+uv run python -m app.backtesting.cli run --config request.json
+```
+
+```bash
+uv run python -m app.backtesting.cli show RUN_ID
+```
+
+```bash
+uv run python -m app.backtesting.cli reproduce RUN_ID
+```
+
+`list` shows recent runs; `fail-stale` fails runs whose process ended mid-replay (the API
+does this at start-up and re-queues runs that never started).
+
+**Request fields** (all optional except name, dates, universe and strategies): `risk.hard_limits`
+and `risk.preferences` override the stored 6B configuration for this run only (recorded, and
+the run's risk source says `+BACKTEST_OVERRIDES`); `execution.equity_overrides` overrides 7B
+cost and participation assumptions (a new content-addressed execution model);
+`data.data_known_at` fixes the dataset's knowledge time; `data.news_delay_minutes`,
+`data.settle_seconds` and `data.feature_adjustment` (`POINT_IN_TIME_SPLIT` | `RAW`) set the
+availability policies; `breaker_reset_policy` is `NEXT_SESSION_IF_CLEAR` or `NEVER`.
+
+**When a run trades little:** look at the run's rejection reasons. `SECTOR_EXPOSURE` and
+`CORRELATED_EXPOSURE` bind when assets have no sector classification
+(`risk_asset_classifications`) or correlation measurements for past dates: the 6B policies
+pool them (as they would live). `LOT_SIZE_MISSING` means no instrument specification;
+`MARGIN_DATA_MISSING` means a short without a provider margin requirement;
+`ENTRY_EXPIRED` means the limit entry was never traded through before the proposal expired.
+Strategy evaluations by state show missing data (`INSUFFICIENT_DATA`, `UNAVAILABLE_DATA`:
+for example news without retrieval coverage).
+
+**A run fails** (and stores no partial results) when a posting is refused or the books do not
+reconcile, which would be a bug, or when the configuration cannot be replayed (a stored
+strategy version whose logic differs from the code). The error is on the run's page and in
+`backtest_run_errors`.
+
 ## Backup and restore
 
 ```bash

@@ -12,6 +12,8 @@ from app.main import create_app
 from app.monitoring.health import ComponentHealth, HealthStatus
 from app.tests.conftest import FIXED_NOW
 
+BACKTEST_REPRODUCE = "/api/v1/backtests/{run_id}/reproduce"
+
 
 def _ok(name: str):
     return lambda: ComponentHealth(name=name, status=HealthStatus.OK, latency_ms=1.0)
@@ -309,6 +311,27 @@ def test_openapi_exposes_no_order_endpoints(build_client):
         "/api/v1/paper-positions/{position_id}",
         "/api/v1/paper-execution/analytics",
         "/api/v1/paper-execution/models",
+        # Phase 8A backtesting: replays of stored history. Two operator-gated writes (create
+        # a run, reproduce a completed one); everything else is GET.
+        "/api/v1/backtests",
+        "/api/v1/backtests/options",
+        "/api/v1/backtests/compare",
+        "/api/v1/backtests/{run_id}",
+        BACKTEST_REPRODUCE,
+        "/api/v1/backtests/{run_id}/progress",
+        "/api/v1/backtests/{run_id}/equity",
+        "/api/v1/backtests/{run_id}/metrics",
+        "/api/v1/backtests/{run_id}/benchmarks",
+        "/api/v1/backtests/{run_id}/trades",
+        "/api/v1/backtests/{run_id}/trades/{seq}",
+        "/api/v1/backtests/{run_id}/orders",
+        "/api/v1/backtests/{run_id}/fills",
+        "/api/v1/backtests/{run_id}/proposals",
+        "/api/v1/backtests/{run_id}/rejections",
+        "/api/v1/backtests/{run_id}/events",
+        "/api/v1/backtests/{run_id}/errors",
+        "/api/v1/backtests/{run_id}/evaluations",
+        "/api/v1/backtests/{run_id}/journal",
     }
     # Market trades (exchange prints) are read-only market data, not trading: the one
     # allowed path containing "trade" must expose GET only.
@@ -332,7 +355,12 @@ def test_openapi_exposes_no_order_endpoints(build_client):
         )
     }
     assert len(paper_reads) == 13
-    allowed_reads = market_data_reads | accounting_reads | paper_reads
+    # Phase 8A: a backtest's simulated orders, fills and trades are records of a replay of
+    # stored history, not orders of the paper account: GET only (D-181).
+    backtest_reads = {
+        p for p in paths if p.startswith("/api/v1/backtests/") and p != BACKTEST_REPRODUCE
+    }
+    allowed_reads = market_data_reads | accounting_reads | paper_reads | backtest_reads
     forbidden = ("order", "trade", "broker", "position", "account", "execution")
     assert not [
         p for p in paths if p not in allowed_reads and any(word in p.lower() for word in forbidden)
@@ -360,7 +388,12 @@ def test_openapi_exposes_no_order_endpoints(build_client):
         "/api/v1/strategies/{strategy_id}/status",
         "/api/v1/ml/models/{model_id}/status",
         "/api/v1/risk/kill-switch/engage",
+        # Phase 8A: create a backtest run, re-execute a completed one (replays only).
+        "/api/v1/backtests",
+        BACKTEST_REPRODUCE,
     }
+    assert set(paths["/api/v1/backtests"]) == {"get", "post"}
+    assert set(paths[BACKTEST_REPRODUCE]) == {"post"}
     # Phase 6B: the only risk write can only halt; it cannot release, reset or loosen.
     assert set(paths["/api/v1/risk/kill-switch/engage"]) == {"post"}
     assert not [p for p in paths if p.startswith("/api/v1/risk/") and "release" in p]

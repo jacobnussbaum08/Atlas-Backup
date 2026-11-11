@@ -55,6 +55,10 @@ class StoredContext:
     # Regular closes of the newest sessions completed and settled by the cutoff, oldest
     # first (the window of ``period_news_count``); empty when unknown.
     session_closes: tuple[datetime, ...] = ()
+    # Phase 8A: news must have been published at least this long before the cutoff. A
+    # backfilled article's original availability is unknown; the backtester applies a
+    # conservative delay after its provider publication time. Zero keeps 4A behaviour.
+    news_delay: timedelta = timedelta(0)
 
 
 def compute_stored_features(
@@ -212,11 +216,11 @@ def _news(
     if feature.definition.name == "period_news_count":
         sessions = int(p["sessions"])
         closes = ctx.session_closes
-        if len(closes) < sessions + 1 or closes[-1] > ctx.data_cutoff:
+        if len(closes) < sessions + 1 or closes[-1] > ctx.data_cutoff - ctx.news_delay:
             return _value(feature, FeatureStatus.UNAVAILABLE, "no completed sessions by the cutoff")
         start, end = closes[-1 - sessions], closes[-1]
     else:
-        end = ctx.data_cutoff
+        end = ctx.data_cutoff - ctx.news_delay
         start = end - timedelta(hours=int(p["lookback_hours"]))
     intervals = coverage_intervals(session, symbol, known_at=ctx.known_at)
     coverage_inputs: dict[str, Any] = {

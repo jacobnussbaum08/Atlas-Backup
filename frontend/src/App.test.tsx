@@ -91,13 +91,9 @@ describe("dashboard shell", () => {
     expect(screen.getByText("No real order execution · simulated paper orders only")).toBeInTheDocument();
   });
 
-  it("shows unbuilt sections explicitly as not built, without numbers", () => {
-    stubApi(PAGE_ROUTES);
-    renderAt("/backtesting");
-
-    expect(screen.getByRole("heading", { name: "Backtesting" })).toBeInTheDocument();
-    expect(screen.getByText("No data yet")).toBeInTheDocument();
-    expect(screen.getByRole("main").textContent).not.toMatch(/\$|\d+\.\d+%/);
+  it("lists no unbuilt section once Phase 8A ships the backtesting page", () => {
+    expect(UPCOMING_SECTIONS).toHaveLength(0);
+    expect(NAV_SECTIONS.map((s) => s.path)).toContain("/backtesting");
   });
 
   it("shows provider, feed and stream health from the backend in the header", async () => {

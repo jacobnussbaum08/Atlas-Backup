@@ -300,6 +300,11 @@ def test_no_order_or_trading_routes_exist(client):
     }
     for path in paper:
         assert set(schema[path]) == {"get"}
+    # Phase 8A: simulated orders and trades of a backtest replay, read-only (D-181).
+    backtests = {p for p in paths if p.startswith("/api/v1/backtests/")}
+    for path in backtests - {"/api/v1/backtests/{run_id}/reproduce"}:
+        assert set(schema[path]) == {"get"}
+    paper |= backtests
     for path in paths - paper:
         assert not any(word in path for word in ("order", "trade-execution", "position", "broker"))
 
