@@ -27,7 +27,9 @@ COPY backend ./backend
 RUN uv sync --frozen --no-dev
 
 # ML model artifacts (Phase 5A, ML_ARTIFACT_DIR); compose mounts a volume here.
-RUN useradd --system --uid 10001 --home-dir /srv/atlas atlas \n    && mkdir -p /srv/atlas/data/ml/artifacts \n    && chown -R atlas /srv/atlas/data
+RUN useradd --system --uid 10001 --home-dir /srv/atlas atlas \
+    && mkdir -p /srv/atlas/data/ml/artifacts \
+    && chown -R atlas /srv/atlas/data
 USER atlas
 
 EXPOSE 8000
