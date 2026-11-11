@@ -314,6 +314,29 @@ CLI (init, post, checkpoint, reconcile)          API (GET only)        Dashboard
 ```
 
 
+## Simulated execution and position management (Phase 7B)
+
+`app/paper_broker/{execution_model,market,fill_model}.py` (versioned assumptions, the
+observable stored data, pure fill decisions), `app/execution/{simulation,positions,
+protection,monitor,position_queries}.py`, the worker `app.workers.position_monitor`,
+migration 0017, GET routes under `/api/v1/paper-positions` and `/api/v1/paper-execution`,
+and the Open Positions, Closed Positions and Execution Analytics pages. Working orders are
+filled from stored quotes, trades and bars; each fill posts to 6A as SIMULATED_EXECUTION,
+consumes its 6C reservation and updates its position in one transaction; the monitor exits
+positions on their protective levels. Design: [`execution.md`](execution.md); decisions
+D-164 to D-172.
+
+## Paper execution and order management (Phase 7A)
+
+`app/execution` (state machine, validation, service, portfolio contract, reconciliation,
+read models, CLI), `app/paper_broker` (the `PaperBroker` interface and the only, simulated,
+implementation), `app/events/outbox.py` (transactional outbox), the worker
+`app.workers.paper_execution`, migration 0016, GET routes under `/api/v1/paper-orders` and
+`/api/v1/paper-broker/status`, and the Paper Orders page. Orders execute approved 6C
+reservations; fills post through 6A and consume the reservation in the same transaction.
+No brokerage connection exists. Design: [`execution.md`](execution.md); decisions D-156
+to D-163.
+
 ## Atomic risk reservations (Phase 6C)
 
 `app/risk/reservations` (service, exposure, reconciliation, read models), migration 0015,

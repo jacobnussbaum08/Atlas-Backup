@@ -15,6 +15,9 @@ import { MLPage } from "./pages/MLPage";
 import { NewsArticlePage } from "./pages/NewsArticlePage";
 import { NewsPage } from "./pages/NewsPage";
 import { OverviewPage } from "./pages/OverviewPage";
+import { ExecutionAnalyticsPage } from "./pages/ExecutionAnalyticsPage";
+import { PaperOrdersPage } from "./pages/PaperOrdersPage";
+import { ClosedPositionsPage, OpenPositionsPage } from "./pages/PaperPositionsPage";
 import { PortfolioPage } from "./pages/PortfolioPage";
 import { RiskCenterPage } from "./pages/RiskCenterPage";
 import { SectionPlaceholderPage } from "./pages/SectionPlaceholderPage";
@@ -53,6 +56,10 @@ export function App({ pollIntervalMs }: { pollIntervalMs?: number }) {
         <Route path="/ai" element={<AIActivityPage />} />
         <Route path="/portfolio" element={<PortfolioPage />} />
         <Route path="/risk" element={<RiskCenterPage />} />
+        <Route path="/paper-orders" element={<PaperOrdersPage />} />
+        <Route path="/positions" element={<OpenPositionsPage />} />
+        <Route path="/positions/closed" element={<ClosedPositionsPage />} />
+        <Route path="/execution-analytics" element={<ExecutionAnalyticsPage />} />
         <Route path="/data-health" element={<DataHealthPage />} />
         <Route path="/ingestion" element={<IngestionPage />} />
         <Route path="/system-health" element={<SystemHealthPage />} />

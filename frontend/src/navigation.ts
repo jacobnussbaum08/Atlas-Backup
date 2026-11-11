@@ -2,11 +2,15 @@ import {
   Activity,
   BrainCircuit,
   CandlestickChart,
+  ClipboardList,
+  Gauge,
   Cpu,
   DatabaseZap,
   FlaskConical,
   HeartPulse,
+  History,
   LayoutDashboard,
+  Layers,
   Newspaper,
   Radar,
   type LucideIcon,
@@ -28,7 +32,7 @@ export interface NavSection {
   summary: string;
 }
 
-/** Pages backed by real backend data (Phase 1, the Phase 2 market-data engine, Phases 3A-3C, 4A-4B, 5A-5B, 6A). */
+/** Pages backed by real backend data (Phase 1, the Phase 2 market-data engine, Phases 3A-3C, 4A-4B, 5A-5B, 6A-6C, 7A-7B). */
 export const NAV_SECTIONS: readonly NavSection[] = [
   {
     path: "/",
@@ -109,6 +113,38 @@ export const NAV_SECTIONS: readonly NavSection[] = [
     specSection: "22.8",
     phase: 6,
     summary: "Hard limits, live exposure, daily and weekly loss, drawdown, circuit breakers, the kill switch and every risk decision with its reasons.",
+  },
+  {
+    path: "/paper-orders",
+    title: "Paper Orders",
+    icon: ClipboardList,
+    specSection: "15",
+    phase: 7,
+    summary: "Simulated paper orders and the isolated paper broker: order history, state changes, simulated fills and their costs, reservation linkage. No brokerage, no trading controls.",
+  },
+  {
+    path: "/positions",
+    title: "Open Positions",
+    icon: Layers,
+    specSection: "13, 15",
+    phase: 7,
+    summary: "Simulated open positions: entry, current mark, unrealized P/L, stop, target and holding duration, managed by the position monitor.",
+  },
+  {
+    path: "/positions/closed",
+    title: "Closed Positions",
+    icon: History,
+    specSection: "13, 15",
+    phase: 7,
+    summary: "Simulated closed positions: entry and exit, realized and net P/L after costs, exit reason and strategy origin.",
+  },
+  {
+    path: "/execution-analytics",
+    title: "Execution Analytics",
+    icon: Gauge,
+    specSection: "15.3",
+    phase: 7,
+    summary: "Simulated slippage, fill rates, partial fills, estimated costs and the versioned execution-model assumptions.",
   },
   {
     path: "/data-health",

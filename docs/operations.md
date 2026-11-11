@@ -955,6 +955,104 @@ reservation tables are append-only (the projection changes only through its even
 the finding stays in the history. Consumption is not available from the CLI: it requires
 a ledger fill (Phase 7).
 
+## Paper orders (Phase 7A)
+
+Prerequisites: the database at head (migration 0016). Decisions D-156 to D-163; design in
+[`architecture/execution.md`](architecture/execution.md). **Every order is simulated** and
+handled by the isolated paper broker; nothing reaches a brokerage. Phase 7A has no fill
+model: fills are controlled test events on CONTROLLED_TEST accounts only.
+
+**Run the worker** (paper broker start + recovery, then outbox delivery, expiry and a
+heartbeat every second; SIGTERM stops it cleanly; several may run at once):
+
+```bash
+uv run python -m app.workers.paper_execution
+```
+
+Without the worker, run the jobs by hand: `dispatch` (deliver outbox events), `expire`
+(expire due orders), `recover` (after a crash: broker start, catch-up of lost deliveries,
+resolution of dead submissions and cancellations, expiry):
+
+```bash
+uv run python -m app.execution.cli recover
+```
+
+**Inspect:** `orders list [--group open|closed|filled|cancelled|rejected|expired|failed]`,
+`orders show --id ID`, `orders events`, `orders requests` (refused submissions),
+`broker status`; `reconcile [--account NAME]` (exit 1 on an unexplained finding, which also
+writes a CRITICAL `system_health_events` row).
+
+**Operator actions** (`--actor operator:<name>`; idempotency keys of 8 to 160 characters):
+
+```bash
+uv run python -m app.execution.cli submit --reservation-id ID --type LIMIT --quantity 92 --limit 99.60 --key operator:aapl:order-1 --actor operator:jacob
+```
+
+```bash
+uv run python -m app.execution.cli cancel --id ORDER_ID --key operator:cancel:1 --actor operator:jacob --reason "no longer wanted"
+```
+
+`exit --parent-id ID ...` places an EXIT order against an ENTRY order's filled position.
+`test-fill --id ID --quantity Q --price P --ref REF --actor operator:NAME` records a
+CONTROLLED TEST fill (refused on the primary account). `broker start|pause|stop` changes
+the simulator's run state.
+
+**When something is stuck:** an order CANCEL_PENDING with EXECUTION_SAFETY tripped means a
+cancellation could not be confirmed; its reservation is held (uncertain). Fix the cause
+(e.g. `broker start`), run `recover`, then reset the breaker with the risk CLI. Order
+history is append-only: nothing is edited.
+
+## Simulated execution and positions (Phase 7B)
+
+Prerequisites: the database at head (migration 0017). Decisions D-164 to D-172; design in
+[`architecture/execution.md`](architecture/execution.md). **Fills are simulated** by the
+isolated paper broker from stored market data under the recorded execution model; nothing
+reaches a brokerage.
+
+**Workers** (both safe to run several times; SIGTERM stops them cleanly):
+
+```bash
+uv run python -m app.workers.paper_execution
+```
+
+```bash
+uv run python -m app.workers.position_monitor
+```
+
+The first delivers the outbox and simulates working orders (and expires them); the second
+marks positions, enforces their protection, keeps take-profits resting, accrues short borrow
+and takes 6A valuation checkpoints. Both are in `docker-compose.yml`. Without them, run
+single passes: `simulate`, `monitor`, `dispatch`.
+
+**Inspect:** `positions list [--status open|closed]`, `positions show --id ID`,
+`positions summary`, `analytics` (simulated slippage, fill rates, costs, assumptions),
+`models` (execution-model versions); `orders show --id ID` now includes the simulator's
+evaluations and fill breakdowns.
+
+**Operator actions** (`--actor operator:<name>`):
+
+```bash
+uv run python -m app.execution.cli close --position-id ID --key operator:close:1 --actor operator:jacob --reason "flatten"
+```
+
+```bash
+uv run python -m app.execution.cli protect --position-id ID --stop 97.00 --actor operator:jacob --reason "lock in gains"
+```
+
+`protect` also takes `--trail-amount A` or `--trail-percent P`. A stop looser than the
+current one is refused (the reservation was sized with the approved stop).
+
+**Changing assumptions:** the execution model is code (`app/paper_broker/execution_model.py`);
+give a changed model a new `version`. Orders already working keep the version they started
+with; new orders use the new one. Every version stays in `execution_models`.
+
+**When nothing fills:** look at `orders show --id ID` -> `execution.attempts`. DEFERRED codes
+(`MARKET_CLOSED`, `STALE_QUOTE`, `NO_QUOTE`, `LIQUIDITY_UNKNOWN`, `VOLUME_UNKNOWN`) mean the
+data was insufficient; NO_FILL codes (`LIMIT_NOT_THROUGH`, `WAITING_FOR_QUOTE`,
+`PROTECTION_EXCEEDED`, `STOP_NOT_TRIGGERED`, `RISK_HALTED`) mean it was sufficient and the
+order did not execute. A position with `monitor_status = STALE` has no fresh price: its
+protection waits for one (no exit at a stale or invented price).
+
 ## Backup and restore
 
 ```bash
