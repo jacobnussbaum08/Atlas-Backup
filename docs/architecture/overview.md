@@ -25,7 +25,7 @@ one deployable backend, with modules separated by package boundaries rather than
 | `portfolio`, `accounting`, `risk` | Portfolio state, double-entry ledger, deterministic risk | 6 |
 | `execution`, `paper_broker` | Order state machine, simulated broker | 7 |
 | `backtesting` | Event-driven historical replay through the shared strategy, risk, execution and accounting cores; point-in-time data; metrics, benchmarks, reproducibility | 8A ✅ |
-| `learning` | Champion/challenger, walk-forward validation | 8B |
+| `learning` | Walk-forward validation, robustness and overfitting controls, parameter experiments, ML candidate comparison, champion/challenger governance, degradation monitoring ([validation.md](validation.md)) | 8B ✅ |
 | `notifications` | Dashboard notifications, later Telegram/email | 9+ |
 
 Future modules exist only as packages with a docstring that states their boundary. They contain

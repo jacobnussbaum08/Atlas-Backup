@@ -1,0 +1,27 @@
+{
+  "name": "dev breakout walk-forward (IEX daily, Jun-Oct 2026)",
+  "kind": "WALK_FORWARD",
+  "strategies": [
+    {
+      "strategy_id": "breakout"
+    }
+  ],
+  "start_date": "2026-06-29",
+  "end_date": "2026-10-30",
+  "universe": {
+    "mode": "EXPLICIT",
+    "symbols": ["REDACTED_FOR_GITHUB"]
+  },
+  "timeframes": [
+    "1Day"
+  ],
+  "benchmark_symbol": "SPY",
+  "windows": {
+    "mode": "ROLLING",
+    "train_sessions": 25,
+    "test_sessions": 10
+  },
+  "search": "RANDOM",
+  "max_trials": 10,
+  "seed": 0
+}

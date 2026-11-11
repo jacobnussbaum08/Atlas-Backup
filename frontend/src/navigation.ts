@@ -17,6 +17,7 @@ import {
   ServerCog,
   Settings,
   ShieldAlert,
+  ShieldCheck,
   Telescope,
   Wallet,
 } from "lucide-react";
@@ -32,7 +33,7 @@ export interface NavSection {
   summary: string;
 }
 
-/** Pages backed by real backend data (Phase 1, the Phase 2 market-data engine, Phases 3A-3C, 4A-4B, 5A-5B, 6A-6C, 7A-7B, 8A). */
+/** Pages backed by real backend data (Phase 1, the Phase 2 market-data engine, Phases 3A-3C, 4A-4B, 5A-5B, 6A-6C, 7A-7B, 8A-8B). */
 export const NAV_SECTIONS: readonly NavSection[] = [
   {
     path: "/",
@@ -153,6 +154,14 @@ export const NAV_SECTIONS: readonly NavSection[] = [
     specSection: "22.7",
     phase: 8,
     summary: "Configure, run, inspect and compare reproducible event-driven backtests of stored history.",
+  },
+  {
+    path: "/research",
+    title: "Research & Validation",
+    icon: ShieldCheck,
+    specSection: "18.2, 19",
+    phase: 8,
+    summary: "Walk-forward validation, robustness and overfitting controls, champion/challenger governance, ML model comparison and degradation monitoring.",
   },
   {
     path: "/data-health",

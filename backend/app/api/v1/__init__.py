@@ -19,6 +19,7 @@ from app.api.v1 import (
     portfolio,
     risk,
     strategies,
+    validation,
 )
 
 router = APIRouter(prefix="/api/v1")
@@ -42,5 +43,6 @@ router.include_router(paper_orders.broker_router)
 router.include_router(paper_orders.positions_router)
 router.include_router(paper_orders.execution_router)
 router.include_router(backtests.router)
+router.include_router(validation.router)
 
 __all__ = ["router"]

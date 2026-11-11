@@ -1110,6 +1110,85 @@ reconcile, which would be a bug, or when the configuration cannot be replayed (a
 strategy version whose logic differs from the code). The error is on the run's page and in
 `backtest_run_errors`.
 
+## Validation and governance (Phase 8B)
+
+Prerequisites: everything backtesting needs (Phase 8A above), and the database at migration
+0019. Design: [`architecture/validation.md`](architecture/validation.md); decisions D-185 to
+D-199. **Validation replays stored history**: nothing is ordered, filled or posted, and nothing
+is promoted automatically.
+
+**Run a walk-forward validation** from the dashboard (`/research`, *Run a walk-forward
+validation*) or the CLI. The configuration is the API body as JSON; examples for the six
+strategies on the development data are in `config/validation/`.
+
+```bash
+uv run python -m app.learning.cli run --config ../config/validation/dev-momentum.json
+```
+
+```bash
+uv run python -m app.learning.cli show RUN_ID
+```
+
+The holdout (the final 20% of sessions by default) is reserved when the run is created and is
+never read by the run. Once you have finished choosing, and only then, read it once:
+
+```bash
+uv run python -m app.learning.cli holdout RUN_ID
+```
+
+Every holdout read is numbered. A second read of an overlapping holdout for the same strategy is
+labelled as no longer an untouched test, and governance accepts only a first read.
+
+`reproduce RUN_ID` re-executes a run from its stored configuration and records whether the
+result hash is identical. `list` shows recent runs. The API resumes queued runs and fails
+interrupted ones at start-up.
+
+**Configuration fields** (beyond the backtest fields): `kind` (`WALK_FORWARD` with one strategy
+and a search; `EVALUATION` with up to six strategies, fixed parameters, `search: NONE`);
+`strategies[].space` (dimensions as `values` or `low`/`high`/`step`, plus `constraints`; default:
+the family's space in `app/learning/search.py`); `search` (`GRID` | `RANDOM` | `BAYESIAN`);
+`max_trials` (at most 60, including the stored parameters as trial 0); `windows` (`mode`
+ROLLING | EXPANDING, `train_sessions`, `validation_sessions`, `test_sessions`, `step_sessions`,
+`embargo_sessions` (at least the longest label), `holdout_sessions`, `refit_every`, `max_folds`);
+`objective` (`NET_SHARPE` | `NET_EXPECTANCY` | `NET_RETURN`); `min_selection_trades`; `top_k`;
+`robustness` (PBO/CPCV groups, bootstrap and Monte Carlo resamples, cost and slippage
+multipliers, sensitivity); `thresholds` (the evidence gates); `seed`.
+
+**When a run is refused at creation:** "one fold needs N sessions" means the date range is too
+short for the windows and the embargo. Shorten the windows or extend the data. A long holding
+horizon (trend following: 20 sessions) needs a long embargo.
+
+**Champion/challenger** (API under `/api/v1/validation/candidates`, or the CLI):
+
+```bash
+uv run python -m app.learning.cli candidate-strategy momentum --run RUN_ID --reason "..."
+```
+
+```bash
+uv run python -m app.learning.cli transition CANDIDATE_ID start_validation --reason "..."
+```
+
+Then `shadow --run RUN_ID`. This needs a CANDIDATE_FOR_REVIEW run with the candidate's exact
+parameters and a first holdout read. Next, `POST /api/v1/validation/candidates/{id}/shadow-evaluation`
+after enough forward sessions, then `approve --replaces CHAMPION_ID`. `reject`, `retire` and
+`rollback` complete the lifecycle. Approval and rollback create a new strategy version; retiring
+a strategy champion without a replacement disables the strategy. To record today's live version
+as the governed champion without changing it, use `POST /api/v1/validation/champions/adopt`.
+
+**Model comparison:** `uv run python -m app.learning.cli models --store` compares the stored 5A
+training runs and records the comparison that model challengers need.
+
+**Degradation monitoring:** `uv run python -m app.learning.cli monitor` (or
+`POST /api/v1/validation/monitoring/run`) runs one pass. It only warns unless an operator
+approves a rule:
+
+```bash
+curl -X POST -H "X-Atlas-Operator-Token: $TOKEN" -H "Content-Type: application/json" -d '{"subject_kind":"STRATEGY","subject_key":"momentum","action":"SUSPEND","reason":"..."}' http://localhost:8000/api/v1/validation/monitoring/rules
+```
+
+Under a SUSPEND rule, a performance BREACH disables the strategy. Re-enabling it is an operator
+action (`python -m app.strategies.cli enable`). Nothing in monitoring changes risk limits.
+
 ## Backup and restore
 
 ```bash

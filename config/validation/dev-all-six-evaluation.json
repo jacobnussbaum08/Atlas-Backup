@@ -1,0 +1,41 @@
+{
+  "name": "dev all six strategies, stored parameters (EVALUATION)",
+  "kind": "EVALUATION",
+  "search": "NONE",
+  "strategies": [
+    {
+      "strategy_id": "breakout"
+    },
+    {
+      "strategy_id": "event_driven"
+    },
+    {
+      "strategy_id": "mean_reversion"
+    },
+    {
+      "strategy_id": "momentum"
+    },
+    {
+      "strategy_id": "trend_following"
+    },
+    {
+      "strategy_id": "volatility"
+    }
+  ],
+  "start_date": "2026-06-29",
+  "end_date": "2026-10-30",
+  "universe": {
+    "mode": "EXPLICIT",
+    "symbols": ["REDACTED_FOR_GITHUB"]
+  },
+  "timeframes": [
+    "1Day"
+  ],
+  "benchmark_symbol": "SPY",
+  "windows": {
+    "mode": "ROLLING",
+    "train_sessions": 10,
+    "test_sessions": 10
+  },
+  "seed": 0
+}

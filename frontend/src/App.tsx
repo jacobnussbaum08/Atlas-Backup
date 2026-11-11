@@ -7,6 +7,8 @@ import { UPCOMING_SECTIONS } from "./navigation";
 import { AIActivityPage } from "./pages/AIActivityPage";
 import { BacktestDetailPage } from "./pages/BacktestDetailPage";
 import { BacktestingPage } from "./pages/BacktestingPage";
+import { ValidationPage } from "./pages/ValidationPage";
+import { ValidationRunPage } from "./pages/ValidationRunPage";
 import { DataHealthPage } from "./pages/DataHealthPage";
 import { DiscoveryAssetPage } from "./pages/DiscoveryAssetPage";
 import { DiscoveryPage } from "./pages/DiscoveryPage";
@@ -64,6 +66,8 @@ export function App({ pollIntervalMs }: { pollIntervalMs?: number }) {
         <Route path="/execution-analytics" element={<ExecutionAnalyticsPage />} />
         <Route path="/backtesting" element={<BacktestingPage />} />
         <Route path="/backtesting/:runId" element={<BacktestDetailPage />} />
+        <Route path="/research" element={<ValidationPage />} />
+        <Route path="/research/runs/:runId" element={<ValidationRunPage />} />
         <Route path="/data-health" element={<DataHealthPage />} />
         <Route path="/ingestion" element={<IngestionPage />} />
         <Route path="/system-health" element={<SystemHealthPage />} />

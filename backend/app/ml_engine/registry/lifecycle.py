@@ -181,6 +181,68 @@ def transition(
     return TransitionResult(event, previous)
 
 
+def was_approved(session: Session, model_version_id: uuid.UUID) -> bool:
+    e = MLModelStatusEventRecord
+    return (
+        session.scalar(
+            select(e.id)
+            .where(e.model_version_id == model_version_id, e.to_status == S.APPROVED)
+            .limit(1)
+        )
+        is not None
+    )
+
+
+def reinstate(
+    session: Session, model_version_id: uuid.UUID, *, reason: str, actor: str
+) -> TransitionResult:
+    """Rollback (Phase 8B, D-190): RETIRED -> APPROVED for a version that was APPROVED
+    before, still has PASSED evidence, and only when no other version of its name is
+    APPROVED. It is the only way out of RETIRED; :data:`TRANSITIONS` is unchanged, so an
+    ordinary transition can never reach it. Explicit, audited, serialized per name."""
+    if not reason.strip():
+        raise LifecycleError("a reason is required")
+    model = session.get(MLModelVersionRecord, model_version_id)
+    if model is None:
+        raise ModelNotFoundError(f"model version {model_version_id} does not exist")
+    _lock(session, model.model_name)
+    latest = current_event(session, model.id)
+    if latest is None or latest.to_status is not S.RETIRED:
+        raise LifecycleError("only a RETIRED version can be reinstated")
+    if not was_approved(session, model.id):
+        raise LifecycleError("only a version that was APPROVED before can be reinstated")
+    if model.validation_status is not ValidationStatus.PASSED:
+        raise LifecycleError("the version's out-of-sample evidence is not PASSED")
+    others = [i for i in approved_versions(session, model.model_name) if i != model.id]
+    if others:
+        raise LifecycleError(
+            f"{model.model_name} already has an APPROVED version ({others[0]}); retire it first"
+        )
+    event = MLModelStatusEventRecord(
+        model_version_id=model.id,
+        model_name=model.model_name,
+        previous_event_id=latest.id,
+        from_status=S.RETIRED,
+        to_status=S.APPROVED,
+        reason=f"rollback: {reason.strip()}",
+        actor=actor,
+    )
+    session.add(event)
+    session.flush()
+    AuditLogRepository(session).append(
+        actor_type=ActorType.USER,
+        actor_id=actor,
+        action="ml_model.reinstated",
+        entity_type="ml_model_version",
+        entity_id=str(model.id),
+        reason=reason.strip(),
+        previous_state={"status": S.RETIRED.value},
+        new_state={"status": S.APPROVED.value},
+        details={"model_name": model.model_name, "version": model.version},
+    )
+    return TransitionResult(event, S.RETIRED)
+
+
 __all__ = [
     "NEEDS_EVIDENCE",
     "TRANSITIONS",
@@ -191,6 +253,8 @@ __all__ = [
     "current_event",
     "current_status",
     "register_initial",
+    "reinstate",
     "statuses",
     "transition",
+    "was_approved",
 ]

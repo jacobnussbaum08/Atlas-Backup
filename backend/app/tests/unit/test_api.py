@@ -13,6 +13,37 @@ from app.monitoring.health import ComponentHealth, HealthStatus
 from app.tests.conftest import FIXED_NOW
 
 BACKTEST_REPRODUCE = "/api/v1/backtests/{run_id}/reproduce"
+VALIDATION_READS = (
+    "/api/v1/validation/overview",
+    "/api/v1/validation/options",
+    "/api/v1/validation/compare",
+    "/api/v1/validation/runs/{run_id}",
+    "/api/v1/validation/runs/{run_id}/folds",
+    "/api/v1/validation/runs/{run_id}/trials",
+    "/api/v1/validation/runs/{run_id}/robustness",
+    "/api/v1/validation/runs/{run_id}/sensitivity",
+    "/api/v1/validation/runs/{run_id}/segments",
+    "/api/v1/validation/models/compare",
+    "/api/v1/validation/comparisons",
+    "/api/v1/validation/champions",
+    "/api/v1/validation/candidates/{candidate_id}",
+    "/api/v1/validation/promotions",
+    "/api/v1/validation/monitoring",
+    "/api/v1/validation/alerts",
+)
+# Paths with both a list (GET) and a create (POST).
+VALIDATION_LISTS = ("/api/v1/validation/runs", "/api/v1/validation/candidates")
+VALIDATION_WRITES = (
+    *VALIDATION_LISTS,
+    "/api/v1/validation/runs/{run_id}/reproduce",
+    "/api/v1/validation/runs/{run_id}/holdout",
+    "/api/v1/validation/models/comparisons",
+    "/api/v1/validation/champions/adopt",
+    "/api/v1/validation/candidates/{candidate_id}/transition",
+    "/api/v1/validation/candidates/{candidate_id}/shadow-evaluation",
+    "/api/v1/validation/monitoring/run",
+    "/api/v1/validation/monitoring/rules",
+)
 
 
 def _ok(name: str):
@@ -332,6 +363,11 @@ def test_openapi_exposes_no_order_endpoints(build_client):
         "/api/v1/backtests/{run_id}/errors",
         "/api/v1/backtests/{run_id}/evaluations",
         "/api/v1/backtests/{run_id}/journal",
+        # Phase 8B validation laboratory: replays of stored history and governance records.
+        # Operator-gated writes create, reproduce or holdout-evaluate a run, store a model
+        # comparison, record lifecycle decisions and run the monitor; nothing promotes itself.
+        *VALIDATION_READS,
+        *VALIDATION_WRITES,
     }
     # Market trades (exchange prints) are read-only market data, not trading: the one
     # allowed path containing "trade" must expose GET only.
@@ -391,8 +427,13 @@ def test_openapi_exposes_no_order_endpoints(build_client):
         # Phase 8A: create a backtest run, re-execute a completed one (replays only).
         "/api/v1/backtests",
         BACKTEST_REPRODUCE,
+        # Phase 8B: validation runs and explicit champion/challenger decisions (D-185..).
+        *VALIDATION_WRITES,
     }
     assert set(paths["/api/v1/backtests"]) == {"get", "post"}
+    for path in VALIDATION_WRITES:
+        expected = {"get", "post"} if path in VALIDATION_LISTS else {"post"}
+        assert set(paths[path]) == expected, path
     assert set(paths[BACKTEST_REPRODUCE]) == {"post"}
     # Phase 6B: the only risk write can only halt; it cannot release, reset or loosen.
     assert set(paths["/api/v1/risk/kill-switch/engage"]) == {"post"}

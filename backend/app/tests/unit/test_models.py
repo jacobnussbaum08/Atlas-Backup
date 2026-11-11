@@ -174,6 +174,21 @@ def test_expected_tables_exist():
         "backtest_run_errors",
         "backtest_journal_entries",
         "backtest_evaluation_counts",
+        # Phase 8B validation laboratory and governance.
+        "validation_experiments",
+        "validation_runs",
+        "validation_trials",
+        "validation_folds",
+        "validation_robustness_results",
+        "validation_segment_results",
+        "validation_holdout_evaluations",
+        "validation_comparisons",
+        "learning_candidates",
+        "learning_candidate_events",
+        "learning_approvals",
+        "learning_monitoring_rules",
+        "learning_drift_measurements",
+        "learning_degradation_alerts",
     }
 
 

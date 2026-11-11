@@ -2299,3 +2299,135 @@ versions validated by the knowledge time are recorded with the run, and the stat
 "none".
 **Why:** the risk engine already accepts strategy proposals directly (6B `from_strategy_proposal`).
 Model evaluation, champion/challenger and walk-forward validation are Phase 8B.
+
+## Phase 8B — Walk-forward validation, strategy optimization and model learning
+
+### D-185 Phase 8B builds on the Phase 8A branch; baseline verified there
+
+**Decision:** Phase 8B is implemented on `claude/atlas-event-driven-backtest-65bb24` (Phase 8A on
+top of 7A–7B and 6A–6C). `main` still ends at Phase 4B. The baseline suite on that branch, before
+any 8B change: 3,412 passed, 1 skipped (Redis), the Phase 8A report's count. mypy: 76 errors in 5
+pre-existing test files.
+**Why:** prompt step 1. The integrated history exists only on this branch.
+
+### D-186 One development replay per trial; selection reads its slices; tests and holdout are fresh replays
+
+**Decision:** each trial is replayed once over the development period, with data loaded only up
+to the development end. Fold selection uses slices of that replay: mark-to-market returns up to
+the window end, and trades purged at the boundaries. Out-of-sample test windows, stress levels
+and the holdout are fresh replays, each with data loaded only up to its own end. A prefix test
+confirms that a replay through T is identical up to T to a replay through a later date.
+**Why:** walk-forward selection without one replay per trial and fold (the replay costs about
+0.3 s per session). Loading data only to each replay's end makes look-ahead physically
+impossible, not just prevented by the engine's cutoffs. A spy test checks that no load reaches
+the holdout.
+
+### D-187 Embargo = longest label of every candidate; shorter embargoes are refused
+
+**Decision:** embargo sessions ≥ max over the stored parameters and every feasible point of
+(holding horizon + signal TTL) × sessions per period. The embargo applies at train → validation,
+validation → test and development → holdout. Trade statistics of a window count only trades
+opened and closed inside it.
+**Why:** spec 18.2: purging and embargo based on holding periods and label horizons.
+
+### D-188 The holdout is reserved at creation and read only explicitly, numbered
+
+**Decision:** the holdout dates are written into the run row at creation and the run guard makes
+them immutable. Only `evaluate_holdout` reads that period: for a COMPLETED run, with the frozen
+final parameters, once per request. Each read is numbered across runs of the same strategies with
+overlapping holdouts. A database trigger refuses holdout records for runs that have not completed.
+**Why:** prompt sections 1 and 4: an untouched final period never used for selection. Reuse is
+visible rather than forbidden.
+
+### D-189 Selection is not "highest return"
+
+**Decision:** candidates are ranked by the median of their own training score and their evaluated
+neighbours' scores (a plateau rule), with a minimum number of closed trades. The best `top_k` are
+checked on the validation window. The stored parameters are always trial 0 and are replayed as the
+champion on every test window.
+**Why:** prompt section 3: stability across neighbouring values; do not select solely on
+historical return.
+
+### D-190 Every trial counts, across runs
+
+**Decision:** trials (including failures and sensitivity neighbours) are stored. A run's deflated
+Sharpe uses its effective trials (correlation-adjusted) plus every earlier trial of the same
+strategies on overlapping dates. Reproductions are not counted as searches and inherit their
+original's count. PBO (CSCV), CPCV, Holm and Bonferroni are reported with their assumptions.
+**Why:** prompt section 4: selection bias from repeated searching.
+
+### D-191 Strategy challengers are parameter sets, not strategy versions
+
+**Decision:** the live strategy engine uses the latest stored strategy version, so a challenger is
+held in `learning_candidates` and changes nothing that trades. Approval and rollback create a
+**new** strategy version through the 4A catalog, recording the approval. History is never
+rewritten.
+**Why:** creating a version for a challenger would deploy it (prompt section 12). Spec 19.4: a new
+configuration is a new version.
+
+### D-192 Model governance mirrors the 5A registry; `reinstate` added for rollback
+
+**Decision:** model candidates are 5A model versions. 8B transitions move the 5A status in the same
+transaction (SHADOW: CANDIDATE → VALIDATED → SHADOW; approval: champion RETIRED, challenger
+APPROVED). Rollback uses a new 5A function, `reinstate`: RETIRED → APPROVED only for a version that
+was APPROVED before, still PASSED, and with no other APPROVED version of its name. The 5A
+`TRANSITIONS` table is unchanged.
+**Why:** one source of truth for inference gating (5A APPROVED mode), and rollback to a previous
+approved version (prompt section 7).
+
+### D-193 Evidence gates and explicit replacement
+
+**Decision:** SHADOW needs out-of-sample evidence. For a strategy: a CANDIDATE_FOR_REVIEW run with
+the candidate's exact frozen parameters and a first holdout read. For a model: 5A PASSED and an 8B
+comparison showing incremental value. APPROVED needs shadow evidence recorded after SHADOW began,
+and must name the champion it replaces. The SYSTEM actor can never change a lifecycle status.
+**Why:** prompt sections 7 and 12: no automatic promotion; human approval before replacing an
+approved strategy or model.
+
+### D-194 Validation statistics are analytical floats
+
+**Decision:** window metrics, robustness results and drift values are stored as JSON floats (and
+NUMERIC for drift values), computed from the 8A replay's Decimal ledger. They are never posted,
+never reconciled and never used as money of record.
+**Why:** they are statistics (Sharpe, p-values, quantiles), like 5A's analytical values (D-111).
+The money of record stays Decimal.
+
+### D-195 Incremental model value is financial, cost-stressed and multiple-testing adjusted
+
+**Decision:** predictive improvement **and** a positive policy return above take-all, still
+positive at 2× costs, with at least 100 effective observations (trades ÷ mean label concurrency),
+significant after Bonferroni over every hyperparameter candidate tried on the dataset.
+**Why:** prompt section 6: never promote on classification accuracy; show incremental
+out-of-sample value after realistic costs.
+
+### D-196 Bounded search; Bayesian guided by the earliest window only
+
+**Decision:** GRID is refused above the trial budget (60 at most). RANDOM and BAYESIAN are seeded.
+Bayesian expected improvement (scikit-learn Gaussian process) scores proposals only on the first
+fold's selection window, so the choice of what to try never sees a test window.
+**Why:** prompt section 3: avoid brute force, keep experiments reproducible, avoid leakage through
+the search path.
+
+### D-197 Regime labels from the benchmark's own past closes
+
+**Decision:** trend (close vs 50 sessions earlier) and volatility (20-session realized volatility
+against its trailing median) at each session's close. A session's return is attributed to the
+regime known the session before.
+**Why:** Phase 3B regime classifications were not recorded historically.
+
+### D-198 Stress levels use the same parameters at every level
+
+**Decision:** cost and slippage stress replay the final parameters fresh on every test window at
+1× and at each multiplier. Fields are scaled within their validation bounds as a new
+content-addressed execution model.
+**Why:** a like-for-like comparison. An earlier draft compared each fold's own selection at 1×
+with the final parameters at the other levels; the integration test caught it.
+
+### D-199 Monitoring warns by default; suspension only under an approved rule
+
+**Decision:** degradation measurements use stated tests and minimum samples. Without an
+operator-approved rule the monitor only warns. Under an approved, versioned SUSPEND rule, a
+performance BREACH disables the strategy, recorded as the monitor acting under that rule. Drift
+never suspends. The monitor never enables, never changes risk limits and never promotes.
+Retiring a strategy champion without a replacement also disables the strategy.
+**Why:** prompt section 8: warnings or suspension under previously approved safety rules only.
