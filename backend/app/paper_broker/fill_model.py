@@ -31,6 +31,9 @@ fresh bid at or below it; a buy stop by a trade, bar high or fresh ask at or abo
 triggered stop executes as a market order at the newest fresh quote and **never better than
 its stop price** (a sell stop fills at most at the stop, a buy stop at least at it); a gap
 through the stop fills at the worse market price. No execution at the stop is guaranteed.
+Under the gap rule (model version 2, Phase 10B) a stop whose trigger observation was already
+beyond the stop also fills no better than that observation adjusted by the slippage (a bar:
+its open), in that evaluation and every later one (:func:`gap_fill_cap`).
 
 STOP_LIMIT: the stop triggers as above; execution then follows the limit rules using only
 data after the trigger. A triggered stop-limit may stay unfilled indefinitely.
@@ -47,7 +50,7 @@ deferred instead. Exits never fill more than the position holds (``max_fill``).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from typing import Any
@@ -136,6 +139,9 @@ class OrderState:
     # A take-profit exit: the position's binding protective level. Observations that
     # reached it end the passive window (stop first when the order cannot be established).
     adverse_level: Decimal | None = None
+    # A triggered stop under the gap rule (model version 2): the price it may fill no
+    # better than, recorded with its trigger (``fill_cap``).
+    gap_cap: Decimal | None = None
 
     @property
     def buys(self) -> bool:
@@ -333,6 +339,25 @@ def find_trigger(
     _at, _rank, info = min(hits, key=lambda h: (h[0], h[1]))
     info["level"] = str(level)
     return info
+
+
+def gap_fill_cap(
+    order: OrderState, trigger: dict[str, Any], view: MarketView, model: AssetClassModel
+) -> Decimal | None:
+    """The gap rule (model version 2, D-217): the price a stop that gapped may fill no
+    better than: the first observation beyond the stop adjusted adversely by the slippage;
+    for a bar, its open, kept within the bar's range. None when the trigger is no gap."""
+    if not trigger.get("gap"):
+        return None
+    observed = Decimal(str(trigger["observed"]))
+    slip = model.slippage_bps / BPS
+    raw = observed * (ONE + slip) if order.buys else observed * (ONE - slip)
+    cap = adverse_price(raw, order.tick, buys=order.buys)
+    if trigger.get("source") == "BAR":
+        bar = next((b for b in view.bars if b.id == trigger.get("id")), None)
+        if bar is not None:
+            cap = min(cap, bar.high) if order.buys else max(cap, bar.low)
+    return cap
 
 
 # ---------------------------------------------------------------------- evaluation
@@ -746,8 +771,36 @@ def evaluate(
         order.order_type in (OrderType.STOP, OrderType.TRAILING_STOP) and triggered
     ):
         cap = level if order.order_type is not OrderType.MARKET else None
+        gap_cap: Decimal | None = None
+        if model.gap_fill_at_observed:
+            if cap is not None:  # a broker-resident stop
+                if triggered_now and gap and trigger is not None:
+                    gap_cap = gap_fill_cap(order, trigger, view, model)
+                    if gap_cap is not None:
+                        trigger["fill_cap"] = str(gap_cap)  # recorded with the trigger event
+                else:
+                    gap_cap = order.gap_cap
+                if gap_cap is not None:
+                    cap = max(cap, gap_cap) if order.buys else min(cap, gap_cap)
+            elif order.purpose is OrderPurpose.EXIT and order.gap_cap is not None:
+                # A protective MARKET exit the position monitor submitted after a stop it
+                # watches was crossed by a gap: no better than the gap observation either.
+                gap_cap = cap = order.gap_cap
         c = _Ctx(order, view, model, fresh, keep)
         result = _marketable(c, limit=None, cap=cap, gap=gap) or _bar_fallback(c, cap=cap, gap=gap)
+        if gap_cap is not None and result is not None and result.fill is not None:
+            result = replace(
+                result,
+                fill=replace(
+                    result.fill,
+                    gap=True,
+                    assumptions=(
+                        *result.fill.assumptions,
+                        f"gap rule: no better than {_plain(gap_cap)}, the first observed price "
+                        "beyond the stop adjusted by the slippage",
+                    ),
+                ),
+            )
         if result is None:
             if fresh is not None and fresh.id == order.quote_used:
                 result = _no_fill(

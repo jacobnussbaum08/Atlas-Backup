@@ -30,6 +30,8 @@ _KEY_VALUE_SECRET = re.compile(
     r"(?P<quote>['\"]?)[^'\"\s,;&]+(?P=quote)",
     re.IGNORECASE,
 )
+# Phase 10B named operator tokens (atlas_op_<random>) wherever they appear.
+_OPERATOR_TOKEN = re.compile(r"atlas_op_[A-Za-z0-9_\-]{8,}")
 
 
 def is_sensitive_key(key: str) -> bool:
@@ -40,6 +42,7 @@ def is_sensitive_key(key: str) -> bool:
 def redact_text(text: str) -> str:
     """Mask credentials embedded in URLs and ``key=value`` fragments."""
     text = _URL_CREDENTIALS.sub(rf"\g<prefix>{REDACTED}", text)
+    text = _OPERATOR_TOKEN.sub(REDACTED, text)
     return _KEY_VALUE_SECRET.sub(rf"\g<key>{REDACTED}", text)
 
 

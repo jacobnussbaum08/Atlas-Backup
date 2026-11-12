@@ -1236,6 +1236,79 @@ failed reconciliation writes HIGH (reservations) or CRITICAL (accounting, execut
 the next tick, stuck job leases are reclaimed, and decisions older than the intake lookback are
 not taken in.
 
+## Reliability and operator access (Phase 10B)
+
+Migration 0021. Design in [`architecture/orchestration.md`](architecture/orchestration.md);
+decisions D-213 to D-221. **Paper trading only.**
+
+**Run all three workers.** The orchestrator takes no new entry unless the position monitor
+and the paper execution worker are running (their heartbeats are fresh): the *entry gate*.
+While either is down it alerts (CRITICAL if anything is open) and runs their protective work
+itself; exits never stop. Check it with:
+
+```bash
+uv run python -m app.orchestration.cli protection
+```
+
+**Named operators.** Issue each person a credential; the token goes to a new file you name and
+is never printed (only its SHA-256 digest is stored). `--trading` lets it use the API's
+pause/disable/emergency-stop and kill switch; nothing lets it enable trading.
+
+```bash
+uv run python -m app.orchestration.cli operator-add --name jacob --trading --token-file ./jacob.token --actor operator:jacob --reason "desk operator"
+```
+
+```bash
+uv run python -m app.orchestration.cli operators
+```
+
+```bash
+uv run python -m app.orchestration.cli operator-revoke --name jacob --actor operator:jacob --reason "rotate the token"
+```
+
+Send the token as `X-Atlas-Operator-Token` (or `Authorization: Bearer`); the dashboard's
+Autonomous Trading page has a field for it. Delete the token file after storing the token
+safely. In `ATLAS_ENVIRONMENT=paper` the trading controls accept only named credentials issued
+with `--trading`, every CLI operator action must name an active credential (the first
+`operator-add` bootstraps), and the orchestrator needs `ORCHESTRATOR_ACCOUNT_NAME`.
+
+**Alerts and metrics.** Each alert says what to do:
+
+```bash
+uv run python -m app.orchestration.cli alerts --open
+```
+
+```bash
+uv run python -m app.orchestration.cli ack-alert --id 42 --actor operator:jacob --note "monitor restarted"
+```
+
+```bash
+uv run python -m app.orchestration.cli metrics
+```
+
+**Dead letters.** A scheduled job that failed every attempt is DEAD (HIGH alert). Fix the
+cause, then:
+
+```bash
+uv run python -m app.orchestration.cli requeue-job --id 17 --actor operator:jacob --reason "provider back"
+```
+
+**Outages.**
+
+| Event | What Atlas does | What to do |
+|---|---|---|
+| position monitor stops | gate closed; CRITICAL alert; the orchestrator runs protective passes | restart `position-monitor-worker` |
+| paper execution worker crashes | gate closed; CRITICAL alert; the orchestrator delivers and simulates | restart `paper-execution-worker` |
+| paper broker stopped cleanly | gate closed; CRITICAL alert; nothing fills | start `paper-execution-worker` |
+| market data stale | `FEED_STALE`; DATA_QUALITY halts entries; no exit at a stale price | check the stream worker / provider; the recovery worker backfills |
+| orchestrator down for days | on restart: daily jobs caught up, interval gaps reported | check why it stopped |
+| database restarted | failing steps are recorded and retried; nothing is duplicated | none |
+| Redis down | orchestration is unaffected (PostgreSQL holds every state) | none for trading |
+
+**Execution model version 2.** New paper orders are simulated with the gap rule (a stop
+crossed by a gap fills no better than the first observed price beyond it). Orders already
+being worked keep version 1. `GET /api/v1/paper-execution/models` lists both.
+
 ## Backup and restore
 
 ```bash

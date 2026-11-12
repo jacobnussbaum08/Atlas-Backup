@@ -17,6 +17,12 @@ SIGTERM/SIGINT finish the step in hand and record STOPPED. Every step is a Postg
 idempotent: a crash loses nothing and a restart resumes (intents stay RECEIVED with their
 outbox event PENDING; a job whose lease expired is reclaimed). If the database is
 unreachable the tick fails, the worker keeps running and retries on the next tick.
+
+Phase 10B: each tick first checks that the position monitor and the paper execution worker
+are running (their heartbeats); while either is not, no new entry is taken in and the
+orchestrator runs their protective work itself (D-213, D-214). Daily jobs missed while the
+worker was down are caught up after a restart (D-216). In the paper environment the worker
+refuses to start without ``ORCHESTRATOR_ACCOUNT_NAME`` or with the protection gate disabled.
 """
 
 from __future__ import annotations
@@ -41,7 +47,11 @@ from app.core.logging import configure_logging, get_logger
 from app.core.security.redaction import redact_text
 from app.data_engine.errors import MarketDataError
 from app.database.sessions import build_engine, build_session_factory
-from app.orchestration.config import OrchestratorSettings, get_orchestrator_settings
+from app.orchestration.config import (
+    OrchestratorSettings,
+    check_environment,
+    get_orchestrator_settings,
+)
 from app.orchestration.enums import OrchestratorState
 from app.orchestration.orchestrator import Orchestrator
 from app.orchestration.runtime import build_orchestrator
@@ -146,6 +156,7 @@ async def _main_async(duration: float | None, once: bool) -> int:
     if not orchestration.worker_enabled:
         logger.info("orchestration.worker_disabled", setting="ORCHESTRATOR_WORKER_ENABLED")
         return EXIT_OK
+    check_environment(orchestration, settings.environment.value)
     engine = build_engine(settings)
     try:
         runtime = await asyncio.to_thread(

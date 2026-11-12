@@ -53,6 +53,10 @@ def settings(**overrides: Any) -> OrchestratorSettings:
         "run_decision_stage": False,
         "run_market_intelligence": False,
         "run_decision_outcomes": False,
+        # Phase 10B: the 10A tests run without worker processes; the 10B tests switch the
+        # protection gate on and write the workers' heartbeats themselves.
+        "require_protection_workers": False,
+        "run_degradation_monitor": False,
     }
     values.update(overrides)
     return OrchestratorSettings(_env_file=None, **values)

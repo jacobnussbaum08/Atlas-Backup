@@ -204,6 +204,7 @@ services:
 
   # Position monitor (Phase 7B): marks, protective exits, take-profits, borrow accruals of
   # simulated paper positions. Exits are simulated paper orders through the engine above.
+  # Phase 10B: renews a worker_heartbeats row after every pass; survives database outages.
   position-monitor-worker:
     image: atlas-backend:dev
     env_file: .env
@@ -222,7 +223,9 @@ services:
   # unless ORCHESTRATOR_WORKER_ENABLED=true (it then exits 0). Running it does NOT enable
   # trading: new entries also need the operator control ENABLED (python -m
   # app.orchestration.cli enable --actor operator:<name> --reason ...), DISABLED by default.
-  # Needs paper-execution-worker and position-monitor-worker for fills and exits.
+  # Needs paper-execution-worker and position-monitor-worker for fills and exits: while either
+  # is not running (stale heartbeat) the orchestrator refuses new entries and backstops them
+  # (Phase 10B, D-213/D-214). In ATLAS_ENVIRONMENT=paper it needs ORCHESTRATOR_ACCOUNT_NAME.
   orchestrator-worker:
     image: atlas-backend:dev
     env_file: .env

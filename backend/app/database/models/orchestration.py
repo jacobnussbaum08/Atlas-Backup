@@ -128,8 +128,11 @@ class OrchestrationJobRecord(Base):
             name="running_has_lease",
         ),
         CheckConstraint(
-            "status NOT IN ('SUCCEEDED', 'DEAD') OR finished_at IS NOT NULL",
+            "status NOT IN ('SUCCEEDED', 'DEAD', 'SUPERSEDED') OR finished_at IS NOT NULL",
             name="final_has_finish",
+        ),
+        CheckConstraint(
+            "(requeued_at IS NULL) = (requeued_by IS NULL)", name="requeue_has_operator"
         ),
     )
 
@@ -150,6 +153,10 @@ class OrchestrationJobRecord(Base):
     finished_at: Mapped[datetime | None]
     result: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default="{}")
     error: Mapped[str | None] = mapped_column(Text)
+    # Phase 10B: an operator requeued this dead letter (the latest requeue; every requeue
+    # is also an audit-log entry and a health event).
+    requeued_at: Mapped[datetime | None]
+    requeued_by: Mapped[str | None] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
 
@@ -176,6 +183,10 @@ class OrchestratorStatusRecord(Base):
     counters: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default="{}")
     last_error: Mapped[str | None] = mapped_column(Text)
     last_error_at: Mapped[datetime | None]
+    # Phase 10B: the protection gate of the last tick (closed: no new entries because a
+    # worker that manages positions is not running).
+    entry_gate_open: Mapped[bool | None]
+    entry_gate_reasons: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, server_default="[]")
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
 
 

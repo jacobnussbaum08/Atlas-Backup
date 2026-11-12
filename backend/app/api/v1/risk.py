@@ -24,8 +24,9 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.api.v1.market_data import require_operator
+from app.api.v1.market_data import require_trading_operator
 from app.core.exceptions import DependencyUnavailableError
+from app.core.security.operators import OperatorIdentity
 from app.database.sessions import session_scope
 from app.portfolio.queries import resolve_account
 from app.risk import governance, queries
@@ -215,17 +216,17 @@ def get_reservation(ctx: Context, reservation_id: uuid.UUID) -> dict[str, Any]:
         return reservation_queries.reservation(session, reservation_id)
 
 
-@router.post(
-    "/kill-switch/engage",
-    response_model=KillSwitchResult,
-    dependencies=[Depends(require_operator)],
-)
-def engage_kill_switch(ctx: Context, body: KillSwitchBody) -> KillSwitchResult:
-    """Engage the manual kill switch (operator token, audited). It only blocks new entries;
-    releasing it is an operator CLI action with a reason."""
+@router.post("/kill-switch/engage", response_model=KillSwitchResult)
+def engage_kill_switch(
+    ctx: Context,
+    body: KillSwitchBody,
+    who: Annotated[OperatorIdentity, Depends(require_trading_operator)],
+) -> KillSwitchResult:
+    """Engage the manual kill switch (operator credential, audited as that operator). It
+    only blocks new entries; releasing it is an operator CLI action with a reason."""
     with session_scope(ctx.session_factory) as session:
         account_id = resolve_account(session, body.account_id).id
-    engaged = ctx.service.engage_kill_switch(account_id, actor="operator:api", reason=body.reason)
+    engaged = ctx.service.engage_kill_switch(account_id, actor=who.actor, reason=body.reason)
     return KillSwitchResult(
         account_id=account_id,
         engaged=True,

@@ -28,7 +28,9 @@ Assumption summary (per asset class, see :class:`AssetClassModel`):
   bar's close widened by ``assumed_half_spread_bps`` (an assumed spread, labelled
   BAR_FALLBACK); otherwise, and whenever volume is unknown, execution is deferred;
 * commissions per unit with an order minimum and a cap, or a rate of notional; sell-side
-  regulatory fees; a short borrow rate. Rounded up to the currency's minor unit.
+  regulatory fees; a short borrow rate. Rounded up to the currency's minor unit;
+* version 2 (Phase 10B) adds the gap rule: a stop triggered by an observation that was
+  already beyond it fills no better than that observation (adjusted by the slippage).
 
 IEX limitation: Atlas's configured equity feed (IEX) carries only IEX's own quotes and
 trades, a small share of consolidated volume. Displayed sizes and volumes are therefore
@@ -94,8 +96,16 @@ class AssetClassModel(BaseModel):
     borrow_rate_annual: Decimal = Field(default=D("0.03"), ge=0, le=D("2"))
     long_financing_rate_annual: Decimal = Field(default=D("0"), ge=0, le=D("2"))
     day_count: int = Field(default=360, ge=360, le=366)
+    # Phase 10B gap rule (D-217): a stop whose trigger observation was already beyond the
+    # stop (a gap) fills no better than that observation, adjusted adversely by the
+    # slippage (for a bar: its open, within the bar's range), in the triggering evaluation
+    # and every later one. False in version 1 (the cap is only the stop price). Omitted
+    # from the definition when False, so the content hashes of earlier versions and of the
+    # 8A backtest model do not change.
+    gap_fill_at_observed: bool = False
 
 
+GAP_FIELD = "gap_fill_at_observed"
 EQUITY = AssetClassModel()
 CRYPTO = AssetClassModel(
     regular_session_only=False,
@@ -156,7 +166,11 @@ class ExecutionModel(BaseModel):
         return self.classes.get(asset_class, UNSUPPORTED)
 
     def definition(self) -> dict[str, Any]:
-        return json.loads(self.model_dump_json())  # type: ignore[no-any-return]
+        out: dict[str, Any] = json.loads(self.model_dump_json())
+        for rules in out.get("classes", {}).values():
+            if rules.get(GAP_FIELD) is False:
+                rules.pop(GAP_FIELD)
+        return out
 
     def definition_sha256(self) -> str:
         canonical = json.dumps(self.definition(), sort_keys=True, separators=(",", ":"))
@@ -187,6 +201,37 @@ class ExecutionModel(BaseModel):
         return int(found)
 
 
-DEFAULT_MODEL = ExecutionModel()
+# Version 1 (Phase 7B): orders the simulator first evaluated before Phase 10B keep it.
+MODEL_V1 = ExecutionModel()
 
-__all__ = ["CRYPTO", "DEFAULT_MODEL", "EQUITY", "AssetClassModel", "ExecutionModel"]
+GAP_RULE = (
+    "gap rule: a stop triggered by an observation already beyond it (a trade, a fresh quote, "
+    "or a bar that opened beyond it) fills no better than that observation adjusted "
+    "adversely by the slippage (for a bar: its open, within the bar's range), now and in "
+    "every later evaluation; fills at the stop price are never assumed"
+)
+# Version 2 (Phase 10B, D-217): version 1 plus the gap rule. New orders are worked under it.
+DEFAULT_MODEL = ExecutionModel(
+    version=2,
+    description=(
+        "Conservative simulated execution: touch-of-quote fills with slippage and linear "
+        "impact, strictly-through limit fills, participation caps, stop-first on ambiguous "
+        "bars, gap-through-stop fills no better than the first observed price beyond the "
+        "stop. Simulated; not a replica of any venue."
+    ),
+    classes={
+        name: rules.model_copy(update={GAP_FIELD: True}) for name, rules in MODEL_V1.classes.items()
+    },
+    rules=(*MODEL_V1.rules, GAP_RULE),
+)
+
+__all__ = [
+    "CRYPTO",
+    "DEFAULT_MODEL",
+    "EQUITY",
+    "GAP_FIELD",
+    "GAP_RULE",
+    "MODEL_V1",
+    "AssetClassModel",
+    "ExecutionModel",
+]

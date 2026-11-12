@@ -21,7 +21,13 @@ from app.execution.enums import (
     OrderType,
 )
 from app.execution.protection import Levels, binding, decide
-from app.paper_broker.execution_model import CRYPTO, DEFAULT_MODEL, EQUITY, ExecutionModel
+from app.paper_broker.execution_model import (
+    CRYPTO,
+    DEFAULT_MODEL,
+    EQUITY,
+    MODEL_V1,
+    ExecutionModel,
+)
 from app.paper_broker.fill_model import (
     OrderState,
     adverse_price,
@@ -414,7 +420,7 @@ def test_position_trailing_stop_only_tightens():
 @pytest.mark.parametrize("asset_class", ["EQUITY", "ETF", "CRYPTO"])
 def test_the_default_model_is_versioned_and_content_addressed(asset_class):
     assert DEFAULT_MODEL.for_class(asset_class).supported
-    same = ExecutionModel()
+    same = DEFAULT_MODEL.model_copy()
     assert same.definition_sha256() == DEFAULT_MODEL.definition_sha256()
     changed = ExecutionModel(
         classes={
@@ -423,3 +429,90 @@ def test_the_default_model_is_versioned_and_content_addressed(asset_class):
         }
     )
     assert changed.definition_sha256() != DEFAULT_MODEL.definition_sha256()
+
+
+# The content hash of execution model version 1 as Phase 7B registered it. Phase 10B added a
+# field (the gap rule) that is omitted while False, so version 1 and the 8A backtest model
+# hash exactly as before and their recorded fills stay explained by the same definition.
+V1_SHA256 = "00c5ff7e229412d9170baa97e39496f945d0d1935ddea7ede8422e133bd70eff"
+
+
+def test_version_1_is_unchanged_and_version_2_adds_only_the_gap_rule():
+    assert ExecutionModel().definition_sha256() == V1_SHA256
+    assert MODEL_V1.definition_sha256() == V1_SHA256
+    assert "gap_fill_at_observed" not in MODEL_V1.definition()["classes"]["EQUITY"]
+    # A stored version-1 definition loads with the gap rule off.
+    assert (
+        not ExecutionModel.model_validate(MODEL_V1.definition())
+        .for_class("EQUITY")
+        .gap_fill_at_observed
+    )
+    assert DEFAULT_MODEL.version == 2
+    v2 = DEFAULT_MODEL.definition()
+    for name, rules in v2["classes"].items():
+        assert rules.pop("gap_fill_at_observed") is True
+        assert rules == MODEL_V1.definition()["classes"][name]
+    assert DEFAULT_MODEL.rules[:-1] == MODEL_V1.rules
+    assert "gap rule" in DEFAULT_MODEL.rules[-1]
+
+
+GAP = EQUITY.model_copy(update={"gap_fill_at_observed": True})
+LATER = T0 + timedelta(minutes=2)
+
+
+def _sell_stop(**extra):
+    return order(OrderSide.SELL, OrderType.STOP, stop_price=D("100"), **extra)
+
+
+def test_gap_rule_a_bar_that_opens_below_a_sell_stop_fills_no_better_than_the_open():
+    # The bar opened at 95, beyond the stop at 100, and closed at 99. Version 1 fills from the
+    # bar's close capped at the stop (about 98.9): better than the market offered after the
+    # gap. Version 2 caps at the open less the slippage, within the bar's range.
+    b = bar("95", "99.5", "94", "99", "100000", start=T0)
+    v1 = run(_sell_stop(), view(bars=[b], as_of=LATER))
+    v2 = run(_sell_stop(), view(bars=[b], as_of=LATER), model=GAP)
+    assert v1.fill is not None
+    assert v2.fill is not None
+    assert v1.fill.price > D("95")
+    assert v2.fill.price <= D("95") * (1 - GAP.slippage_bps / 10000)
+    assert v2.fill.price >= D("94")
+    assert v2.trigger is not None
+    assert D(v2.trigger["fill_cap"]) == v2.fill.price
+    assert any("gap rule" in a for a in v2.fill.assumptions)
+
+
+def test_gap_rule_a_stop_without_a_gap_is_unchanged():
+    b = bar("101", "101.5", "99", "100.5", "100000", start=T0)
+    v1 = run(_sell_stop(), view(bars=[b], as_of=LATER))
+    v2 = run(_sell_stop(), view(bars=[b], as_of=LATER), model=GAP)
+    assert v1.fill is not None
+    assert v2.fill is not None
+    assert v2.fill.price == v1.fill.price
+    assert "fill_cap" not in (v2.trigger or {})
+
+
+def test_gap_rule_the_recorded_cap_binds_later_evaluations():
+    # Triggered earlier through a gap (cap recorded at 94.98); the market has since recovered.
+    done = {"triggered": True, "triggered_at": FLOOR, "trigger_level": D("100")}
+    q = quote("99.90", "100.00")
+    v1 = run(_sell_stop(**done), view(q=q))
+    v2 = run(_sell_stop(**done, gap_cap=D("94.98")), view(q=q), model=GAP)
+    assert v1.fill is not None
+    assert v2.fill is not None
+    assert v1.fill.price > D("99")
+    assert v2.fill.price == D("94.98")
+    # Without a recorded cap (no gap at the trigger), version 2 behaves as version 1.
+    v2_plain = run(_sell_stop(**done), view(q=q), model=GAP)
+    assert v2_plain.fill is not None
+    assert v2_plain.fill.price == v1.fill.price
+
+
+def test_gap_rule_a_buy_stop_gapping_up_fills_no_better_than_the_open():
+    buy = order(OrderSide.BUY, OrderType.STOP, stop_price=D("100"), purpose=OrderPurpose.EXIT)
+    b = bar("105", "106", "101", "101.5", "100000", start=T0)
+    v1 = run(buy, view(bars=[b], as_of=LATER))
+    v2 = run(buy, view(bars=[b], as_of=LATER), model=GAP)
+    assert v1.fill is not None
+    assert v2.fill is not None
+    assert v1.fill.price < D("105")
+    assert D("105") <= v2.fill.price <= D("106")

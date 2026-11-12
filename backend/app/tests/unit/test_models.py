@@ -194,6 +194,10 @@ def test_expected_tables_exist():
         "trade_intents",
         "orchestration_jobs",
         "orchestrator_status",
+        # Phase 10B: reliability and operator access
+        "worker_heartbeats",
+        "operator_credentials",
+        "alert_acknowledgements",
     }
 
 

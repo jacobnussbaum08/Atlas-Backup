@@ -9,6 +9,7 @@ once per account, however often intake runs or restarts.
 
     intent final already                  -> nothing (a re-delivery)
     trading mode not ENABLED              -> NOT_TRADED
+    protection gate closed (10B)          -> NOT_TRADED (ENTRY_GATE_CLOSED)
     decision expired                      -> NOT_TRADED
     decision not offerable                -> INVALID
     6C reserve_in (the risk engine decides; key orch:reserve:<intent>)
@@ -36,6 +37,7 @@ read here.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
@@ -180,11 +182,15 @@ class IntentHandler:
         execution: ExecutionService,
         *,
         entry_order_type: OrderType = OrderType.LIMIT,
+        gate: Callable[[Session], Any] | None = None,
     ) -> None:
         self._clock = clock
         self._reservations = reservations
         self._execution = execution
         self._order_type = entry_order_type
+        # Phase 10B: the protection gate (an object with ``gate_open`` and ``reasons``);
+        # closed while the workers that manage positions are not running (D-213).
+        self._gate = gate
 
     # ------------------------------------------------------------------ outbox protocol
     def handle(self, session: Session, message: OutboxMessage) -> None:
@@ -277,6 +283,24 @@ class IntentHandler:
                 ],
             )
             return IntentOutcome(IntentStatus.NOT_TRADED)
+        if self._gate is not None:
+            gate = self._gate(session)
+            if not gate.gate_open:
+                self._finish(
+                    intent,
+                    IntentStatus.NOT_TRADED,
+                    at,
+                    mode=state.mode,
+                    reasons=[
+                        {
+                            "code": "ENTRY_GATE_CLOSED",
+                            "message": "no new entry while the workers that manage positions "
+                            "are not running",
+                            "gate": list(gate.reasons),
+                        }
+                    ],
+                )
+                return IntentOutcome(IntentStatus.NOT_TRADED)
         if intent.decision_expires_at <= at:
             self._finish(
                 intent,

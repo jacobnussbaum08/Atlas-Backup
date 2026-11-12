@@ -557,6 +557,10 @@ def test_scheduled_work_runs_on_real_engines_and_reconciles_clean_books(bench):
         JobKind.EXECUTION_RECONCILE: JobStatus.SUCCEEDED,
         JobKind.ACCOUNTING_RECONCILE: JobStatus.SUCCEEDED,
         JobKind.WORKER_HEALTH: JobStatus.SUCCEEDED,
+        # Phase 10B operational jobs (the fixed clock is after the close: the day's review
+        # runs, and the reviews of the preceding trading days are caught up).
+        JobKind.DATA_FRESHNESS: JobStatus.SUCCEEDED,
+        JobKind.SESSION_CLOSE_REVIEW: JobStatus.SUCCEEDED,
     }
     results = {j.kind: j.result for j in _jobs(bench)}
     assert results[JobKind.RESERVATION_RECONCILE]["passed"] is True

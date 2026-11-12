@@ -18,6 +18,7 @@ ORCHESTRATION_STOPS = (
     "/api/v1/orchestration/controls/disable",
     "/api/v1/orchestration/controls/emergency-stop",
 )
+ALERT_ACK = "/api/v1/orchestration/alerts/{alert_id}/acknowledge"
 VALIDATION_READS = (
     "/api/v1/validation/overview",
     "/api/v1/validation/options",
@@ -383,6 +384,11 @@ def test_openapi_exposes_no_order_endpoints(build_client):
         "/api/v1/orchestration/intents/{intent_id}",
         "/api/v1/orchestration/jobs",
         *ORCHESTRATION_STOPS,
+        # Phase 10B: protection gate, alerts (acknowledging one is append-only), metrics.
+        "/api/v1/orchestration/protection",
+        "/api/v1/orchestration/alerts",
+        ALERT_ACK,
+        "/api/v1/orchestration/metrics",
     }
     # Market trades (exchange prints) are read-only market data, not trading: the one
     # allowed path containing "trade" must expose GET only.
@@ -446,8 +452,10 @@ def test_openapi_exposes_no_order_endpoints(build_client):
         *VALIDATION_WRITES,
         # Phase 10A: pause, disable, emergency stop (D-206). Nothing enables trading.
         *ORCHESTRATION_STOPS,
+        # Phase 10B: acknowledging an alert (an append-only note; it changes nothing else).
+        ALERT_ACK,
     }
-    for path in ORCHESTRATION_STOPS:
+    for path in (*ORCHESTRATION_STOPS, ALERT_ACK):
         assert set(paths[path]) == {"post"}
     assert not [
         p

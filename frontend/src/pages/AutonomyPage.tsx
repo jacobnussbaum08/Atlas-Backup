@@ -27,6 +27,7 @@ import type {
   ControlState,
   IntentStatus,
   JobStatus,
+  OpsAlert,
   OrchestrationStatus,
   TradingMode,
 } from "../types/orchestration";
@@ -59,6 +60,13 @@ const JOB_TONE: Record<JobStatus, Tone> = {
   SUCCEEDED: "positive",
   FAILED: "caution",
   DEAD: "negative",
+  SUPERSEDED: "neutral",
+};
+const SEVERITY_TONE: Record<OpsAlert["severity"], Tone> = {
+  INFO: "neutral",
+  WARNING: "caution",
+  HIGH: "negative",
+  CRITICAL: "negative",
 };
 const HEALTH_TONE: Record<string, Tone> = {
   RUNNING: "positive",
@@ -130,6 +138,10 @@ function Autonomy({ data, refreshKey, onChanged }: { data: OrchestrationStatus; 
       <div className="grid gap-3 lg:grid-cols-2">
         <ControlPanel control={data.control} onChanged={onChanged} />
         <OrchestratorPanel data={data} />
+      </div>
+      <div className="grid gap-3 lg:grid-cols-2">
+        <ProtectionPanel refreshKey={refreshKey} />
+        <AlertsPanel refreshKey={refreshKey} />
       </div>
       <IntentsPanel refreshKey={refreshKey} />
       <JobsPanel refreshKey={refreshKey} />
@@ -216,7 +228,7 @@ function ControlPanel({ control, onChanged }: { control: ControlState; onChanged
             autoComplete="off"
             className={`${input} mt-1 normal-case`}
             aria-label="Operator token"
-            placeholder="only if ATLAS_OPERATOR_TOKEN is set"
+            placeholder="your named operator token (or the shared one in development)"
           />
         </label>
         <div className="flex flex-wrap gap-2">
@@ -286,6 +298,115 @@ function OrchestratorPanel({ data }: { data: OrchestrationStatus }) {
             Last error <Timestamp iso={o.last_error_at} />: {o.last_error}
           </Notice>
         </div>
+      )}
+    </Panel>
+  );
+}
+
+function ProtectionPanel({ refreshKey }: { refreshKey: number }) {
+  const protection = useApiResource((signal) => orchestration.protection({ signal }), [refreshKey], {
+    refreshMs: REFRESH_MS,
+  });
+  const p = protection.data;
+  return (
+    <Panel
+      title="Position protection"
+      subtitle="the workers that manage open positions; new entries need both"
+      actions={
+        p && (
+          <Badge tone={p.gate_open ? "positive" : "negative"} dot>
+            {p.gate_open ? "Entry gate open" : "Entry gate closed"}
+          </Badge>
+        )
+      }
+    >
+      {protection.status === "loading" && !p && <Loading />}
+      {protection.status === "error" && (
+        <ErrorState compact message={protection.error ?? ""} onRetry={protection.reload} />
+      )}
+      {p && (
+        <>
+          <KeyValues
+            items={[
+              {
+                label: "Position monitor",
+                value: (
+                  <>
+                    <Badge tone={p.position_monitor.alive ? "positive" : "negative"}>
+                      {p.position_monitor.alive ? "Running" : "Not running"}
+                    </Badge>{" "}
+                    {p.position_monitor.detail}
+                  </>
+                ),
+              },
+              {
+                label: "Paper execution",
+                value: (
+                  <>
+                    <Badge tone={p.paper_execution.alive ? "positive" : "negative"}>
+                      {p.paper_execution.alive ? "Running" : "Not running"}
+                    </Badge>{" "}
+                    {p.paper_execution.detail}
+                  </>
+                ),
+              },
+              { label: "Open positions", value: p.open_positions },
+              { label: "Working orders", value: p.working_orders },
+            ]}
+          />
+          {!p.gate_open && (
+            <div className="mt-2">
+              <Notice tone="negative">
+                New entries are refused: {p.reasons.map((r) => r.message).join("; ")}. Exits continue; while a worker is
+                down the orchestrator runs its protective passes itself.
+              </Notice>
+            </div>
+          )}
+        </>
+      )}
+    </Panel>
+  );
+}
+
+function AlertsPanel({ refreshKey }: { refreshKey: number }) {
+  const alerts = useApiResource((signal) => orchestration.alerts({ signal }), [refreshKey], {
+    refreshMs: REFRESH_MS,
+    isEmpty: (rows) => rows.length === 0,
+  });
+  return (
+    <Panel title="Open alerts" subtitle="high and critical, not yet acknowledged, with the action to take" bodyClassName="p-0">
+      {alerts.status === "loading" && <Loading />}
+      {alerts.status === "error" && <ErrorState compact message={alerts.error ?? ""} onRetry={alerts.reload} />}
+      {alerts.status === "empty" && <EmptyState title="No open alerts" />}
+      {alerts.data && alerts.data.length > 0 && (
+        <DataTable label="Open alerts">
+          <thead>
+            <tr>
+              <th className={TH}>When</th>
+              <th className={TH}>Severity</th>
+              <th className={TH}>Alert</th>
+              <th className={TH}>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {alerts.data.map((a) => (
+              <tr key={a.id}>
+                <td className={TD}>
+                  <Timestamp iso={a.occurred_at} />
+                </td>
+                <td className={TD}>
+                  <Badge tone={SEVERITY_TONE[a.severity]}>{humanize(a.severity)}</Badge>
+                </td>
+                <td className={`${TD} max-w-72 truncate`} title={a.summary}>
+                  <span className="font-medium">{humanize(a.event_type)}</span>: {a.summary}
+                </td>
+                <td className={`${TD} max-w-72 truncate`} title={a.action ?? undefined}>
+                  {a.action ?? MISSING}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </DataTable>
       )}
     </Panel>
   );

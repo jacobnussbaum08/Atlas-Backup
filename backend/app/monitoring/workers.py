@@ -41,6 +41,7 @@ from app.database.models.portfolio import PortfolioSnapshotRecord
 from app.database.models.strategy import StrategyEvaluationRecord
 from app.database.models.universe import DiscoveryJobRecord
 from app.execution.monitor import MONITOR_ACTOR
+from app.monitoring import heartbeats
 from app.strategies.enums import EvaluationMode
 
 # Thresholds for heartbeat-writing workers whose interval is not a setting. The paper
@@ -497,6 +498,39 @@ def _ai(session: Session, now: datetime, sw: Switches) -> WorkerStatus:
 
 
 def _position_monitor(session: Session, now: datetime) -> WorkerStatus:
+    beat = heartbeats.latest(session, heartbeats.POSITION_MONITOR)
+    if beat is not None:  # Phase 10B: the monitor records a heartbeat
+        stale = heartbeats.stale_after(beat.interval_seconds)
+        health, detail = heartbeat_health(
+            now=now,
+            heartbeat_at=beat.heartbeat_at,
+            stale_after=stale,
+            enabled=None,
+            state=beat.state.value,
+        )
+        details = beat.details or {}
+        return WorkerStatus(
+            worker=heartbeats.POSITION_MONITOR,
+            title="Position monitor",
+            module="app.workers.position_monitor",
+            purpose="Marks simulated paper positions, checks protective levels and submits "
+            "simulated exits.",
+            observation=Observation.HEARTBEAT,
+            source="worker_heartbeats",
+            health=health,
+            detail=detail,
+            enabled_in_api_env=None,
+            enabled_reported=None,
+            state=beat.state.value,
+            last_heartbeat_at=beat.heartbeat_at,
+            heartbeat_age_seconds=_age(now, beat.heartbeat_at),
+            stale_after_seconds=stale.total_seconds(),
+            last_activity_at=beat.heartbeat_at,
+            last_activity=f"pass {beat.passes}: {details.get('positions', 0)} position(s), "
+            f"{details.get('stale', 0)} stale",
+            last_error=_error(beat.last_error),
+            last_error_at=beat.last_error_at,
+        )
     row = session.scalars(
         select(PortfolioSnapshotRecord)
         .where(PortfolioSnapshotRecord.created_by == MONITOR_ACTOR)

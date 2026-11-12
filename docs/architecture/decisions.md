@@ -2572,3 +2572,118 @@ running. SIGTERM finishes the step in hand and records STOPPED.
 `phase-10a-orchestration` (uncommitted, without worker, API, tests or report) was completed
 against spec §27 Phase 10, §20 Stage 4, §24.2 and the Phase 10B prompt's references to 10A.
 **Why:** recorded so the gap in the prompt history is explicit.
+
+---
+
+## Phase 10B: reliability and sustained operation
+
+### D-213 Position protection needs live workers: durable heartbeats and an entry gate
+
+**Decision:** the position monitor renews a `worker_heartbeats` row after every pass (STOPPED on
+a clean stop); the paper execution worker's liveness stays the paper broker heartbeat (7A).
+Each tick the orchestrator assesses both (the monitor is stale after six missed passes, at
+least 60 s; the broker after 60 s). While either is not running the **entry gate** is closed:
+intake is skipped and an intent delivered meanwhile resolves NOT_TRADED with
+`ENTRY_GATE_CLOSED`. The gate never affects exits. `ORCHESTRATOR_REQUIRE_PROTECTION_WORKERS`
+defaults to true and cannot be false in the paper environment (only the 10A tests switch it off).
+**Why:** before 10B a crashed position monitor was invisible (it wrote no heartbeat), and open
+positions were then silently unmanaged. Atlas must never open a position it cannot manage.
+
+### D-214 The orchestrator backstops a dead position monitor and a crashed execution worker
+
+**Decision:** while the position monitor is down and something is open, the orchestrator runs
+the monitor's own pass each tick (same code, actor, idempotency keys and per-position account
+lock, so it is safe alongside a monitor that comes back). While the paper execution worker has
+crashed (broker still RUNNING, heartbeat stale) and positions, orders or events are waiting,
+it runs one delivery + simulation + expiry pass. It never writes either worker's heartbeat, so
+the outage stays visible (CRITICAL `POSITION_MONITOR_DOWN` / `PAPER_EXECUTION_DOWN` while
+something is open, at most once per hour). A broker an operator stopped cleanly is not
+restarted: `PAPER_EXECUTION_STOPPED` (CRITICAL). This amends the 10A statement that the
+orchestrator never closes anything itself: it still never decides an exit; it runs the
+monitor's decisions when the monitor cannot.
+**Why:** spec §24.2 (halting entries must never prevent managing existing positions) and the
+10B requirement that monitoring failures cannot silently leave positions unmanaged.
+
+### D-215 A job kind never runs in two slots at once; running jobs renew their lease
+
+**Decision:** a claim is refused while another slot of the same kind is RUNNING under a live
+lease. While a job body runs, a keeper thread renews its lease every lease/3; a worker that
+lost the lease to a reclaim finishes without overwriting the new owner's result.
+**Why:** a long reconciliation must neither overlap the next one nor be reclaimed as stuck.
+
+### D-216 Missed schedules: daily jobs are caught up, interval jobs are reported
+
+**Decision:** after a restart a daily job looks back `ORCHESTRATOR_CATCH_UP_DAYS` (3) trading
+days. The session review runs once **per missed day** (its body takes the day); the other
+daily jobs (market intelligence, decision outcomes, degradation monitor) run **once**, for the
+newest missed day, and the older missed days are recorded SUPERSEDED. Interval jobs are never
+back-filled (a risk check of a past interval is meaningless now); the first slot after a gap
+writes `ORCHESTRATION_SCHEDULE_GAP` with the number of missed slots. A FAILED interval job of
+an earlier slot whose kind has since succeeded becomes SUPERSEDED (it is never offered again).
+DEAD jobs are dead letters: an operator may requeue one (CLI `requeue-job`, audited; the
+earlier attempts are kept in `result.requeued_from`). Dead intents are not requeueable: the
+decision has a lifetime, and nothing was reserved or ordered.
+**Why:** 10B requirement that missed schedules recover after a restart without double counting.
+
+### D-217 Execution model version 2: the gap rule
+
+**Decision:** version 2 of `atlas-paper-conservative` adds the gap rule: a stop whose trigger
+observation was already beyond it (a trade, a fresh quote, or a bar that opened beyond it)
+fills no better than that observation adjusted adversely by the slippage (a bar: its open,
+kept within the bar's range). It applies to broker-resident stops (the cap is recorded with the
+TRIGGERED broker event and binds every later evaluation) and to the position monitor's
+protective MARKET exits (from the observation recorded with the position's TRIGGERED event).
+New orders are worked under v2; orders first evaluated earlier keep v1. The new field is
+omitted from the definition while false, so version 1 and the 8A backtest model hash exactly as
+before (pinned in a test).
+**Why:** the 8A P2 finding: the v1 bar fallback capped a gapped stop at the stop price, better
+than the market offered after the gap. No fill at the stop price is ever assumed.
+
+### D-218 Named operator credentials and least privilege
+
+**Decision:** operators get their own API credentials (`operator_credentials`; only the SHA-256
+digest of a random 256-bit token is stored; never deleted, revoked instead). Issuing writes the
+token to a new file the operator names; it is never printed. A presented credential identifies
+`operator:<name>`, which every audited control records. Only credentials issued with
+`--trading` may use the trading controls (pause, disable, emergency stop, kill switch); none
+can enable, resume, clear an emergency or release the kill switch (CLI only, unchanged). In the
+paper environment the trading controls refuse the shared `ATLAS_OPERATOR_TOKEN`, the CLI's
+operator actions must name an active credential (the first one bootstraps), and the
+orchestrator refuses to start without an explicit account name or with the gate switched off.
+Tokens are redacted from logs (`atlas_op_…`).
+**Why:** spec §24 (authentication for dashboard controls, least privilege, audited privileged
+changes, explicit configuration outside development).
+
+### D-219 Price-feed outages: alert, halt entries, invent nothing
+
+**Decision:** a DATA_FRESHNESS job (regular session) reports open positions without a fresh
+stored price (`FEED_STALE`, HIGH, hourly). The risk monitor's DATA_QUALITY breaker already halts
+entries and recovers automatically. The position monitor flags the position STALE and executes
+no exit at a stale or invented price. When observations from the outage arrive (the stream
+resumes or the recovery worker backfills), the protective levels are evaluated against them, so
+a stop crossed during the outage triggers then, and the gap rule prices it.
+**Why:** a feed outage must be visible and safe, without pretending to know prices.
+
+### D-220 Operations: alerts with actions, acknowledgements, metrics, session checks
+
+**Decision:** every orchestration alert carries the action to take; acknowledgements are a
+separate append-only table and never hide an alert. New reads: `/orchestration/protection`,
+`/alerts`, `/metrics`; the CLI mirrors them. Scheduled: SESSION_OPEN_CHECK (readiness around the
+open; `SESSION_NOT_READY` when trading is enabled or paused and a blocker exists),
+SESSION_CLOSE_REVIEW (the day's durable operational summary) and DEGRADATION_MONITOR (the 8B
+pass, daily; it only warns unless an operator approved a SUSPEND rule, and never enables).
+**Why:** actionable alerts and operational metrics (10B), and durable daily evidence for 11A.
+
+### D-221 Backtests evaluate strategy proposals; the AI coordinator is evaluated live
+
+**Decision (documented, not changed):** the 8A/8B replays send every strategy proposal to the
+risk engine and the simulated execution; they do not replay the 5B coordinator. Live (paper)
+trading only takes PRIORITIZE_FOR_REVIEW decisions. The coordinator's inputs include ML
+predictions and LLM analyses that cannot be reproduced point-in-time for the past (LLM outputs
+are external and not deterministic; models trained on the same history would leak), so a
+replay of it would be either unreproducible or contaminated. Its value is measured on live
+decisions instead (DECISION_OUTCOMES: prioritized decisions against baselines, now scheduled
+with catch-up). Consequence for Phase 11A: backtest results describe the strategy proposal
+stream, not what the coordinator selects; paper results must be compared with backtests of the
+same proposals, and the coordinator judged by its outcome evaluation.
+**Why:** 10B prompt: fix the inconsistency or document and justify the architecture.

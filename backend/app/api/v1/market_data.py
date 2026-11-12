@@ -30,6 +30,8 @@ from app.core.exceptions import (
     NotFoundError,
     UnauthorizedError,
 )
+from app.core.security import operators
+from app.core.security.operators import OperatorIdentity
 from app.data_engine.availability import POLICY_VERSION
 from app.data_engine.capabilities import FeedCoverage, ProviderCapabilities
 from app.data_engine.enums import (
@@ -78,20 +80,61 @@ def market_data(request: Request) -> MarketDataContext:
     return context
 
 
+def _presented(token: str | None, authorization: str | None) -> str | None:
+    if token:
+        return token
+    if authorization and authorization.lower().startswith("bearer "):
+        return authorization[7:].strip() or None
+    return None
+
+
 def require_operator(
     request: Request,
     token: Annotated[str | None, Header(alias="X-Atlas-Operator-Token")] = None,
-) -> None:
+    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
+) -> OperatorIdentity:
+    """Who is acting. A named operator credential (Phase 10B) identifies ``operator:<name>``;
+    the shared ``ATLAS_OPERATOR_TOKEN`` identifies ``operator:api``; with neither configured,
+    development and test environments allow the unauthenticated ``operator:api``."""
     settings: Settings = request.app.state.settings
     expected = settings.operator_token
+    presented = _presented(token, authorization)
+    if presented is not None:
+        factory = getattr(request.app.state, "session_factory", None)
+        if factory is not None and presented.startswith(operators.TOKEN_PREFIX):
+            with session_scope(factory) as session:
+                identity = operators.authenticate(session, presented, request.app.state.clock.now())
+            if identity is not None:
+                return identity
+        if expected is not None and hmac.compare_digest(
+            presented.encode("utf-8"), expected.get_secret_value().encode("utf-8")
+        ):
+            return OperatorIdentity("operator:api", "SHARED", can_control_trading=True)
+        raise UnauthorizedError("missing or invalid X-Atlas-Operator-Token")
     if expected is None:
         if settings.environment in (Environment.DEVELOPMENT, Environment.TEST):
-            return
-        raise ForbiddenError("operational endpoints are disabled: ATLAS_OPERATOR_TOKEN is not set")
-    if token is None or not hmac.compare_digest(
-        token.encode("utf-8"), expected.get_secret_value().encode("utf-8")
-    ):
-        raise UnauthorizedError("missing or invalid X-Atlas-Operator-Token")
+            return OperatorIdentity("operator:api", "DEVELOPMENT", can_control_trading=True)
+        raise ForbiddenError(
+            "operational endpoints need a named operator credential or ATLAS_OPERATOR_TOKEN"
+        )
+    raise UnauthorizedError("missing or invalid X-Atlas-Operator-Token")
+
+
+def require_trading_operator(
+    request: Request,
+    identity: Annotated[OperatorIdentity, Depends(require_operator)],
+) -> OperatorIdentity:
+    """The trading controls (pause, disable, emergency stop, kill switch). In the paper
+    environment only a named operator credential issued with trading control may use them;
+    the shared token may not (D-218)."""
+    settings: Settings = request.app.state.settings
+    if settings.environment is Environment.PAPER and not identity.named:
+        raise ForbiddenError(
+            "trading controls need a named operator credential in the paper environment"
+        )
+    if identity.named and not identity.can_control_trading:
+        raise ForbiddenError(f"{identity.actor} may not use the trading controls")
+    return identity
 
 
 Context = Annotated[MarketDataContext, Depends(market_data)]

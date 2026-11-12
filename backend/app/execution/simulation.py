@@ -41,14 +41,20 @@ from app.database.models.execution import (
     ExecutionFillDetailRecord,
     ExecutionModelRecord,
     OrderRecord,
+    PaperBrokerEventRecord,
     PaperBrokerOrderRecord,
+    PositionEventRecord,
 )
+from app.database.models.market_data import MarketBarRecord
 from app.execution.enums import (
     AttemptOutcome,
+    BrokerEventType,
     BrokerOrderStatus,
     BrokerRunState,
+    ExitReason,
     OrderPurpose,
     OrderType,
+    PositionEventType,
 )
 from app.execution.models import plain
 from app.execution.protection import Levels, binding
@@ -56,9 +62,12 @@ from app.execution.service import ExecutionService
 from app.execution.state_machine import FILLABLE
 from app.paper_broker import market
 from app.paper_broker.execution_model import DEFAULT_MODEL, AssetClassModel, ExecutionModel
-from app.paper_broker.fill_model import Evaluation, OrderState, evaluate
+from app.paper_broker.fill_model import Evaluation, OrderState, adverse_price, evaluate
 
 logger = get_logger(__name__)
+PROTECTIVE_REASONS = frozenset(
+    {ExitReason.STOP_LOSS, ExitReason.TRAILING_STOP, ExitReason.INVALIDATION}
+)
 SIMULATOR_ACTOR = "system:execution-simulator"
 XNYS = CALENDARS["XNYS"]
 
@@ -254,8 +263,68 @@ class ExecutionSimulator:
             filled_value=order.filled_value,
             commission_charged=book.commission_charged,
             adverse_level=self._adverse_level(session, order),
+            gap_cap=self._gap_cap(session, order, book, rules)
+            if rules.gap_fill_at_observed
+            else None,
         )
         return view, evaluate(state, view, rules, market_open=market_open(rules, now))
+
+    def _gap_cap(
+        self,
+        session: Session,
+        order: OrderRecord,
+        book: PaperBrokerOrderRecord,
+        rules: AssetClassModel,
+    ) -> Decimal | None:
+        """The gap rule (model version 2, D-217). A broker-resident stop: the cap recorded
+        with its TRIGGERED event. A protective MARKET exit of the position monitor: the cap
+        derived from the observation that crossed the position's level, when that was a gap
+        (the position's TRIGGERED event records it)."""
+        if order.purpose is OrderPurpose.EXIT and order.order_type is OrderType.MARKET:
+            return self._exit_gap_cap(session, order, rules)
+        if book.triggered_at is None:
+            return None
+        details = session.scalar(
+            select(PaperBrokerEventRecord.details)
+            .where(
+                PaperBrokerEventRecord.broker_order_id == book.id,
+                PaperBrokerEventRecord.event_type == BrokerEventType.TRIGGERED,
+            )
+            .limit(1)
+        )
+        value = (details or {}).get("fill_cap")
+        return None if value is None else Decimal(str(value))
+
+    def _exit_gap_cap(
+        self, session: Session, order: OrderRecord, rules: AssetClassModel
+    ) -> Decimal | None:
+        if order.exit_reason not in PROTECTIVE_REASONS or order.parent_order_id is None:
+            return None
+        position = self.service.positions.for_entry(session, order.parent_order_id, lock=False)
+        if position is None:
+            return None
+        details = session.scalar(
+            select(PositionEventRecord.details)
+            .where(
+                PositionEventRecord.position_id == position.id,
+                PositionEventRecord.event_type == PositionEventType.TRIGGERED,
+            )
+            .order_by(PositionEventRecord.sequence.desc())
+            .limit(1)
+        )
+        trigger = (details or {}).get("trigger") or {}
+        if not trigger.get("gap") or trigger.get("observed") is None:
+            return None
+        buys = order.side.buys
+        observed = Decimal(str(trigger["observed"]))
+        slip = rules.slippage_bps / Decimal(10000)
+        raw = observed * (1 + slip) if buys else observed * (1 - slip)
+        cap = adverse_price(raw, order.price_increment, buys=buys)
+        if trigger.get("source") == "BAR" and trigger.get("id") is not None:
+            bar = session.get(MarketBarRecord, int(trigger["id"]))
+            if bar is not None:
+                cap = min(cap, bar.high) if buys else max(cap, bar.low)
+        return cap
 
     def _adverse_level(self, session: Session, order: OrderRecord) -> Decimal | None:
         """For a take-profit exit: the binding protective level of its position."""

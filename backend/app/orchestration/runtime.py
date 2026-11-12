@@ -29,7 +29,9 @@ from app.database.sessions import session_scope
 from app.execution.runtime import ExecutionContext, build_execution_context
 from app.orchestration.config import OrchestratorSettings
 from app.orchestration.intents import IntentHandler
+from app.orchestration.operations import OperationsWork
 from app.orchestration.orchestrator import SYSTEM_ACTOR, Orchestrator, Stages
+from app.orchestration.protection import ProtectionGuard
 from app.orchestration.service import ControlService
 from app.portfolio.queries import resolve_account
 from app.risk.enums import Severity
@@ -292,6 +294,48 @@ def _research_stages(
     return stages
 
 
+def _learning_stages(
+    session_factory: sessionmaker[Session], clock: Clock, settings: OrchestratorSettings
+) -> dict[str, Any]:
+    """The 8B degradation monitor (no provider needed). It only warns unless an operator
+    approved a SUSPEND rule; it never enables, approves or changes a risk limit."""
+    if not settings.run_degradation_monitor:
+        return {}
+    from app.learning.monitoring import MonitoringService
+    from app.strategies.registry import default_registry
+
+    monitoring = MonitoringService(session_factory, clock, default_registry())
+
+    def degradation_monitor() -> dict[str, Any]:
+        run_id, report = monitoring.run()
+        subjects = report.get("subjects", [])
+        return {
+            "monitor_run_id": str(run_id),
+            "subjects": len(subjects),
+            "alerts": sum(len(s.get("alerts") or []) for s in subjects),
+        }
+
+    return {"degradation_monitor": degradation_monitor}
+
+
+def execution_pass(execution: ExecutionContext, *, batch: int = 100) -> dict[str, Any]:
+    """One pass of the paper execution worker's loop **without** its heartbeat: deliver due
+    outbox events, simulate working orders, expire due orders. Safe alongside the worker
+    (SKIP LOCKED claims, idempotent handlers). The orchestrator's backstop (D-214)."""
+    dispatcher = execution.service.dispatcher()
+    first = dispatcher.dispatch(limit=batch)
+    simulated = execution.simulator.run_once()
+    second = dispatcher.dispatch(limit=batch) if simulated.fills or simulated.triggers else None
+    expired = execution.service.expire_due()
+    return {
+        "delivered": first.delivered + (second.delivered if second else 0),
+        "dead": first.dead + (second.dead if second else 0),
+        "fills": simulated.fills,
+        "triggers": simulated.triggers,
+        "expired": len(expired.expired),
+    }
+
+
 def build_orchestrator(
     session_factory: sessionmaker[Session],
     clock: Clock,
@@ -318,20 +362,45 @@ def build_orchestrator(
         execution=execution,
         accounting=ReconciliationService(session_factory, clock),
     )
+    operations = OperationsWork(
+        session_factory,
+        clock,
+        account_id,
+        accounting,
+        require_workers=settings.require_protection_workers,
+    )
+    protection = ProtectionGuard(
+        session_factory,
+        clock,
+        account_id,
+        require_workers=settings.require_protection_workers,
+        monitor_pass=execution.monitor.run_once if settings.backstop_position_monitor else None,
+        execution_pass=(lambda: execution_pass(execution))
+        if settings.backstop_paper_execution
+        else None,
+    )
+    if research is None:
+        research = {
+            **_research_stages(session_factory, clock, settings, worker_id),
+            **_learning_stages(session_factory, clock, settings),
+        }
     stages = Stages(
         risk_monitor=work.risk_monitor,
         expire_reservations=work.expire_reservations,
         reservation_reconcile=work.reservation_reconcile,
         execution_reconcile=work.execution_reconcile,
         accounting_reconcile=work.accounting_reconcile,
-        **(
-            research
-            if research is not None
-            else _research_stages(session_factory, clock, settings, worker_id)
-        ),
+        data_freshness=operations.data_freshness,
+        session_open_check=operations.session_open_check,
+        session_close_review=operations.session_close_review,
+        **research,
     )
     intents = IntentHandler(
-        clock, risk.reservations, execution.service, entry_order_type=settings.entry_order_type
+        clock,
+        risk.reservations,
+        execution.service,
+        entry_order_type=settings.entry_order_type,
+        gate=protection.gate if settings.require_protection_workers else None,
     )
     orchestrator = Orchestrator(
         session_factory,
@@ -341,6 +410,7 @@ def build_orchestrator(
         intents=intents,
         stages=stages,
         worker_id=worker_id,
+        protection=protection,
     )
     logger.info(
         "orchestration.built",
@@ -357,6 +427,7 @@ __all__ = [
     "ScheduledWork",
     "build_control_context",
     "build_orchestrator",
+    "execution_pass",
     "report_finding",
     "resolve_orchestrated_account",
 ]

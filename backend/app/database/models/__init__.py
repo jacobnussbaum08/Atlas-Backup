@@ -164,6 +164,11 @@ from app.database.models.reference_data import (
     ProviderAssetRecord,
     ProviderExchangeCodeRecord,
 )
+from app.database.models.reliability import (
+    AlertAcknowledgementRecord,
+    OperatorCredentialRecord,
+    WorkerHeartbeatRecord,
+)
 from app.database.models.reservations import (
     RiskReservationApprovalRecord,
     RiskReservationEventRecord,
@@ -212,6 +217,7 @@ from app.database.models.universe import (
 __all__ = [
     "AIDecisionRecord",
     "ActorType",
+    "AlertAcknowledgementRecord",
     "Asset",
     "AssetClass",
     "AssetIdentifier",
@@ -310,6 +316,7 @@ __all__ = [
     "NewsSourceRecord",
     "NewsStreamSessionRecord",
     "NewsStreamStatusRecord",
+    "OperatorCredentialRecord",
     "OrchestrationJobRecord",
     "OrchestratorStatusRecord",
     "OrderEventRecord",
@@ -383,4 +390,5 @@ __all__ = [
     "ValidationSegmentRecord",
     "ValidationTrialRecord",
     "WatchlistScoreRecord",
+    "WorkerHeartbeatRecord",
 ]

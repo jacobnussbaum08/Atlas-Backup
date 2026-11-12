@@ -16,6 +16,11 @@ SIGTERM/SIGINT finish the position in hand. Everything is a PostgreSQL row: a cr
 nothing, and exits are submitted with idempotency keys derived from the position, so a
 restart cannot submit an exit twice. Several workers may run at once (each position is
 handled under its account lock).
+
+Phase 10B: the worker renews a ``worker_heartbeats`` row after every pass (STOPPED on a
+clean stop), so a crashed or hung monitor is visible. While its heartbeat is stale the
+orchestrator closes its entry gate and runs protective passes itself (D-214). A pass that
+fails outright (e.g. the database is down) is logged and retried; the loop never exits on it.
 """
 
 from __future__ import annotations
@@ -39,36 +44,74 @@ from app.core.config import (
 from app.core.logging import configure_logging, get_logger
 from app.database.sessions import build_engine, build_session_factory
 from app.execution.runtime import ExecutionContext, build_execution_context
+from app.monitoring.heartbeats import POSITION_MONITOR, HeartbeatWriter
 
 logger = get_logger(__name__)
 
 
-def run(ctx: ExecutionContext, stop: threading.Event, *, interval: float) -> int:
+def run(
+    ctx: ExecutionContext,
+    stop: threading.Event,
+    *,
+    interval: float,
+    heartbeat: HeartbeatWriter | None = None,
+    max_passes: int | None = None,
+) -> int:
     logger.info("position_monitor.started", simulated=True, interval=interval)
-    while not stop.is_set():
-        summary = ctx.monitor.run_once()
-        if (
-            summary.triggers
-            or summary.exits_submitted
-            or summary.take_profits_placed
-            or summary.cancels_requested
-            or summary.errors
-        ):
-            logger.info(
-                "position_monitor.tick",
-                positions=summary.positions,
-                triggers=summary.triggers,
-                exits=summary.exits_submitted,
-                take_profits=summary.take_profits_placed,
-                cancels=summary.cancels_requested,
-                borrow_accruals=summary.borrow_accruals,
-                valuations=summary.valuations,
-                stale=summary.stale,
-                errors=len(summary.errors),
-            )
-        stop.wait(interval)
-    logger.info("position_monitor.stopped", simulated=True)
+    beats = heartbeat or HeartbeatWriter(
+        ctx.session_factory, ctx.clock, POSITION_MONITOR, interval_seconds=interval
+    )
+    beats.start({"simulated": True})
+    passes = 0
+    try:
+        while not stop.is_set():
+            _pass(ctx, beats, passes := passes + 1)
+            if max_passes is not None and passes >= max_passes:
+                break
+            stop.wait(interval)
+    finally:
+        beats.stop(passes=passes)
+        logger.info("position_monitor.stopped", simulated=True, passes=passes)
     return 0
+
+
+def _pass(ctx: ExecutionContext, beats: HeartbeatWriter, passes: int) -> None:
+    try:
+        summary = ctx.monitor.run_once()
+    except Exception as exc:  # e.g. the database is unreachable: retry on the next pass
+        logger.warning("position_monitor.pass_failed", error_type=type(exc).__name__)
+        beats.beat(passes=passes, error=f"pass failed: {type(exc).__name__}: {exc}")
+        return
+    beats.beat(
+        passes=passes,
+        details={
+            "positions": summary.positions,
+            "stale": summary.stale,
+            "triggers": summary.triggers,
+            "exits_submitted": summary.exits_submitted,
+            "errors": len(summary.errors),
+        },
+        error=f"{len(summary.errors)} position error(s)" if summary.errors else None,
+    )
+    if (
+        summary.triggers
+        or summary.exits_submitted
+        or summary.take_profits_placed
+        or summary.cancels_requested
+        or summary.errors
+    ):
+        logger.info(
+            "position_monitor.tick",
+            positions=summary.positions,
+            triggers=summary.triggers,
+            exits=summary.exits_submitted,
+            take_profits=summary.take_profits_placed,
+            cancels=summary.cancels_requested,
+            borrow_accruals=summary.borrow_accruals,
+            valuations=summary.valuations,
+            stale=summary.stale,
+            errors=len(summary.errors),
+        )
 
 
 def main(argv: list[str] | None = None) -> int:

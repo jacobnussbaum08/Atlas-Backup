@@ -11,7 +11,34 @@ export type IntentStatus =
   | "INVALID"
   | "DEAD";
 
-export type JobStatus = "RUNNING" | "SUCCEEDED" | "FAILED" | "DEAD";
+export type JobStatus = "RUNNING" | "SUCCEEDED" | "FAILED" | "DEAD" | "SUPERSEDED";
+
+/** Phase 10B: who manages open positions, and whether new entries may be taken in. */
+export interface Protection {
+  at: string;
+  gate_open: boolean;
+  reasons: { code: string; message: string }[];
+  position_monitor: { alive: boolean; detail: string };
+  paper_execution: { alive: boolean; state: string | null; detail: string };
+  open_positions: number;
+  working_orders: number;
+  pending_execution_events: number;
+}
+
+/** Phase 10B: an operational alert (a system health event) with the action to take. */
+export interface OpsAlert {
+  id: number;
+  component: string;
+  event_type: string;
+  severity: "INFO" | "WARNING" | "HIGH" | "CRITICAL";
+  summary: string;
+  subject_kind: string | null;
+  subject_id: string | null;
+  occurred_at: string;
+  action: string | null;
+  acknowledged: boolean;
+  acknowledgements: { actor: string; note: string; at: string }[];
+}
 
 export interface ControlState {
   account_id: string;

@@ -7,8 +7,10 @@ import { DisplayZoneProvider } from "../lib/time";
 import { installFakeLive, LAYOUT_ROUTES, stubApi } from "../test/marketFixtures";
 import type {
   ControlEvent,
+  OpsAlert,
   OrchestrationJob,
   OrchestrationStatus,
+  Protection,
   TradeIntent,
   TradingMode,
 } from "../types/orchestration";
@@ -56,7 +58,7 @@ function status(mode: TradingMode, isDefault = false): OrchestrationStatus {
       INVALID: 0,
       DEAD: 0,
     },
-    jobs: { RUNNING: 0, SUCCEEDED: 5, FAILED: 0, DEAD: 0 },
+    jobs: { RUNNING: 0, SUCCEEDED: 5, FAILED: 0, DEAD: 0, SUPERSEDED: 0 },
     outbox: { counts: { PENDING: 0, DELIVERED: 4, DEAD: 0 }, oldest_pending_at: null },
     notes: [],
   };
@@ -136,6 +138,37 @@ const HISTORY: ControlEvent[] = [
   },
 ];
 
+function protection(open: boolean): Protection {
+  return {
+    at: "2026-11-11T15:05:00Z",
+    gate_open: open,
+    reasons: open
+      ? []
+      : [{ code: "POSITION_MONITOR_DOWN", message: "the position monitor is not running (no heartbeat for 300 s)" }],
+    position_monitor: { alive: open, detail: open ? "heartbeat 3 s ago (RUNNING)" : "no heartbeat for 300 s" },
+    paper_execution: { alive: true, state: "RUNNING", detail: "heartbeat 1 s ago" },
+    open_positions: 2,
+    working_orders: 1,
+    pending_execution_events: 0,
+  };
+}
+
+const ALERTS: OpsAlert[] = [
+  {
+    id: 7,
+    component: "orchestration",
+    event_type: "POSITION_MONITOR_DOWN",
+    severity: "CRITICAL",
+    summary: "Position monitor not running: no heartbeat for 300 s; 2 open position(s)",
+    subject_kind: "worker",
+    subject_id: "position-monitor-worker",
+    occurred_at: "2026-11-11T15:05:00Z",
+    action: "Start the position monitor (python -m app.workers.position_monitor).",
+    acknowledged: false,
+    acknowledgements: [],
+  },
+];
+
 function routes(mode: TradingMode, isDefault = false, extra: Record<string, unknown> = {}) {
   return {
     ...LAYOUT_ROUTES,
@@ -143,6 +176,8 @@ function routes(mode: TradingMode, isDefault = false, extra: Record<string, unkn
     "/api/v1/orchestration/intents": { body: INTENTS },
     "/api/v1/orchestration/jobs": { body: JOBS },
     "/api/v1/orchestration/controls/history": { body: isDefault ? [] : HISTORY },
+    "/api/v1/orchestration/protection": { body: protection(true) },
+    "/api/v1/orchestration/alerts": { body: [] },
     ...extra,
   };
 }
@@ -240,6 +275,28 @@ describe("Autonomous Trading", () => {
     fireEvent.change(within(form).getByLabelText("Reason"), { target: { value: "stop everything" } });
     fireEvent.click(within(form).getByRole("button", { name: /Emergency stop/ }));
     expect(await within(form).findByText(/Emergency stop engaged: 2 entry order\(s\) cancelled/)).toBeInTheDocument();
+  });
+
+  it("shows a closed entry gate and the open alerts with their action", async () => {
+    stubApi(
+      routes("ENABLED", false, {
+        "/api/v1/orchestration/protection": { body: protection(false) },
+        "/api/v1/orchestration/alerts": { body: ALERTS },
+      }) as never,
+    );
+    renderAutonomy();
+    expect(await screen.findByText("Entry gate closed")).toBeInTheDocument();
+    expect(screen.getByText(/New entries are refused: the position monitor is not running/)).toBeInTheDocument();
+    const alerts = await screen.findByRole("table", { name: "Open alerts" });
+    expect(within(alerts).getByText("Critical")).toBeInTheDocument();
+    expect(within(alerts).getByText(/Start the position monitor/)).toBeInTheDocument();
+  });
+
+  it("shows an open entry gate and no alerts", async () => {
+    stubApi(routes("ENABLED") as never);
+    renderAutonomy();
+    expect(await screen.findByText("Entry gate open")).toBeInTheDocument();
+    expect(await screen.findByText("No open alerts")).toBeInTheDocument();
   });
 
   it("shows an engaged emergency stop and a refused control", async () => {

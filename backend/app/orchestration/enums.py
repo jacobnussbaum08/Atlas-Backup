@@ -51,13 +51,46 @@ class JobKind(StrEnum):
     WORKER_HEALTH = "WORKER_HEALTH"
     MARKET_INTELLIGENCE = "MARKET_INTELLIGENCE"
     DECISION_OUTCOMES = "DECISION_OUTCOMES"
+    # Phase 10B.
+    DATA_FRESHNESS = "DATA_FRESHNESS"  # stale feeds for open positions (regular session)
+    SESSION_OPEN_CHECK = "SESSION_OPEN_CHECK"  # readiness before the regular open
+    SESSION_CLOSE_REVIEW = "SESSION_CLOSE_REVIEW"  # the day's operational summary
+    DEGRADATION_MONITOR = "DEGRADATION_MONITOR"  # 8B strategy/model degradation pass
+
+
+# Jobs whose slot is a trading day: a day missed during an outage is caught up after a
+# restart (within ``catch_up_days``). Interval jobs are not back-filled: a risk check of a
+# past interval is meaningless now; the gap is reported instead (D-216).
+DAILY_JOBS = frozenset(
+    {
+        JobKind.MARKET_INTELLIGENCE,
+        JobKind.DECISION_OUTCOMES,
+        JobKind.SESSION_CLOSE_REVIEW,
+        JobKind.DEGRADATION_MONITOR,
+    }
+)
 
 
 class JobStatus(StrEnum):
     RUNNING = "RUNNING"
     SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"  # will be retried at next_attempt_at
-    DEAD = "DEAD"  # gave up after the maximum attempts
+    DEAD = "DEAD"  # gave up after the maximum attempts (dead letter)
+    # Phase 10B: a FAILED interval job whose slot is over and whose kind has since
+    # succeeded in a later slot. It will never run; the later run covers it.
+    SUPERSEDED = "SUPERSEDED"
+
+
+FINAL_JOB_STATUSES = frozenset({JobStatus.SUCCEEDED, JobStatus.DEAD, JobStatus.SUPERSEDED})
+
+
+class WorkerState(StrEnum):
+    """What a heartbeat-writing worker recorded about itself (``worker_heartbeats``)."""
+
+    STARTING = "STARTING"
+    RUNNING = "RUNNING"
+    DEGRADED = "DEGRADED"  # running, but the last pass reported errors
+    STOPPED = "STOPPED"  # clean stop (SIGTERM/SIGINT)
 
 
 class OrchestratorState(StrEnum):
