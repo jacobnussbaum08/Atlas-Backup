@@ -56,6 +56,7 @@ def test_empty_database_reports_nothing_as_running(client):
         "ai-worker",
         "paper-execution-worker",
         "position-monitor-worker",
+        "orchestrator-worker",
     }
     assert "RUNNING" not in body["summary"]
     for w in workers.values():

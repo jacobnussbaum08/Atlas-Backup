@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from app.market_intelligence.runtime import IntelligenceContext
     from app.ml_engine.runtime import MLContext
     from app.news.runtime import NewsContext
+    from app.orchestration.runtime import ControlContext
     from app.risk.runtime import RiskContext
     from app.strategies.runtime import StrategyContext
 from app.database.repositories import IngestionJobRepository
@@ -145,6 +146,16 @@ def _build_execution_context(
     return build_execution_context(session_factory, clock)
 
 
+def _build_orchestration_context(
+    session_factory: sessionmaker[Session], clock: Clock
+) -> ControlContext:
+    from app.orchestration.runtime import build_control_context
+
+    # The API reads the orchestration tables and offers the fail-safe controls only
+    # (pause, disable, emergency stop); enabling trading is an operator CLI action.
+    return build_control_context(session_factory, clock)
+
+
 def _build_backtest_context(
     session_factory: sessionmaker[Session], clock: Clock
 ) -> BacktestContext:
@@ -185,13 +196,15 @@ def create_app(
     execution: ExecutionContext | None = None,
     backtesting: BacktestContext | None = None,
     validation: ValidationContext | None = None,
+    orchestration: ControlContext | None = None,
 ) -> FastAPI:
     """Build the application.
 
     ``health_checks`` replaces the real dependency checks; when given, no
     database engine or Redis client is created (used by unit tests).
     ``market_data``, ``asset_discovery``, ``market_intelligence``, ``news``,
-    ``strategies``, ``ml``, ``ai``, ``accounting``, ``risk`` and ``execution`` inject those
+    ``strategies``, ``ml``, ``ai``, ``accounting``, ``risk``, ``execution`` and
+    ``orchestration`` inject those
     contexts (tests); otherwise they are built lazily from the environment on first use.
     """
     settings = settings or get_settings()
@@ -236,6 +249,9 @@ def create_app(
             app.state.execution_factory = lambda: _build_execution_context(session_factory, clock)
             app.state.backtesting_factory = lambda: _build_backtest_context(session_factory, clock)
             app.state.validation_factory = lambda: _build_validation_context(session_factory, clock)
+            app.state.orchestration_factory = lambda: _build_orchestration_context(
+                session_factory, clock
+            )
             _recover_interrupted_jobs(session_factory, clock)
             sweeper = asyncio.create_task(_sweep_interrupted_jobs(session_factory, clock))
         else:
@@ -291,6 +307,7 @@ def create_app(
     app.state.execution = execution
     app.state.backtesting = backtesting
     app.state.validation = validation
+    app.state.orchestration = orchestration
     app.state.version = app.version
     app.state.started_at = clock.now()
 

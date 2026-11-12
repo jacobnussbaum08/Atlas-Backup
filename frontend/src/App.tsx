@@ -36,6 +36,7 @@ const StrategiesPage = lazyPage(() => import("./pages/StrategiesPage"), "Strateg
 const StrategyDetailPage = lazyPage(() => import("./pages/StrategyDetailPage"), "StrategyDetailPage");
 const MLPage = lazyPage(() => import("./pages/MLPage"), "MLPage");
 const AIActivityPage = lazyPage(() => import("./pages/AIActivityPage"), "AIActivityPage");
+const AutonomyPage = lazyPage(() => import("./pages/AutonomyPage"), "AutonomyPage");
 const PortfolioPage = lazyPage(() => import("./pages/PortfolioPage"), "PortfolioPage");
 const RiskCenterPage = lazyPage(() => import("./pages/RiskCenterPage"), "RiskCenterPage");
 const PaperOrdersPage = lazyPage(() => import("./pages/PaperOrdersPage"), "PaperOrdersPage");
@@ -71,6 +72,7 @@ export function App({ pollIntervalMs }: { pollIntervalMs?: number }) {
         />
         <Route path="/ml" element={<MLPage />} />
         <Route path="/ai" element={<AIActivityPage />} />
+        <Route path="/autonomy" element={<AutonomyPage />} />
         <Route path="/portfolio" element={<PortfolioPage />} />
         <Route path="/risk" element={<RiskCenterPage />} />
         <Route path="/paper-orders" element={<PaperOrdersPage />} />

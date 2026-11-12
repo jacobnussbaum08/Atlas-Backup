@@ -1189,6 +1189,53 @@ curl -X POST -H "X-Atlas-Operator-Token: $TOKEN" -H "Content-Type: application/j
 Under a SUSPEND rule, a performance BREACH disables the strategy. Re-enabling it is an operator
 action (`python -m app.strategies.cli enable`). Nothing in monitoring changes risk limits.
 
+## Autonomous paper trading (Phase 10A)
+
+Prerequisites: the database at head (migration 0020), the paper account and its risk
+configuration (`accounting.cli init`, `risk.cli init`), and the paper execution worker and
+position monitor running (they fill, protect and exit). Design in
+[`architecture/orchestration.md`](architecture/orchestration.md); decisions D-204 to D-212.
+**Paper trading only**: every order is a simulated paper order.
+
+**Two separate switches.** `ORCHESTRATOR_WORKER_ENABLED=true` only starts the worker. New
+entries also need the operator control ENABLED, which is DISABLED until an operator enables it:
+
+```bash
+uv run python -m app.orchestration.cli status
+```
+
+```bash
+uv run python -m app.orchestration.cli enable --actor operator:jacob --reason "start the paper trial"
+```
+
+```bash
+uv run python -m app.workers.trading_orchestrator
+```
+
+`--once` runs a single tick. With the research stages on (the defaults) the worker needs the
+market-data provider configuration, as the strategy and AI workers do; set
+`ORCHESTRATOR_RUN_STRATEGY_STAGE=false` etc. to run only intake, delivery and the scheduled jobs.
+
+**Stopping trading** (also from the dashboard's Autonomous Trading page or the API with the
+operator token): `pause` (resume later), `disable`, or
+
+```bash
+uv run python -m app.orchestration.cli emergency-stop --actor operator:jacob --reason "halt everything"
+```
+
+which also engages the risk kill switch and cancels working entry orders; exits keep running.
+Afterwards: `clear-emergency` (back to DISABLED), `python -m app.risk.cli kill-switch release`,
+then `enable` when ready. Stopping the worker (SIGTERM) does not change the trading mode.
+
+**Inspect:** `intents [--status S]` (each prioritized decision and what risk and execution did
+with it), `jobs [--kind K] [--status S]` (scheduled monitoring and reconciliations),
+`history` (control changes). A DEAD intent or job writes a HIGH `system_health_events` row; a
+failed reconciliation writes HIGH (reservations) or CRITICAL (accounting, execution).
+
+**After a crash or restart** nothing needs to be done by hand: pending intents are delivered by
+the next tick, stuck job leases are reclaimed, and decisions older than the intake lookback are
+not taken in.
+
 ## Backup and restore
 
 ```bash

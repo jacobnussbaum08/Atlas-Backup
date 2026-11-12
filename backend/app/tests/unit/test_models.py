@@ -189,6 +189,11 @@ def test_expected_tables_exist():
         "learning_monitoring_rules",
         "learning_drift_measurements",
         "learning_degradation_alerts",
+        # Phase 10A: autonomous orchestration
+        "trading_control_events",
+        "trade_intents",
+        "orchestration_jobs",
+        "orchestrator_status",
     }
 
 

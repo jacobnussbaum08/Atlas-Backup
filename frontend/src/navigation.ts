@@ -1,5 +1,6 @@
 import {
   Activity,
+  Bot,
   BrainCircuit,
   CandlestickChart,
   ClipboardList,
@@ -39,7 +40,7 @@ export interface NavSection {
   summary: string;
 }
 
-/** Pages backed by real backend data (Phase 1, the Phase 2 market-data engine, Phases 3A-3C, 4A-4B, 5A-5B, 6A-6C, 7A-7B, 8A-8B, completed in Phase 9). */
+/** Pages backed by real backend data (Phase 1, the Phase 2 market-data engine, Phases 3A-3C, 4A-4B, 5A-5B, 6A-6C, 7A-7B, 8A-8B, completed in Phase 9; Phase 10A orchestration). */
 export const NAV_SECTIONS: readonly NavSection[] = [
   {
     path: "/",
@@ -112,6 +113,15 @@ export const NAV_SECTIONS: readonly NavSection[] = [
     specSection: "22.3",
     phase: 5,
     summary: "Evaluated and ranked opportunities, rejections and their reasons, conflicts, model and news inputs, and LLM usage and cost.",
+  },
+  {
+    path: "/autonomy",
+    group: "Paper trading",
+    title: "Autonomous Trading",
+    icon: Bot,
+    specSection: "20, 24.2",
+    phase: 10,
+    summary: "The trading orchestrator: operator trading control (disabled by default), pause, disable and emergency stop, trade intents from AI decisions, scheduled risk monitoring and reconciliation jobs, and the worker's heartbeat.",
   },
   {
     path: "/portfolio",

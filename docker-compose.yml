@@ -217,6 +217,27 @@ services:
     restart: on-failure
     stop_grace_period: 30s
 
+  # Trading orchestrator (Phase 10A): strategies -> AI decisions -> risk reservations ->
+  # simulated paper entry orders, plus scheduled risk monitoring and reconciliations. Off
+  # unless ORCHESTRATOR_WORKER_ENABLED=true (it then exits 0). Running it does NOT enable
+  # trading: new entries also need the operator control ENABLED (python -m
+  # app.orchestration.cli enable --actor operator:<name> --reason ...), DISABLED by default.
+  # Needs paper-execution-worker and position-monitor-worker for fills and exits.
+  orchestrator-worker:
+    image: atlas-backend:dev
+    env_file: .env
+    environment: *backend-env
+    command: ["python", "-m", "app.workers.trading_orchestrator"]
+    volumes:
+      - ml-artifacts:/srv/atlas/data/ml/artifacts:ro
+    healthcheck:
+      disable: true
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: on-failure
+    stop_grace_period: 90s
+
   frontend:
     build:
       context: ./frontend

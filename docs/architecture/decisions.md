@@ -2473,3 +2473,102 @@ interpolated.
 chunk, and the chart library loads with the first chart. Test `findBy*` timeouts are raised to 4 s
 because chunk imports can exceed 1 s under a full parallel run.
 **Why:** the single bundle had reached 895 kB (build warning); the main chunk is now 351 kB.
+
+## Phase 10A — autonomous paper-trading orchestration
+
+### D-204 One orchestrator sequences the existing engines; it adds no trading judgement
+
+**Decision:** a new package `app/orchestration` and worker `app.workers.trading_orchestrator`
+drive, per tick: reservation expiry, a strategy-evaluation cycle, a LIVE coordinator run when
+new LIVE proposals arrived, intake of prioritized decisions as trade intents, their delivery
+(6C reservation then 7A entry order) and the scheduled jobs. Quantity, entry protection and
+stop come from the risk engine's approval; the order type is configuration (LIMIT at the
+reserved worst entry price by default). Scores, rankings and signal strength are never read.
+Fills, exits and position management stay with the paper execution worker and the position
+monitor; the orchestrator never fills, closes or cancels anything except entry orders under an
+operator's emergency stop. The strategy and decision stages run in every mode (they record
+proposals and decisions only), which gives shadow operation while trading is disabled.
+**Why:** spec §27 Phase 10 and §20 Stage 4 ask for autonomous operation of the components that
+already exist, without a second implementation of any of them (spec §3.1, §3.3).
+
+### D-205 Trading mode is a durable, operator-only, append-only control that defaults to DISABLED
+
+**Decision:** `trading_control_events` (migration 0020) holds the trading mode per paper account:
+numbered gaplessly, each event starting from the previous one's mode (trigger), append-only,
+operators only (CHECK `operator:<name>`), reason required, audited. No row means DISABLED.
+Modes: DISABLED, ENABLED, PAUSED, EMERGENCY_STOP; only ENABLED lets new entries through.
+EMERGENCY_STOP clears to DISABLED, never to ENABLED. No environment variable can enable trading:
+`ORCHESTRATOR_WORKER_ENABLED` only starts the process. Repeating an action whose target mode is
+already in effect changes nothing and is not an error.
+**Why:** spec §3.6 (Atlas cannot give itself permissions), §24.2 (system pause, kill switch,
+new-entry disable switch) and the requirement that autonomy stays off until an authorized
+operator enables it.
+
+### D-206 The API may only stop trading; enabling is a CLI action
+
+**Decision:** `POST /orchestration/controls/{pause,disable,emergency-stop}` (operator token,
+actor `operator:api`). There is no API route to enable, resume or clear an emergency; those are
+`python -m app.orchestration.cli` actions with `--actor operator:<name>`.
+**Why:** the kill-switch precedent (D-146, D-155): dashboard controls are fail-safe only. A single
+shared operator token does not identify the operator, so loosening actions need the named,
+audited CLI identity. Phase 10B revisits operator authentication.
+
+### D-207 Trade intents are an inbox with exactly-once effects
+
+**Decision:** a prioritized decision of a COMPLETED LIVE run becomes one `trade_intents` row per
+(account, decision) (UNIQUE), written with an `orchestration.intent` outbox event in one
+transaction. The handler runs inside the outbox delivery transaction, under the account lock:
+mode check, expiry check, 6C `reserve_in` (key `orch:reserve:<intent>`), 7A `submit_in` (key
+`orch:submit:<intent>`), intent outcome. A failure rolls everything back; retries reuse the keys;
+after the last attempt the intent is DEAD with nothing reserved or ordered and a HIGH health
+event. A final intent never changes (trigger). Only decisions within the intake lookback (120
+min) are taken in, so a restart does not trade old signals. An entry order that the execution
+engine rejects at revalidation releases its reservation through the 7A settlement path
+(`_settle_reservation`); one it refuses outright is released by the handler (NOT_SUBMITTED).
+**Why:** spec §4.1 event processing and §25.3 concurrency: duplicate and delayed events, restarts
+and concurrent orchestrators must never create a second reservation or order.
+
+### D-208 A mode change between intake and delivery resolves the intent as NOT_TRADED
+
+**Decision:** intents are delivered in every mode; the handler re-reads the mode under the
+account lock and records NOT_TRADED unless it is ENABLED. An emergency stop is therefore
+effective from its commit for every pending intent.
+**Why:** a paused or stopped system must not act on work queued before the stop, and pending
+intents must not stay open indefinitely.
+
+### D-209 Scheduled jobs are PostgreSQL rows, one per (kind, slot), leased
+
+**Decision:** `orchestration_jobs` holds one row per (kind, slot); a slot is an interval start or
+a trading day (after the close plus a delay). Claims insert-or-take-over under row locks; a
+lease that expired marks the job stuck (reclaimed, WARNING event); failures retry with
+exponential back-off and become DEAD after the maximum attempts (HIGH event). Jobs: risk
+monitor, reservation, execution and accounting reconciliations, worker health, market
+intelligence and decision outcomes after the close. A failed reconciliation is a finding, not a
+job error: the job succeeds with `passed: false` and a HIGH or CRITICAL health event.
+**Why:** spec §3.2 (Redis is never the source of truth) and §24 (monitor worker health);
+overlapping or repeated runs must not double-count. Slots missed during a long outage are not
+back-filled (the next slot runs); Phase 10B reviews that.
+
+### D-210 The orchestrator's health is its heartbeat row, judged by age
+
+**Decision:** `orchestrator_status` is renewed after every tick and by a heartbeat task every
+min(tick, 30 s); it is reported as a HEARTBEAT worker (`orchestrator-worker`) with a stale
+threshold of three missed beats (at least 90 s). The worker's own record decides its health;
+the API's environment only explains a missing row. `WORKER_UNHEALTHY` events are written at most
+once per worker per hour.
+**Why:** D-200: liveness is read from what a worker recorded, never assumed.
+
+### D-211 A tick survives a failing step and a database outage
+
+**Decision:** each step is isolated: its error is recorded in the tick report and the status
+(DEGRADED), and the next tick retries. A tick that fails outright (e.g. the database is
+unreachable) is counted (`tick_failures`); the worker tries to record DEGRADED and keeps
+running. SIGTERM finishes the step in hand and records STOPPED.
+**Why:** spec §27 Phase 10 acceptance: runs continuously and safely handles failures.
+
+### D-212 The Phase 10A scope was reconstructed from the specification and the existing code
+
+**Decision:** the Phase 10A prompt was not saved in `docs/prompts/`; the code found on branch
+`phase-10a-orchestration` (uncommitted, without worker, API, tests or report) was completed
+against spec §27 Phase 10, §20 Stage 4, §24.2 and the Phase 10B prompt's references to 10A.
+**Why:** recorded so the gap in the prompt history is explicit.

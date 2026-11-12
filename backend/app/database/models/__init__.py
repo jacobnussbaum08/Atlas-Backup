@@ -141,6 +141,12 @@ from app.database.models.news import (
     NewsStreamSessionRecord,
     NewsStreamStatusRecord,
 )
+from app.database.models.orchestration import (
+    OrchestrationJobRecord,
+    OrchestratorStatusRecord,
+    TradeIntentRecord,
+    TradingControlEventRecord,
+)
 from app.database.models.portfolio import (
     PortfolioSnapshotPositionRecord,
     PortfolioSnapshotRecord,
@@ -304,6 +310,8 @@ __all__ = [
     "NewsSourceRecord",
     "NewsStreamSessionRecord",
     "NewsStreamStatusRecord",
+    "OrchestrationJobRecord",
+    "OrchestratorStatusRecord",
     "OrderEventRecord",
     "OrderFillRecord",
     "OrderRecord",
@@ -363,6 +371,8 @@ __all__ = [
     "StreamSessionRecord",
     "StreamStatusRecord",
     "SystemHealthEventRecord",
+    "TradeIntentRecord",
+    "TradingControlEventRecord",
     "UniverseMembershipEventRecord",
     "ValidationComparisonRecord",
     "ValidationExperimentRecord",

@@ -36,6 +36,7 @@ from app.database.models.ai import DecisionRunRecord
 from app.database.models.execution import PaperBrokerStateRecord
 from app.database.models.market_data import RecoveryStatusRecord, StreamStatusRecord
 from app.database.models.news import NewsStreamStatusRecord
+from app.database.models.orchestration import OrchestratorStatusRecord
 from app.database.models.portfolio import PortfolioSnapshotRecord
 from app.database.models.strategy import StrategyEvaluationRecord
 from app.database.models.universe import DiscoveryJobRecord
@@ -109,6 +110,19 @@ class Switches:
     ai_decisions: bool | None
     ai_news_analysis: bool | None
     ai_conflict_explanations: bool | None
+    orchestrator: bool | None = None
+    orchestrator_tick_seconds: float | None = None
+
+
+# The orchestrator beats at least every 30 s (and after every tick).
+ORCHESTRATOR_STALE_AFTER = timedelta(seconds=90)
+
+
+def orchestrator_stale_after(tick_seconds: float | None) -> timedelta:
+    """Three missed heartbeats (the worker beats every min(tick, 30 s))."""
+    if tick_seconds is None:
+        return ORCHESTRATOR_STALE_AFTER
+    return max(ORCHESTRATOR_STALE_AFTER, timedelta(seconds=3 * min(tick_seconds, 30.0)))
 
 
 def _read(getter: Callable[[], Any]) -> Any:
@@ -124,6 +138,7 @@ def load_switches() -> Switches:
     from app.asset_discovery.config import get_asset_discovery_settings
     from app.core.config.market_data import get_market_data_settings
     from app.news.config import get_news_settings
+    from app.orchestration.config import get_orchestrator_settings
     from app.strategies.config import get_strategy_settings
 
     md = _read(get_market_data_settings)
@@ -131,6 +146,7 @@ def load_switches() -> Switches:
     discovery = _read(get_asset_discovery_settings)
     strategy = _read(get_strategy_settings)
     ai = _read(get_ai_settings)
+    orchestration = _read(get_orchestrator_settings)
     return Switches(
         market_data_stream=md.market_data_stream_enabled if md else None,
         market_data_recovery=md.market_data_recovery_enabled if md else None,
@@ -143,6 +159,8 @@ def load_switches() -> Switches:
         ai_decisions=ai.decisions_enabled if ai else None,
         ai_news_analysis=ai.news_analysis_enabled if ai else None,
         ai_conflict_explanations=ai.conflict_explanations_enabled if ai else None,
+        orchestrator=orchestration.worker_enabled if orchestration else None,
+        orchestrator_tick_seconds=orchestration.tick_seconds if orchestration else None,
     )
 
 
@@ -515,6 +533,45 @@ def _position_monitor(session: Session, now: datetime) -> WorkerStatus:
     )
 
 
+def _orchestrator(session: Session, now: datetime, sw: Switches) -> WorkerStatus:
+    row = session.scalars(
+        select(OrchestratorStatusRecord).order_by(OrchestratorStatusRecord.heartbeat_at.desc())
+    ).first()
+    stale = orchestrator_stale_after(sw.orchestrator_tick_seconds)
+    health, detail = heartbeat_health(
+        now=now,
+        heartbeat_at=row.heartbeat_at if row else None,
+        stale_after=stale,
+        enabled=None,
+        state=row.state.value if row else None,
+    )
+    if row is None and sw.orchestrator is False:
+        health, detail = _activity_health(False)
+    mode = row.trading_mode.value if row and row.trading_mode else None
+    return WorkerStatus(
+        worker="orchestrator-worker",
+        title="Trading orchestrator",
+        module="app.workers.trading_orchestrator",
+        purpose="Sequences strategies, AI decisions, risk reservations and simulated paper "
+        "entry orders under the operator's trading control; runs scheduled risk monitoring "
+        "and reconciliations.",
+        observation=Observation.HEARTBEAT,
+        source="orchestrator_status",
+        health=health,
+        detail=detail,
+        enabled_in_api_env=sw.orchestrator,
+        enabled_reported=None,
+        state=row.state.value if row else None,
+        last_heartbeat_at=row.heartbeat_at if row else None,
+        heartbeat_age_seconds=_age(now, row.heartbeat_at) if row else None,
+        stale_after_seconds=stale.total_seconds(),
+        last_activity_at=row.last_tick_at if row else None,
+        last_activity=f"tick (trading mode {mode})" if row and row.last_tick_at else None,
+        last_error=_error(row.last_error) if row else None,
+        last_error_at=row.last_error_at if row else None,
+    )
+
+
 NOTES = [
     "Workers are separate processes. The API reports what each recorded in PostgreSQL; it "
     "cannot see the processes themselves.",
@@ -537,6 +594,7 @@ def workers_report(session: Session, now: datetime, switches: Switches) -> Worke
         _ai(session, now, switches),
         _paper_broker(session, now),
         _position_monitor(session, now),
+        _orchestrator(session, now, switches),
     ]
     summary: dict[str, int] = {}
     for w in workers:
@@ -552,5 +610,6 @@ __all__ = [
     "WorkersReport",
     "heartbeat_health",
     "load_switches",
+    "orchestrator_stale_after",
     "workers_report",
 ]

@@ -13,6 +13,11 @@ from app.monitoring.health import ComponentHealth, HealthStatus
 from app.tests.conftest import FIXED_NOW
 
 BACKTEST_REPRODUCE = "/api/v1/backtests/{run_id}/reproduce"
+ORCHESTRATION_STOPS = (
+    "/api/v1/orchestration/controls/pause",
+    "/api/v1/orchestration/controls/disable",
+    "/api/v1/orchestration/controls/emergency-stop",
+)
 VALIDATION_READS = (
     "/api/v1/validation/overview",
     "/api/v1/validation/options",
@@ -371,6 +376,13 @@ def test_openapi_exposes_no_order_endpoints(build_client):
         # Phase 9 dashboard: what the background workers recorded (GET only; it controls
         # nothing).
         "/api/v1/system/workers",
+        # Phase 10A orchestration: reads, and fail-safe controls that can only stop trading.
+        "/api/v1/orchestration/status",
+        "/api/v1/orchestration/controls/history",
+        "/api/v1/orchestration/intents",
+        "/api/v1/orchestration/intents/{intent_id}",
+        "/api/v1/orchestration/jobs",
+        *ORCHESTRATION_STOPS,
     }
     # Market trades (exchange prints) are read-only market data, not trading: the one
     # allowed path containing "trade" must expose GET only.
@@ -432,7 +444,17 @@ def test_openapi_exposes_no_order_endpoints(build_client):
         BACKTEST_REPRODUCE,
         # Phase 8B: validation runs and explicit champion/challenger decisions (D-185..).
         *VALIDATION_WRITES,
+        # Phase 10A: pause, disable, emergency stop (D-206). Nothing enables trading.
+        *ORCHESTRATION_STOPS,
     }
+    for path in ORCHESTRATION_STOPS:
+        assert set(paths[path]) == {"post"}
+    assert not [
+        p
+        for p in paths
+        if p.startswith("/api/v1/orchestration/")
+        and any(word in p for word in ("enable", "resume", "clear"))
+    ]
     assert set(paths["/api/v1/backtests"]) == {"get", "post"}
     for path in VALIDATION_WRITES:
         expected = {"get", "post"} if path in VALIDATION_LISTS else {"post"}
