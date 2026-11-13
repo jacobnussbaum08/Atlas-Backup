@@ -651,6 +651,39 @@ def test_database_constraints_enforce_disjoint_gaps_and_one_active_job(factory, 
         )
 
 
+def test_job_creation_keeps_working_after_many_inserts_on_one_connection(factory, assets):
+    """D-227: with the arbiter predicate sent as bound parameters, the eleventh insert on a
+    connection failed ("no unique or exclusion constraint matching the ON CONFLICT
+    specification") once the driver had prepared the statement and PostgreSQL tried a generic
+    plan. A backlog of more than ten gaps then failed every recovery cycle."""
+    series = Series(assets["AAPL"], "alpaca", "iex", DataType.BAR, "1Min", PriceAdjustment.RAW)
+    with session_scope(factory) as session:
+        gap = CompletenessRepository(session).record_gaps(
+            series, "AAPL", [(TUE, TUE + timedelta(minutes=10))], GapCause.REQUESTED, at=NOW
+        )[0]
+        gap_id = gap.id
+    service = _service(factory, FakeHistory(), FixedClock(NOW))
+    with session_scope(factory) as session:  # one connection for every insert
+        tracked = service._tracked_symbol("AAPL", DataType.BAR, M1)
+        repo = RecoveryJobRepository(session)
+        created = [
+            repo.create(
+                service._job(
+                    tracked,
+                    RecoveryJobKind.RECOVERY,
+                    gap_id,
+                    (TUE, TUE + timedelta(minutes=10)),
+                    NOW,
+                )
+            )
+            for _ in range(25)
+        ]
+    # The first is created; the other 24 conflict with the active job and are refused quietly.
+    assert created[0] is not None
+    assert all(job is None for job in created[1:])
+    assert len(_jobs(factory)) == 1
+
+
 # ------------------------------------------------------------------ restarts
 def test_interrupted_job_runs_again_after_a_worker_restart(factory, assets):
     fake = FakeHistory()

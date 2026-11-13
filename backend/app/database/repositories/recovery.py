@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, func, literal_column, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -40,6 +40,16 @@ from app.database.models import (
 )
 
 ACTIVE_JOB_STATUSES = (RecoveryJobStatus.PENDING, RecoveryJobStatus.RUNNING)
+
+# The arbiter predicate of ``uq_market_data_recovery_jobs_active_gap``, rendered with literal
+# values. Bound parameters here break after about ten executions on one connection: the driver
+# prepares the statement, PostgreSQL then tries a generic plan, and a generic plan cannot prove
+# ``status IN ($1, $2)`` implies the partial index's predicate ("no unique or exclusion
+# constraint matching the ON CONFLICT specification"), so no further job could be created on
+# that connection (D-227). The values are enum constants, never input.
+_ACTIVE_STATUS_PREDICATE = RecoveryJobRecord.status.in_(
+    [literal_column(f"'{status.value}'") for status in ACTIVE_JOB_STATUSES]
+)
 
 
 @dataclass(frozen=True)
@@ -263,7 +273,7 @@ class RecoveryJobRepository:
             .values(**values)
             .on_conflict_do_nothing(
                 index_elements=["gap_id"],
-                index_where=RecoveryJobRecord.status.in_([s.value for s in ACTIVE_JOB_STATUSES]),
+                index_where=_ACTIVE_STATUS_PREDICATE,
             )
             .returning(RecoveryJobRecord.id)
         )

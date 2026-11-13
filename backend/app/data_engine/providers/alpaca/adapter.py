@@ -264,12 +264,22 @@ class AlpacaMarketDataProvider(MarketDataProvider):
             if not settings.market_data_symbols:
                 issue(Severity.ERROR, "no_symbols", "streaming is enabled but no symbols are set")
             limit = access.stream_symbol_limit
-            if limit is not None and len(settings.market_data_symbols) > limit:
+            # The provider counts the trade and quote subscriptions together (observed
+            # 2026-11-12 on the Basic plan: 15 symbols on both channels accepted, 22 refused
+            # with 405 "symbol limit exceeded"; bar channels are not counted). D-228.
+            counted = sum(
+                1
+                for channel in settings.market_data_stream_channels
+                if channel in (StreamChannel.TRADES, StreamChannel.QUOTES)
+            )
+            entries = len(settings.market_data_symbols) * max(counted, 1)
+            if limit is not None and entries > limit:
                 issue(
                     Severity.ERROR,
                     "stream_symbol_limit",
-                    f"{len(settings.market_data_symbols)} symbols exceed the plan's "
-                    f"stream limit of {limit}",
+                    f"{len(settings.market_data_symbols)} symbols on {max(counted, 1)} "
+                    f"trade/quote channel(s) are {entries} subscriptions; the plan's stream "
+                    f"limit is {limit}",
                 )
         else:
             issue(Severity.INFO, "stream_disabled", "live streaming is disabled")

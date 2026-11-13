@@ -2756,3 +2756,22 @@ paper trading in a dedicated paper database with all workers) is an operator act
 not started by the coding agent.
 **Why:** a calendar day with nothing running is not observation; the user's standing
 instruction requires explicit human approval for consequential operational changes.
+
+### D-227 Recovery jobs: the ON CONFLICT predicate is rendered with literals
+
+**Decision:** `RecoveryJobRepository.create` renders the arbiter predicate of
+`uq_market_data_recovery_jobs_active_gap` (`status IN ('PENDING', 'RUNNING')`) with literal
+enum values instead of bound parameters.
+[REDACTED_FOR_GITHUB] After about ten executions on one connection the driver prepares the
+statement and PostgreSQL tries a generic plan, which cannot prove that `status IN ($1, $2)`
+implies the partial index's predicate; every later insert on that connection failed ("no unique
+or exclusion constraint matching the ON CONFLICT specification") and the whole recovery cycle
+rolled back, every cycle. A latent Phase 2D defect (P2, fail-safe: missing data stays missing
+and data-quality gates keep entries closed). Regression test: 25 inserts on one connection.
+
+### D-228 Stream symbol limit counts trade and quote subscriptions
+
+**Decision:** the Alpaca adapter's offline check compares `symbols x (trade/quote channels
+configured)` with the plan's stream limit, instead of the number of symbols.
+[REDACTED_FOR_GITHUB] The old check accepted 22 symbols and the stream worker then failed
+permanently at subscribe. [REDACTED_FOR_GITHUB]

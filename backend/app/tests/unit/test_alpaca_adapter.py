@@ -157,6 +157,30 @@ def test_stream_symbol_limit_and_empty_universe():
     assert _codes(empty)["no_symbols"] is Severity.ERROR
 
 
+def test_stream_symbol_limit_counts_trade_and_quote_subscriptions():
+    """D-228: the provider counts trades + quotes together (30 on the Basic plan), not
+    symbols: 22 symbols on both channels (44) were refused live, 15 (30) accepted."""
+
+    def check(count: int, channels: str):
+        symbols = ",".join(f"S{i:03d}" for i in range(count))
+        report = _provider().validate_configuration(
+            _md(
+                market_data_symbols=symbols,
+                market_data_stream_enabled=True,
+                market_data_stream_channels=channels,
+            )
+        )
+        return _codes(report).get("stream_symbol_limit")
+
+    everything = "bars,updated_bars,trades,quotes"
+    assert check(22, everything) is Severity.ERROR
+    assert check(16, everything) is Severity.ERROR
+    assert check(15, everything) is None
+    assert check(30, "bars,updated_bars,trades") is None
+    assert check(30, "bars,updated_bars") is None
+    assert check(31, "bars,updated_bars") is Severity.ERROR
+
+
 def test_invalid_symbols_and_oversized_batches_are_errors():
     report = _provider().validate_configuration(
         _md(market_data_symbols="SPY,BTC/USD", historical_data_batch_size=20_000)
