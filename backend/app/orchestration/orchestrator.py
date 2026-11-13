@@ -42,11 +42,12 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.asset_discovery.enums import MetricStatus
 from app.core.clocks import Clock
 from app.core.logging import get_logger
 from app.core.security.redaction import redact_text
 from app.data_engine.calendar import session_at
-from app.database.models import StrategyProposalRecord
+from app.database.models import AssetMetricValueRecord, StrategyProposalRecord
 from app.database.models.ai import DecisionRunRecord
 from app.database.models.orchestration import OrchestratorStatusRecord
 from app.database.models.reservations import SystemHealthEventRecord
@@ -75,6 +76,12 @@ STATUS_NAME = "trading-orchestrator"
 WORKER_NAME = "orchestrator-worker"  # the Docker Compose service (workers report)
 SYSTEM_ACTOR = "system:orchestrator"
 UNHEALTHY_REPEAT = timedelta(hours=1)
+# The risk engine sizes every trade from the asset's median daily dollar volume, which the
+# asset discovery worker's qualification job recomputes daily. When that worker is not
+# running nothing else reports it (a disabled worker is not unhealthy), and once the values
+# pass the risk engine's own age limit every assessment is INSUFFICIENT_DATA (D-233).
+LIQUIDITY_METRIC = "median_dollar_volume"
+LIQUIDITY_STALE_AFTER = timedelta(hours=48)
 # Slots of the research jobs that need the session's final daily bars (D-230). Until then
 # they were "close:<day>" slots that ran 65 minutes after the close, before the bars were
 # final; the new name keeps those earlier rows as history and lets the first run after the
@@ -341,7 +348,61 @@ class Orchestrator:
                         occurred_at=now,
                     )
                 )
-            return {"flagged": [w.worker for w in flagged], "summary": report.summary}
+            stale = self._check_liquidity_data(session, now)
+            return {
+                "flagged": [w.worker for w in flagged],
+                "summary": report.summary,
+                "liquidity_data": stale,
+            }
+
+    def _check_liquidity_data(self, session: Session, now: datetime) -> dict[str, Any]:
+        """Alert (HIGH, at most once per ``UNHEALTHY_REPEAT``) when the newest liquidity
+        measurement is older than ``LIQUIDITY_STALE_AFTER`` or missing (D-233)."""
+        m = AssetMetricValueRecord
+        newest = session.scalar(
+            select(func.max(m.as_of)).where(
+                m.metric == LIQUIDITY_METRIC, m.status == MetricStatus.OK, m.as_of <= now
+            )
+        )
+        age = None if newest is None else now - newest
+        result: dict[str, Any] = {
+            "newest_as_of": None if newest is None else newest.isoformat(),
+            "age_hours": None if age is None else round(age.total_seconds() / 3600, 1),
+            "stale": age is None or age > LIQUIDITY_STALE_AFTER,
+        }
+        if not result["stale"]:
+            return result
+        reported = session.scalar(
+            select(func.count()).where(
+                SystemHealthEventRecord.component == "orchestration",
+                SystemHealthEventRecord.event_type == "LIQUIDITY_DATA_STALE",
+                SystemHealthEventRecord.occurred_at > now - UNHEALTHY_REPEAT,
+            )
+        )
+        if reported:
+            return result
+        summary = (
+            "No liquidity measurement (median daily dollar volume) is stored"
+            if newest is None
+            else f"The newest liquidity measurement is {result['age_hours']} hours old"
+        ) + (
+            ": the risk engine cannot size trades without it. Is the asset discovery "
+            "worker (qualification job) running?"
+        )
+        session.add(
+            SystemHealthEventRecord(
+                component="orchestration",
+                event_type="LIQUIDITY_DATA_STALE",
+                severity=Severity.HIGH,
+                portfolio_account_id=self.account_id,
+                subject_kind="metric",
+                subject_id=LIQUIDITY_METRIC,
+                summary=summary,
+                details=result,
+                occurred_at=now,
+            )
+        )
+        return result
 
     # ------------------------------------------------------------------ stages
     def _decision_due(self, now: datetime) -> bool:

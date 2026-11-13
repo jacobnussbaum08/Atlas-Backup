@@ -2849,3 +2849,13 @@ checkpoint for the current day (`ValuationService.checkpoint`, idempotent per `a
 caught up for a past day takes none: a past close cannot be valued after the fact.
 [REDACTED_FOR_GITHUB] A flat account had no equity curve, and flat days would have been missing
 from the daily returns, overstating Sharpe and understating volatility.
+
+### D-233 Paper harness runs asset discovery; stale liquidity data raises an alert
+
+**Decision:** `scripts/paper_observation.sh` starts the asset discovery worker
+(`ASSET_DISCOVERY_ENABLED=true` in that environment only; GET-only paper asset directory,
+D-050), so the daily qualification job keeps `median_dollar_volume` and the reference data
+current. The orchestrator's worker-health check (every 300 s) also raises a HIGH
+`LIQUIDITY_DATA_STALE` system-health event, at most once an hour, when the newest OK
+`median_dollar_volume` is older than 48 hours or absent.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]

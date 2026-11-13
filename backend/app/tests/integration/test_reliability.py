@@ -39,6 +39,7 @@ from app.database.models.orchestration import (
     TradeIntentRecord,
 )
 from app.database.models.portfolio import PortfolioSnapshotRecord
+from app.database.models.reservations import SystemHealthEventRecord
 from app.database.sessions import session_scope
 from app.events.outbox import enqueue
 from app.execution.enums import (
@@ -775,3 +776,39 @@ def test_the_session_review_records_one_valuation_checkpoint_for_the_day(bench):
             .where(PortfolioSnapshotRecord.portfolio_account_id == bench.account)
         )
     assert snapshots == 1  # once per day, however often the orchestrator ticks
+
+
+def liquidity_alerts(bench: Bench) -> list[SystemHealthEventRecord]:
+    with session_scope(bench.factory) as session:
+        rows = session.scalars(
+            select(SystemHealthEventRecord).where(
+                SystemHealthEventRecord.event_type == "LIQUIDITY_DATA_STALE"
+            )
+        ).all()
+        session.expunge_all()
+        return list(rows)
+
+
+def test_stale_liquidity_data_is_alerted_not_silent(bench):
+    """D-233: the risk engine needs a current median dollar volume for every trade. When the
+    asset discovery worker stopped refreshing it, every assessment became INSUFFICIENT_DATA
+    and nothing said so. The worker-health check now raises one HIGH alert per hour."""
+    orch = bench.orchestrator().orchestrator
+    bench.ex.asset("LIQ")  # fixture liquidity measurement one hour old
+    fresh = orch.check_workers()["liquidity_data"]
+    assert fresh["stale"] is False
+    assert liquidity_alerts(bench) == []
+
+    bench.clock.advance(timedelta(days=3))  # no qualification job ran since
+    stale = orch.check_workers()["liquidity_data"]
+    assert stale["stale"] is True
+    assert stale["age_hours"] > 48
+    orch.check_workers()  # within the hour: not repeated
+    alerts = liquidity_alerts(bench)
+    assert len(alerts) == 1
+    assert alerts[0].severity is Severity.HIGH
+    assert "asset discovery" in alerts[0].summary
+
+    bench.clock.advance(timedelta(hours=1, minutes=1))  # still stale an hour later
+    orch.check_workers()
+    assert len(liquidity_alerts(bench)) == 2

@@ -2,7 +2,7 @@
 # Phase 11A live paper-trading observation: start or stop the workers on the host.
 #
 #   scripts/paper_observation.sh start   # API + market-data stream, recovery, news stream, paper execution,
-#                                        # position monitor and orchestrator workers
+#                                        # position monitor, orchestrator and asset discovery workers
 #   scripts/paper_observation.sh status
 #   scripts/paper_observation.sh stop
 #   scripts/paper_observation.sh ctl <orchestration.cli arguments>
@@ -22,7 +22,7 @@ ENV_FILE="$ROOT/.env.paper11a"
 LOGS="$ROOT/logs/paper11a"
 PY="$ROOT/.venv/Scripts/python.exe"
 [ -x "$PY" ] || PY="$ROOT/.venv/bin/python"
-WORKERS=(market_data_stream market_data_recovery news_stream paper_execution position_monitor trading_orchestrator)
+WORKERS=(market_data_stream market_data_recovery news_stream paper_execution position_monitor trading_orchestrator asset_discovery)
 
 load_env() {
   [ -f "$ENV_FILE" ] || { echo "missing $ENV_FILE" >&2; exit 2; }
@@ -30,6 +30,11 @@ load_env() {
   # shellcheck disable=SC1090
   . "$ENV_FILE"
   set +a
+  # The risk engine sizes every trade from the liquidity measurements that the asset
+  # discovery worker's daily qualification job recomputes; without it they expire after
+  # 7 days and every assessment is INSUFFICIENT_DATA (D-233). It reads the paper asset
+  # directory only (GET, decision D-050).
+  export ASSET_DISCOVERY_ENABLED=true
   export PYTHONPATH="$ROOT/backend"
 }
 
