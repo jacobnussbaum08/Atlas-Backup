@@ -2687,3 +2687,72 @@ with catch-up). Consequence for Phase 11A: backtest results describe the strateg
 stream, not what the coordinator selects; paper results must be compared with backtests of the
 same proposals, and the coordinator judged by its outcome evaluation.
 **Why:** 10B prompt: fix the inconsistency or document and justify the architecture.
+
+### D-222 Walk-forward folds keep their out-of-sample trades (outside the result hash)
+
+**Decision:** each stored fold's `out_of_sample` record now also lists its kept (purged) closed
+trades: strategy, symbol, direction, first and last session, net P/L, costs, entry value,
+per-trade net return and cost rate. The list is added when the fold is stored, not to the
+content the result hash covers (that already covers the statistics computed from the same
+trades), so earlier runs reproduce with identical hashes.
+**Why:** Phase 11A preflight found that the 8B degradation monitor read
+`out_of_sample["trades"]`, a key no fold ever stored. Its reference sample was always empty, so
+every performance measurement (expectancy, win rate, return distribution, cost) stayed
+INSUFFICIENT_DATA and could never warn or, under an approved rule, suspend (P2: a monitoring
+control that could not fire). The scorecard also needs per-trade returns to compare paper with
+out-of-sample results. Runs stored before 0022 still have no trade list; the scorecard says so
+(`per_trade_returns_stored`).
+
+### D-223 Phase 11A evidence program: pre-registered protocols and scorecards
+
+**Decision:** `app/evidence` adds append-only `evidence_protocols` (operator-only, versioned,
+unique criteria digest), `evidence_data_audits` and `evidence_scorecards` /
+`evidence_scorecard_entries` (migration 0022). A scorecard judges stored 8B validation runs and
+a paper account's records under one protocol and keeps three sections apart: BACKTEST (the
+in-sample development replay; passes nothing), OUT_OF_SAMPLE (stitched test windows, robustness,
+first holdout read) and PAPER (closed simulated positions after the protocol's registration).
+Classification order: rejection on sufficient negative evidence; INSUFFICIENT_EVIDENCE below the
+sample minimum or when a historical criterion cannot be evaluated; NOT_DEMONSTRATED on a failed
+criterion; CONTINUE_PAPER when every historical criterion passes and paper evidence is not yet
+sufficient; CANDIDATE_FOR_REVIEW only when everything passes. The portfolio verdict is
+NOT_READY or READY_FOR_REVIEW; there is no "ready for live trading". A scorecard changes nothing
+that trades; REJECTED is a recommendation an operator acts on.
+**Why:** spec §20 and §20.1 ("insufficient evidence means the strategy remains unvalidated", do
+not let an aggregate hide a failing strategy) and the 11A prompt (criteria established before
+results; backtest, out-of-sample and paper evidence separated).
+
+### D-224 Strategy approval needs a CANDIDATE_FOR_REVIEW scorecard under an earlier protocol
+
+**Decision:** `GovernanceService.approve` for a strategy candidate also requires the newest
+scorecard entry for that strategy, built after SHADOW began, to be CANDIDATE_FOR_REVIEW, under a
+protocol registered no later than the start of SHADOW. No setting disables this. The approval
+record keeps the scorecard id, its result hash and the protocol digest. Rollback (re-approving a
+version that was approved before) is not gated. Model approval keeps the 8B gates (5A PASSED,
+incremental value, shadow predictions): the scorecard judges strategies' trading evidence, and
+no model is traded on its own.
+**Why:** 8B's approval needed only 20 forward shadow sessions, whatever happened in them; with
+this gate insufficient or negative evidence cannot reach APPROVED, and criteria cannot be fitted
+to evidence already seen.
+
+### D-225 Phase 11A historical evaluation: untouched dates, a separate evidence database
+
+**Decision:** the 11A walk-forward runs cover 2021-01-04 → 2026-06-26 in a separate database
+(`atlas_phase11a_evidence`, a copy of the demo database migrated to 0022), so their reserved
+holdout (2025-05-22 → 2026-06-26) holds no session that any earlier strategy evaluation looked
+at (8B used 2026-06-29 → 2026-10-30). Windows: rolling, one year of training, quarterly test
+windows (several times every holding horizon), RANDOM search of 12 trials, seed 11.
+[REDACTED_FOR_GITHUB] The protocol was registered before the runs were created.
+**Why:** an honest holdout, enough out-of-sample sessions and regimes, and no change to the 8B
+and 10B records.
+
+### D-226 Paper evidence: observed sessions only; the live observation run needs an operator
+
+**Decision:** paper evidence counts closed positions opened after the protocol's registration,
+and "observed sessions" are XNYS sessions in which the orchestrator completed at least one
+scheduled job during regular hours. Execution quality compares each entry fill with the
+decision's reference price and with the arrival price, against the execution model's assumed
+slippage plus half spread. Starting the multi-week live paper observation (enabling autonomous
+paper trading in a dedicated paper database with all workers) is an operator action and was
+not started by the coding agent.
+**Why:** a calendar day with nothing running is not observation; the user's standing
+instruction requires explicit human approval for consequential operational changes.

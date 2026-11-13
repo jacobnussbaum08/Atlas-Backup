@@ -26,6 +26,8 @@ one deployable backend, with modules separated by package boundaries rather than
 | `execution`, `paper_broker` | Order state machine, simulated broker | 7 |
 | `backtesting` | Event-driven historical replay through the shared strategy, risk, execution and accounting cores; point-in-time data; metrics, benchmarks, reproducibility | 8A ✅ |
 | `learning` | Walk-forward validation, robustness and overfitting controls, parameter experiments, ML candidate comparison, champion/challenger governance, degradation monitoring ([validation.md](validation.md)) | 8B ✅ |
+| `orchestration` | Autonomous paper-trading orchestration: trade-intent inbox, leased scheduled jobs, operator controls, entry gate, backstops, alerts ([orchestration.md](orchestration.md)) | 10A ✅, 10B ✅ |
+| `evidence` | Pre-registered evidence protocols, data audits, paper-trading evidence, readiness scorecards; the strategy-approval gate ([evidence.md](evidence.md)) | 11A 🚧 |
 | `notifications` | Dashboard notifications, later Telegram/email | 9+ |
 
 Future modules exist only as packages with a docstring that states their boundary. They contain

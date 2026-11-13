@@ -55,6 +55,12 @@ from app.database.models.backtesting import (
     BacktestTradeRecord,
 )
 from app.database.models.base import Base
+from app.database.models.evidence import (
+    EvidenceDataAuditRecord,
+    EvidenceProtocolRecord,
+    EvidenceScorecardEntryRecord,
+    EvidenceScorecardRecord,
+)
 from app.database.models.execution import (
     ExecutionAttemptRecord,
     ExecutionFillDetailRecord,
@@ -262,6 +268,10 @@ __all__ = [
     "EconomicEventRevisionRecord",
     "EventAssetRelationshipRecord",
     "EventClassificationRecord",
+    "EvidenceDataAuditRecord",
+    "EvidenceProtocolRecord",
+    "EvidenceScorecardEntryRecord",
+    "EvidenceScorecardRecord",
     "ExchangeRecord",
     "ExecutionAttemptRecord",
     "ExecutionFillDetailRecord",

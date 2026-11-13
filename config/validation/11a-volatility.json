@@ -1,0 +1,28 @@
+{
+  "name": "11A volatility walk-forward (IEX daily, 2021-01 to 2026-06)",
+  "kind": "WALK_FORWARD",
+  "strategies": [
+    {
+      "strategy_id": "volatility"
+    }
+  ],
+  "start_date": "2021-01-04",
+  "end_date": "2026-06-26",
+  "universe": {
+    "mode": "EXPLICIT",
+    "symbols": ["REDACTED_FOR_GITHUB"]
+  },
+  "timeframes": [
+    "1Day"
+  ],
+  "benchmark_symbol": "SPY",
+  "windows": {
+    "mode": "ROLLING",
+    "train_sessions": 252,
+    "test_sessions": 63,
+    "max_folds": 20
+  },
+  "seed": 11,
+  "search": "RANDOM",
+  "max_trials": 12
+}

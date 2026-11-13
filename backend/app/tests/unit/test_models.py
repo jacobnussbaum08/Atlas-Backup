@@ -198,6 +198,11 @@ def test_expected_tables_exist():
         "worker_heartbeats",
         "operator_credentials",
         "alert_acknowledgements",
+        # Phase 11A: evidence program
+        "evidence_protocols",
+        "evidence_data_audits",
+        "evidence_scorecards",
+        "evidence_scorecard_entries",
     }
 
 

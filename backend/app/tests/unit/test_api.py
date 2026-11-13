@@ -50,6 +50,19 @@ VALIDATION_WRITES = (
     "/api/v1/validation/monitoring/run",
     "/api/v1/validation/monitoring/rules",
 )
+# Phase 11A evidence program: protocols, data audits and scorecards (GET lists, POST create).
+EVIDENCE_LISTS = (
+    "/api/v1/evidence/protocols",
+    "/api/v1/evidence/audits",
+    "/api/v1/evidence/scorecards",
+)
+EVIDENCE_READS = (
+    "/api/v1/evidence/criteria/default",
+    "/api/v1/evidence/protocols/{protocol_id}",
+    "/api/v1/evidence/audits/{audit_id}",
+    "/api/v1/evidence/scorecards/latest",
+    "/api/v1/evidence/scorecards/{scorecard_id}",
+)
 
 
 def _ok(name: str):
@@ -389,6 +402,10 @@ def test_openapi_exposes_no_order_endpoints(build_client):
         "/api/v1/orchestration/alerts",
         ALERT_ACK,
         "/api/v1/orchestration/metrics",
+        # Phase 11A: evidence records (pre-registered criteria, audits, scorecards). Writes
+        # store evidence only; nothing enables, disables or promotes anything.
+        *EVIDENCE_LISTS,
+        *EVIDENCE_READS,
     }
     # Market trades (exchange prints) are read-only market data, not trading: the one
     # allowed path containing "trade" must expose GET only.
@@ -454,7 +471,13 @@ def test_openapi_exposes_no_order_endpoints(build_client):
         *ORCHESTRATION_STOPS,
         # Phase 10B: acknowledging an alert (an append-only note; it changes nothing else).
         ALERT_ACK,
+        # Phase 11A: register a protocol, store a data audit or a scorecard (append-only).
+        *EVIDENCE_LISTS,
     }
+    for path in EVIDENCE_LISTS:
+        assert set(paths[path]) == {"get", "post"}, path
+    for path in EVIDENCE_READS:
+        assert set(paths[path]) == {"get"}, path
     for path in (*ORCHESTRATION_STOPS, ALERT_ACK):
         assert set(paths[path]) == {"post"}
     assert not [

@@ -19,6 +19,11 @@ from sqlalchemy.exc import DBAPIError
 
 from app.backtesting.config import sha256_of
 from app.database.models import AuditLog, StrategyVersionRecord
+from app.database.models.evidence import (
+    EvidenceProtocolRecord,
+    EvidenceScorecardEntryRecord,
+    EvidenceScorecardRecord,
+)
 from app.database.models.learning import (
     LearningApprovalRecord,
     LearningDegradationAlertRecord,
@@ -29,6 +34,8 @@ from app.database.models.learning import (
     ValidationRunRecord,
 )
 from app.database.sessions import session_scope
+from app.evidence.enums import Classification, ReadinessVerdict
+from app.evidence.protocol import EvidenceCriteria
 from app.learning import governance as gov
 from app.learning.enums import (
     CandidateStatus,
@@ -162,6 +169,43 @@ def fixture_shadow(
         )
 
 
+def fixture_scorecard(
+    lab: ValidationLab, classification: Classification, *, registered_at: datetime, seed: int
+) -> None:
+    """TEST FIXTURE: a protocol and a readiness scorecard classifying ``fixture_proposer``
+    (inserted directly to exercise the approval gate; not an evaluation)."""
+    criteria = EvidenceCriteria.model_validate({"sample": {"min_oos_trades": 30 + seed}})
+    result = {"note": "TEST FIXTURE scorecard", "seed": seed}
+    with session_scope(lab.bench.factory) as session:
+        proto = EvidenceProtocolRecord(
+            name="TEST FIXTURE protocol",
+            version=seed,
+            criteria=criteria.as_json(),
+            criteria_sha256=criteria.sha256(),
+            rationale="TEST FIXTURE",
+            registered_by=OP,
+            registered_at=registered_at,
+        )
+        session.add(proto)
+        session.flush()
+        card = EvidenceScorecardRecord(
+            protocol_id=proto.id,
+            verdict=ReadinessVerdict.NOT_READY,
+            inputs={"fixture": True},
+            result=result,
+            result_sha256=sha256_of(result),
+            created_by=OP,
+            as_of=registered_at,
+        )
+        session.add(card)
+        session.flush()
+        session.add(
+            EvidenceScorecardEntryRecord(
+                scorecard_id=card.id, subject="fixture_proposer", classification=classification
+            )
+        )
+
+
 def _status(lab: ValidationLab, cid: uuid.UUID) -> CandidateStatus:
     with session_scope(lab.bench.factory) as session:
         return gov.status_of(session, cid)
@@ -213,6 +257,18 @@ def test_a_strategy_challenger_needs_evidence_and_an_explicit_replacement_and_ca
     with pytest.raises(GovernanceError, match="sufficient shadow evaluation"):
         g.approve(cid, actor=OP, reason="too early", replaces=incumbent)
     fixture_shadow(lab, cid)
+    # Phase 11A gate: a readiness scorecard under a protocol fixed before SHADOW began.
+    with pytest.raises(GovernanceError, match="readiness scorecard"):
+        g.approve(cid, actor=OP, reason="no scorecard", replaces=incumbent)
+    early = datetime(2026, 1, 1, tzinfo=UTC)
+    fixture_scorecard(lab, Classification.INSUFFICIENT_EVIDENCE, registered_at=early, seed=1)
+    with pytest.raises(GovernanceError, match="INSUFFICIENT_EVIDENCE, not CANDIDATE_FOR_REVIEW"):
+        g.approve(cid, actor=OP, reason="insufficient evidence", replaces=incumbent)
+    late = datetime(2099, 1, 1, tzinfo=UTC)
+    fixture_scorecard(lab, Classification.CANDIDATE_FOR_REVIEW, registered_at=late, seed=2)
+    with pytest.raises(GovernanceError, match="registered after SHADOW began"):
+        g.approve(cid, actor=OP, reason="criteria fitted afterwards", replaces=incumbent)
+    fixture_scorecard(lab, Classification.CANDIDATE_FOR_REVIEW, registered_at=early, seed=3)
     with pytest.raises(GovernanceError, match="never replaced implicitly"):
         g.approve(cid, actor=OP, reason="replace silently")
     approval = g.approve(cid, actor=OP, reason="human approval", replaces=incumbent)
@@ -233,6 +289,7 @@ def test_a_strategy_challenger_needs_evidence_and_an_explicit_replacement_and_ca
         assert rows[approval].decision.value == "APPROVE"
         assert rows[approval].replaced == {"candidate_id": str(incumbent), "model_version_id": None}
         assert "shadow" in rows[approval].evidence
+        assert rows[approval].evidence["scorecard"]["classification"] == "CANDIDATE_FOR_REVIEW"
         assert rows[rollback].decision.value == "ROLLBACK"
         audited = session.scalar(
             select(func.count(AuditLog.id)).where(

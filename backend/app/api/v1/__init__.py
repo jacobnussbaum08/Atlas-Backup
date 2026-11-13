@@ -7,6 +7,7 @@ from app.api.v1 import (
     assets,
     backtests,
     discovery,
+    evidence,
     intelligence,
     market_data,
     market_data_live,
@@ -46,6 +47,7 @@ router.include_router(paper_orders.positions_router)
 router.include_router(paper_orders.execution_router)
 router.include_router(backtests.router)
 router.include_router(validation.router)
+router.include_router(evidence.router)
 router.include_router(orchestration.router)
 router.include_router(system.router)
 

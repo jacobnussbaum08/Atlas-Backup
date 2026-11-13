@@ -684,6 +684,12 @@ class GovernanceService:
                 raise GovernanceError(
                     "approval needs a sufficient shadow evaluation recorded after SHADOW began"
                 )
+            # Phase 11A: no switch turns this off for strategies (D-224).
+            scorecard = (
+                self._scorecard_gate(session, cand, started)
+                if cand.subject_kind is SubjectKind.STRATEGY
+                else None
+            )
             current = approved_candidate(session, cand.subject_kind, cand.subject_key)
             replaced = self._replace(session, cand, current, replaces, actor, reason)
             event = self._event(
@@ -692,7 +698,10 @@ class GovernanceService:
                 C.APPROVED,
                 reason=reason,
                 actor=actor,
-                evidence={"shadow_comparison_id": str(shadow[0].id)},
+                evidence={
+                    "shadow_comparison_id": str(shadow[0].id),
+                    **({} if scorecard is None else {"scorecard": scorecard}),
+                },
             )
             version_id, model_id = self._activate(session, cand, actor, reason, "approval")
             approval = LearningApprovalRecord(
@@ -704,6 +713,7 @@ class GovernanceService:
                 evidence={
                     "shadow_comparison_id": str(shadow[0].id),
                     "shadow": shadow[0].result,
+                    "scorecard": scorecard,
                     "transitions": [
                         {"to": e.to_status.value, "evidence": e.evidence}
                         for e in session.scalars(
@@ -720,6 +730,43 @@ class GovernanceService:
             session.add(approval)
             session.flush()
             return approval.id
+
+    @staticmethod
+    def _scorecard_gate(
+        session: Session, cand: LearningCandidateRecord, started: datetime
+    ) -> dict[str, Any]:
+        """Phase 11A (D-224): a strategy is approved only on a readiness scorecard that
+        classifies it CANDIDATE_FOR_REVIEW, built after its shadow period began, under an
+        evidence protocol registered no later than that (criteria fixed before the
+        evidence). Insufficient evidence can therefore never reach APPROVED."""
+        from app.evidence.enums import Classification
+        from app.evidence.service import latest_entry
+
+        found = latest_entry(session, cand.subject_key, after=started)
+        if found is None:
+            raise GovernanceError(
+                "approval needs a Phase 11A readiness scorecard for this strategy built "
+                "after SHADOW began"
+            )
+        entry, card, proto = found
+        if proto.registered_at > started:
+            raise GovernanceError(
+                "the scorecard's evidence protocol was registered after SHADOW began: "
+                "criteria must be fixed before the evidence is collected"
+            )
+        if entry.classification is not Classification.CANDIDATE_FOR_REVIEW:
+            raise GovernanceError(
+                f"the latest scorecard classifies {cand.subject_key} "
+                f"{entry.classification.value}, not CANDIDATE_FOR_REVIEW"
+            )
+        return {
+            "scorecard_id": str(card.id),
+            "classification": entry.classification.value,
+            "protocol_id": str(proto.id),
+            "protocol": f"{proto.name} v{proto.version}",
+            "criteria_sha256": proto.criteria_sha256,
+            "result_sha256": card.result_sha256,
+        }
 
     def _replace(
         self,

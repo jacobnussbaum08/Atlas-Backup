@@ -1187,7 +1187,8 @@ curl -X POST -H "X-Atlas-Operator-Token: $TOKEN" -H "Content-Type: application/j
 ```
 
 Under a SUSPEND rule, a performance BREACH disables the strategy. Re-enabling it is an operator
-action (`python -m app.strategies.cli enable`). Nothing in monitoring changes risk limits.
+action (`POST /api/v1/strategies/{id}/status` with the operator token). Nothing in monitoring
+changes risk limits.
 
 ## Autonomous paper trading (Phase 10A)
 
@@ -1308,6 +1309,90 @@ uv run python -m app.orchestration.cli requeue-job --id 17 --actor operator:jaco
 **Execution model version 2.** New paper orders are simulated with the gap rule (a stop
 crossed by a gap fills no better than the first observed price beyond it). Orders already
 being worked keep version 1. `GET /api/v1/paper-execution/models` lists both.
+
+## Evidence and readiness (Phase 11A)
+
+Migration 0022. Design in [`architecture/evidence.md`](architecture/evidence.md); decisions
+D-222 to D-228. **Paper trading only; a scorecard changes nothing that trades and promotes
+nothing.**
+
+1. **Register the criteria first** (before the evidence they judge exists). In the paper
+   environment the actor must be an active named credential.
+
+   ```bash
+   uv run python -m app.evidence.cli register-protocol --actor operator:jacob --rationale "why these gates"
+   ```
+
+   `criteria` prints the defaults; `--criteria FILE.json` registers different ones as a new
+   version. Identical criteria are refused.
+
+2. **Audit the historical data** behind an evaluation:
+
+   ```bash
+   uv run python -m app.evidence.cli audit --actor operator:jacob --symbols SYMBOLS --start 2021-01-04 --end 2026-10-30 --selected-on 2026-11-09 --brief
+   ```
+
+3. **Validate** each strategy (Phase 8B), e.g. `config/validation/11a-*.json`, and read each
+   run's holdout once when selection is finished.
+
+4. **Build a scorecard**:
+
+   ```bash
+   uv run python -m app.evidence.cli scorecard --actor operator:jacob --protocol PROTOCOL_ID --run momentum=RUN_ID --run breakout=RUN_ID --portfolio-run EVALUATION_RUN_ID --audit AUDIT_ID --account "paper-trading" --brief
+   ```
+
+   `latest --brief`, `show ID` and the dashboard's **Evidence & Readiness** page (`/evidence`)
+   display it. API: `/api/v1/evidence/...` (POST needs the operator token).
+
+**Reading a scorecard.** REJECTED: negative evidence with a sufficient sample (an operator may
+disable the strategy in paper trading). INSUFFICIENT_EVIDENCE / NOT_DEMONSTRATED /
+CONTINUE_PAPER: keep collecting evidence. CANDIDATE_FOR_REVIEW: every criterion met; a human
+reviews. Strategy approval through governance needs a CANDIDATE_FOR_REVIEW scorecard built after
+the candidate entered SHADOW, under a protocol registered before that.
+
+### Live paper observation (Phase 11A)
+
+**Paper trading only.** A dedicated paper database (`atlas_paper_11a`), a restricted database
+role (`atlas_paper`: no superuser, no DDL) and host processes started by
+[`scripts/paper_observation.sh`](../scripts/paper_observation.sh). Configuration is the
+git-ignored `.env.paper11a` (paper environment; overrides `.env`, which keeps the provider
+credentials). Logs and PIDs: `logs/paper11a/`. API on `127.0.0.1:8124`.
+
+```bash
+scripts/paper_observation.sh start
+```
+
+```bash
+scripts/paper_observation.sh status
+```
+
+```bash
+scripts/paper_observation.sh stop
+```
+
+`start` runs the market-data stream, recovery, news stream, paper execution, position monitor
+and orchestrator workers plus the API. **Starting them does not enable trading**: the trading
+control starts DISABLED, and only a named operator enables it (`ctl` loads the paper
+environment and runs `app.orchestration.cli`; on Windows run the script with Git Bash, e.g.
+`& "C:\Program Files\Git\bin\bash.exe" scripts/paper_observation.sh ...`):
+
+```bash
+scripts/paper_observation.sh ctl enable --actor operator:jacob --reason "11A paper observation"
+```
+
+`ctl status`, `ctl protection`, `ctl alerts --open`, `ctl pause`, `ctl disable` and
+`ctl emergency-stop` (the last three with `--actor` and `--reason`) are the same CLI. The operator's API token is in `data/paper11a/jacob.token` (git-ignored; never printed).
+
+* **Strategies.** Only the strategies the latest scorecard did not reject are enabled in the
+  paper database (2026-11-12: mean reversion and event driven). Enabling another one is an
+  operator action (`POST /api/v1/strategies/{id}/status`).
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* **Durability.** These are plain host processes: they stop when the machine sleeps or shuts
+  down or the processes are killed. Only sessions in which the orchestrator actually ran count
+  as observed (D-226). For an unattended multi-week run, host them under Docker Compose or a
+  service manager.
+* **Scorecard with paper evidence** (after enough sessions): add `--account "Atlas paper
+  account"` to the `scorecard` command, run against the paper database.
 
 ## Backup and restore
 

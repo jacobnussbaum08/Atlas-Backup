@@ -3,6 +3,7 @@ import {
   Bot,
   BrainCircuit,
   CandlestickChart,
+  ClipboardCheck,
   ClipboardList,
   Gauge,
   Cpu,
@@ -194,6 +195,15 @@ export const NAV_SECTIONS: readonly NavSection[] = [
     specSection: "18.2, 19",
     phase: 8,
     summary: "Walk-forward validation, robustness and overfitting controls, champion/challenger governance, ML model comparison and degradation monitoring.",
+  },
+  {
+    path: "/evidence",
+    group: "Research",
+    title: "Evidence & Readiness",
+    icon: ClipboardCheck,
+    specSection: "20, 20.1",
+    phase: 11,
+    summary: "Readiness scorecards under pre-registered criteria: backtest, out-of-sample and paper-trading evidence kept apart; nothing is promoted automatically.",
   },
   {
     path: "/data-health",

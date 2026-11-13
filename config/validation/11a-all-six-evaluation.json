@@ -1,0 +1,42 @@
+{
+  "name": "11A all six strategies, stored parameters (EVALUATION, 2021-01 to 2026-06)",
+  "kind": "EVALUATION",
+  "search": "NONE",
+  "strategies": [
+    {
+      "strategy_id": "breakout"
+    },
+    {
+      "strategy_id": "event_driven"
+    },
+    {
+      "strategy_id": "mean_reversion"
+    },
+    {
+      "strategy_id": "momentum"
+    },
+    {
+      "strategy_id": "trend_following"
+    },
+    {
+      "strategy_id": "volatility"
+    }
+  ],
+  "start_date": "2021-01-04",
+  "end_date": "2026-06-26",
+  "universe": {
+    "mode": "EXPLICIT",
+    "symbols": ["REDACTED_FOR_GITHUB"]
+  },
+  "timeframes": [
+    "1Day"
+  ],
+  "benchmark_symbol": "SPY",
+  "windows": {
+    "mode": "ROLLING",
+    "train_sessions": 252,
+    "test_sessions": 63,
+    "max_folds": 20
+  },
+  "seed": 11
+}

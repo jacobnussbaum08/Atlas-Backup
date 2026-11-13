@@ -74,6 +74,32 @@ def _series(w: ev.WindowEvaluation) -> list[list[Any]]:
     return out
 
 
+def trade_rows(w: ev.WindowEvaluation) -> list[dict[str, Any]]:
+    """The window's kept (purged) closed trades, one row each: what the degradation monitor
+    and the 11A scorecard compare live paper positions with. Stored with the fold, outside
+    the result hash (D-222): the hash covers the statistics computed from these trades."""
+    rows: list[dict[str, Any]] = []
+    for t in w.kept_trades:
+        if t.entry_value <= 0:
+            continue
+        rows.append(
+            {
+                "strategy_id": t.strategy_id,
+                "symbol": t.symbol,
+                "direction": t.direction.value,
+                "first_session": t.first_session.isoformat(),
+                "last_session": None if t.last_session is None else t.last_session.isoformat(),
+                "net_pnl": float(t.net_pnl),
+                "costs": float(t.costs),
+                "entry_value": float(t.entry_value),
+                "return": float(t.net_pnl / t.entry_value),
+                "cost_rate": float(t.costs / t.entry_value),
+                "exit_reason": t.exit_reason,
+            }
+        )
+    return rows
+
+
 class ValidationService:
     def __init__(
         self,
@@ -322,7 +348,7 @@ class ValidationService:
                         selection=f.selection,
                         in_sample=f.in_sample,
                         validation=f.validation,
-                        out_of_sample=f.oos.as_json(),
+                        out_of_sample={**f.oos.as_json(), "trades": trade_rows(f.oos)},
                         champion_out_of_sample=None
                         if f.champion_oos is None
                         else f.champion_oos.as_json(),
