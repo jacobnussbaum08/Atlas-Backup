@@ -23,6 +23,7 @@ from app.accounting.runtime import AccountingContext
 from app.core.exceptions import DependencyUnavailableError
 from app.database.sessions import session_scope
 from app.portfolio import queries
+from app.portfolio.performance import report as performance_report
 
 portfolio_router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 accounting_router = APIRouter(prefix="/accounting", tags=["accounting"])
@@ -101,6 +102,19 @@ def snapshots(
 ) -> list[dict[str, Any]]:
     with session_scope(ctx.session_factory) as session:
         return queries.snapshots(session, queries.resolve_account(session, account_id), limit)
+
+
+@portfolio_router.get("/performance")
+def performance(
+    ctx: Context,
+    account_id: AccountId = None,
+    benchmark: Annotated[str, Query(pattern=r"^[A-Z][A-Z0-9.]{0,9}$")] = "SPY",
+) -> dict[str, Any]:
+    """Paper-account performance (spec 22.6): recorded equity curve, drawdown, monthly
+    returns, risk-adjusted returns, costs, breakdowns and a benchmark, with sample sizes."""
+    with session_scope(ctx.session_factory) as session:
+        account = queries.resolve_account(session, account_id)
+        return performance_report(session, account, benchmark_symbol=benchmark)
 
 
 # ------------------------------------------------------------------ accounting

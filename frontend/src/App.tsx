@@ -47,6 +47,8 @@ const BacktestingPage = lazyPage(() => import("./pages/BacktestingPage"), "Backt
 const BacktestDetailPage = lazyPage(() => import("./pages/BacktestDetailPage"), "BacktestDetailPage");
 const ValidationPage = lazyPage(() => import("./pages/ValidationPage"), "ValidationPage");
 const EvidencePage = lazyPage(() => import("./pages/EvidencePage"), "EvidencePage");
+const PerformancePage = lazyPage(() => import("./pages/PerformancePage"), "PerformancePage");
+const NotificationsPage = lazyPage(() => import("./pages/NotificationsPage"), "NotificationsPage");
 const ValidationRunPage = lazyPage(() => import("./pages/ValidationRunPage"), "ValidationRunPage");
 const DataHealthPage = lazyPage(() => import("./pages/DataHealthPage"), "DataHealthPage");
 const IngestionPage = lazyPage(() => import("./pages/IngestionPage"), "IngestionPage");
@@ -87,6 +89,8 @@ export function App({ pollIntervalMs }: { pollIntervalMs?: number }) {
         <Route path="/backtesting/:runId" element={<BacktestDetailPage />} />
         <Route path="/research" element={<ValidationPage />} />
         <Route path="/evidence" element={<EvidencePage />} />
+        <Route path="/performance" element={<PerformancePage />} />
+        <Route path="/notifications" element={<NotificationsPage />} />
         <Route path="/research/runs/:runId" element={<ValidationRunPage />} />
         <Route path="/data-health" element={<DataHealthPage />} />
         <Route path="/ingestion" element={<IngestionPage />} />

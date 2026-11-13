@@ -316,6 +316,8 @@ def test_openapi_exposes_no_order_endpoints(build_client):
         "/api/v1/portfolio/holdings",
         "/api/v1/portfolio/pnl",
         "/api/v1/portfolio/snapshots",
+        "/api/v1/portfolio/performance",
+        "/api/v1/notifications",
         "/api/v1/accounting/chart",
         "/api/v1/accounting/templates",
         "/api/v1/accounting/journal",

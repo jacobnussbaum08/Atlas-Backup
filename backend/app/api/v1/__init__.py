@@ -16,6 +16,7 @@ from app.api.v1 import (
     market_data_stream,
     ml,
     news,
+    notifications,
     orchestration,
     paper_orders,
     portfolio,
@@ -49,6 +50,7 @@ router.include_router(backtests.router)
 router.include_router(validation.router)
 router.include_router(evidence.router)
 router.include_router(orchestration.router)
+router.include_router(notifications.router)
 router.include_router(system.router)
 
 __all__ = ["router"]

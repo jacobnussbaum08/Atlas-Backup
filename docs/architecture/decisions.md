@@ -2823,3 +2823,21 @@ daily volume can still change in extended hours, and finality is a data-engine r
 must not second-guess. Live decisions now happen after midnight New York instead of in the
 evening; nothing else changes. P1 for paper-trading operation; no financial record was
 affected.
+
+### D-231 Paper Performance page and notifications are views of stored records
+
+**Decision:** spec §22.6 is `GET /api/v1/portfolio/performance` and the dashboard page
+**Performance**: the equity curve is the last COMPLETE valuation checkpoint of each New York
+day (STALE/INCOMPLETE checkpoints counted, never drawn, nothing interpolated); trades are
+closed simulated paper positions, net of commissions, fees and accrued borrow; Sharpe and
+Sortino are withheld below 20 daily returns, with the reason; the benchmark is the stored
+split-adjusted SPY close on the first and last recorded day (price return). Spec §23 is
+`GET /api/v1/notifications` and the page **Notifications**: a feed derived from position
+events (OPENED, CLOSED), large closed P/L (≥ 0.5% of contributed capital), REJECTED/FAILED
+orders, RISK_REJECTED/EXECUTION_REFUSED/DEAD trade intents, circuit-breaker events and HIGH or
+CRITICAL system-health events. Ids are `<kind>:<source id>`, so a future Telegram or email
+channel (`NotificationChannel`, send-only) can deliver each once. Both endpoints are read-only.
+**Why:** the 2026-11-12 audit found both missing. Deriving them from the existing append-only
+records needs no migration, cannot drift from the source of truth and cannot fabricate a figure;
+a separate notification table would duplicate state and need its own reconciliation. No
+external channel is built: none is configured, and the spec asks only for the adapter design.

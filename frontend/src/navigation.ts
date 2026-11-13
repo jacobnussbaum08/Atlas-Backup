@@ -1,5 +1,6 @@
 import {
   Activity,
+  Bell,
   Bot,
   BrainCircuit,
   CandlestickChart,
@@ -12,6 +13,7 @@ import {
   HeartPulse,
   History,
   LayoutDashboard,
+  LineChart,
   Layers,
   Newspaper,
   Radar,
@@ -179,6 +181,15 @@ export const NAV_SECTIONS: readonly NavSection[] = [
     summary: "Simulated slippage, fill rates, partial fills, estimated costs and the versioned execution-model assumptions.",
   },
   {
+    path: "/performance",
+    group: "Paper trading",
+    title: "Performance",
+    icon: LineChart,
+    specSection: "22.6",
+    phase: 11,
+    summary: "The paper account's recorded equity curve, drawdown, monthly and risk-adjusted returns, costs, strategy and benchmark comparisons, with sample sizes.",
+  },
+  {
     path: "/backtesting",
     group: "Research",
     title: "Backtesting",
@@ -231,6 +242,15 @@ export const NAV_SECTIONS: readonly NavSection[] = [
     specSection: "22.10",
     phase: 9,
     summary: "API, database, migrations, Redis, background workers, providers, recent errors and recovery activity.",
+  },
+  {
+    path: "/notifications",
+    group: "Operations",
+    title: "Notifications",
+    icon: Bell,
+    specSection: "23",
+    phase: 11,
+    summary: "Opened and closed paper positions, large P/L, rejected orders and trades, circuit breakers and system alerts.",
   },
   {
     path: "/settings",
