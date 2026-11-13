@@ -38,6 +38,7 @@ from app.database.models.orchestration import (
     OrchestratorStatusRecord,
     TradeIntentRecord,
 )
+from app.database.models.portfolio import PortfolioSnapshotRecord
 from app.database.sessions import session_scope
 from app.events.outbox import enqueue
 from app.execution.enums import (
@@ -752,3 +753,25 @@ def test_sustained_operation_with_restarts_outages_and_duplicate_deliveries(benc
             == 0
         )
     books_reconcile(bench)
+
+
+def test_the_session_review_records_one_valuation_checkpoint_for_the_day(bench):
+    """D-232: every session gets a valuation checkpoint, flat or not, so the Performance
+    page's daily returns include flat days. Caught-up past days get none (no backdating)."""
+    runtime = bench.orchestrator()  # Tuesday 2026-11-03 22:30 UTC, after the review time
+    tick(runtime)
+    reviews = jobs(bench, JobKind.SESSION_CLOSE_REVIEW)
+    today = reviews["eod:2026-11-03"].result["valuation_checkpoint"]
+    assert today is not None
+    assert (today["status"], today["created"]) == ("COMPLETE", True)
+    assert D(today["equity"]) == D("100000")  # the flat CONTROLLED_TEST account
+    for day in ("2026-10-29", "2026-10-30", "2026-11-02"):  # caught up: no backdated value
+        assert reviews[f"eod:{day}"].result["valuation_checkpoint"] is None
+    tick(runtime)
+    with session_scope(bench.factory) as session:
+        snapshots = session.scalar(
+            select(func.count())
+            .select_from(PortfolioSnapshotRecord)
+            .where(PortfolioSnapshotRecord.portfolio_account_id == bench.account)
+        )
+    assert snapshots == 1  # once per day, however often the orchestrator ticks

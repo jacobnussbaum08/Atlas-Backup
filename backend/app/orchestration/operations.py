@@ -19,6 +19,7 @@ Each returns a JSON-able summary that the job row stores.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -77,12 +78,16 @@ class OperationsWork:
         accounting: AccountingSettings,
         *,
         require_workers: bool = True,
+        checkpoint: Callable[[], Any] | None = None,
     ) -> None:
         self._factory = session_factory
         self._clock = clock
         self._account = account_id
         self._accounting = accounting
         self._require = require_workers
+        # D-232: one valuation checkpoint per session, positions or not (the Performance
+        # page's equity curve and daily returns need every session, flat days included).
+        self._checkpoint = checkpoint
 
     # ------------------------------------------------------------------ freshness
     def data_freshness(self) -> dict[str, Any]:
@@ -248,6 +253,18 @@ class OperationsWork:
         now = self._clock.now()
         day = slot_day(slot) or local_date(now)
         start, end = _day_window(day)
+        # The day's valuation checkpoint, taken now and only for the current day: a review
+        # caught up after an outage cannot value a past close (no backdated snapshot).
+        valuation: dict[str, Any] | None = None
+        if self._checkpoint is not None and day == local_date(now):
+            result = self._checkpoint()
+            valuation = {
+                "snapshot_id": str(result.snapshot_id),
+                "as_of": result.as_of.isoformat(),
+                "status": result.valuation_status.value,
+                "equity": str(result.equity),
+                "created": result.created,
+            }
         a = self._account
         with session_scope(self._factory) as session:
             intents = _counts(
@@ -336,6 +353,7 @@ class OperationsWork:
             "positions_open_at_review": open_now,
             "alerts": alert_counts,
             "jobs": jobs,
+            "valuation_checkpoint": valuation,
         }
 
 

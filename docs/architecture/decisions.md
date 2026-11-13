@@ -2841,3 +2841,11 @@ channel (`NotificationChannel`, send-only) can deliver each once. Both endpoints
 records needs no migration, cannot drift from the source of truth and cannot fabricate a figure;
 a separate notification table would duplicate state and need its own reconciliation. No
 external channel is built: none is configured, and the spec asks only for the adapter design.
+
+### D-232 One valuation checkpoint per session, positions or not
+
+**Decision:** the daily SESSION_CLOSE_REVIEW job (close + 15 min) takes the account's valuation
+checkpoint for the current day (`ValuationService.checkpoint`, idempotent per `as_of`). A review
+caught up for a past day takes none: a past close cannot be valued after the fact.
+[REDACTED_FOR_GITHUB] A flat account had no equity curve, and flat days would have been missing
+from the daily returns, overstating Sharpe and understating volatility.

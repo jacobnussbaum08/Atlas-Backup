@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.accounting.config import AccountingSettings, get_accounting_settings
 from app.accounting.reconciliation import ReconciliationService
+from app.accounting.runtime import build_accounting_context
 from app.core.clocks import Clock
 from app.core.exceptions import NotFoundError
 from app.core.logging import get_logger
@@ -354,6 +355,7 @@ def build_orchestrator(
     risk = build_risk_context(session_factory, clock, accounting=accounting)
     execution = build_execution_context(session_factory, clock, accounting=accounting)
     assert risk.reservations is not None  # noqa: S101  # built by build_risk_context
+    valuation = build_accounting_context(session_factory, clock, settings=accounting).valuation
     work = ScheduledWork(
         session_factory,
         clock,
@@ -368,6 +370,7 @@ def build_orchestrator(
         account_id,
         accounting,
         require_workers=settings.require_protection_workers,
+        checkpoint=lambda: valuation.checkpoint(account_id, actor=SYSTEM_ACTOR),
     )
     protection = ProtectionGuard(
         session_factory,
