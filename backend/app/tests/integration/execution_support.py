@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
@@ -30,6 +31,7 @@ from app.execution.portfolio import AccountingPositionLedger
 from app.execution.service import ExecutionService
 from app.paper_broker.controlled import ControlledPaperBroker
 from app.risk.enums import ReservationStatus, TradeDirection
+from app.tests.integration.accounting_support import NOW
 from app.tests.integration.reservation_support import Reservations, make_reservations
 
 COORDINATOR = "system:execution-coordinator"
@@ -234,9 +236,13 @@ class Execution:
 
 
 def make_execution(
-    engine: Any, *, cancel_mode: CancelMode = CancelMode.IMMEDIATE, **config: Any
+    engine: Any,
+    *,
+    cancel_mode: CancelMode = CancelMode.IMMEDIATE,
+    now: datetime = NOW,
+    **config: Any,
 ) -> Execution:
-    rv = make_reservations(engine)
+    rv = make_reservations(engine, now)
     broker = ControlledPaperBroker(cancel_mode=cancel_mode)
     from app.execution.models import ExecutionConfig
 

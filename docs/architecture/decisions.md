@@ -2775,3 +2775,51 @@ and data-quality gates keep entries closed). Regression test: 25 inserts on one 
 configured)` with the plan's stream limit, instead of the number of symbols.
 [REDACTED_FOR_GITHUB] The old check accepted 22 symbols and the stream worker then failed
 permanently at subscribe. [REDACTED_FOR_GITHUB]
+
+### D-229 Take-profit limits are placed on the tick grid; refused exits are reported, not counted
+
+**Decision:** the position monitor rests a take-profit at the strategy's target moved onto the
+position's tick grid, at or beyond the target (a long sells at the first tick at or above it, a
+short covers at the first tick at or below it). The position keeps the strategy's exact target.
+A submission the execution engine refuses is never counted as an exit: it is recorded
+(`EXIT_SUBMITTED`, `decision: REFUSED`), counted in `exits_refused`, reported in the pass's
+errors (the worker's heartbeat turns DEGRADED) and logged as an error. A refused protective
+exit is retried every pass; an identical refused take-profit only after 15 minutes.
+**Why:** found by the final system audit (2026-11-12) with the first test that runs a real
+strategy proposal through the coordinator, the orchestrator, the risk engine and the paper
+broker to a closed position. Strategy targets are computed levels (entry + k x ATR) that are
+almost never on the 0.01 grid, and the execution engine rightly refuses an off-grid limit
+(`PRICE_PRECISION`). Every earlier test used fixture targets on the grid, so nobody saw that
+in the real pipeline **no take-profit was ever placed**: the monitor retried on every pass
+(every 5 s, a new idempotency key, request and position event each time) while reporting
+`take_profits_placed`. Positions would have left only at their stop, their expiry or by an
+operator's close, unlike the backtester, whose bracket fills at the exact target. P1 for
+position management; no financial record was wrong (nothing was filled or posted), and it never
+ran with trading enabled. Rounding beyond the target, not to the nearest tick, keeps the
+simulated exit from booking a level the target had not reached. Regression tests:
+`test_end_to_end_pipeline.py` (long take-profit, stop-loss, short cover, disabled/halted),
+`test_position_management.py` (off-grid target, refusal handling), `test_position_monitor.py`.
+
+### D-230 Daily research jobs run when the session's daily bar is final, not at the close
+
+**Decision:** MARKET_INTELLIGENCE (which retrieves the qualified universe's daily bars),
+DECISION_OUTCOMES and DEGRADATION_MONITOR become due for a session when its daily bar is final
+for the data engine (the end of the bar's interval: midnight New York, D-022) plus
+`ORCHESTRATOR_DAILY_DATA_MARGIN_SECONDS` (900), and not before the close plus
+`ORCHESTRATOR_AFTER_CLOSE_DELAY_SECONDS`. Their slots are named `daily:<day>` (earlier
+`close:<day>` rows stay as history). The slot stays current until the next session's data is
+ready. Bar finality itself is unchanged.
+**Why:** found by the final system audit in the running 11A paper environment. The jobs ran 65
+minutes after the close; a daily bar retrieved then is stored INCOMPLETE (its interval has not
+ended) and, correctly, no feature, regime or strategy reads an INCOMPLETE bar. Nothing
+retrieved it again before the next evening, by which time the bar-close trigger looks for the
+*next* session's bar. [REDACTED_FOR_GITHUB] Tests never saw it because fixture bars are VALID
+30 minutes after the close. With the fix the bars are retrieved after midnight New York,
+strategies evaluate them and the coordinator decides before the next open; the LIMIT entry
+rests for that session, which is the session the 8A backtester fills in, and the information
+set (the final bar of the signal day) is the one the backtests assume (D-176). The alternative,
+declaring a daily bar final at the close plus a settle delay, was not taken: the provider's
+daily volume can still change in extended hours, and finality is a data-engine rule strategies
+must not second-guess. Live decisions now happen after midnight New York instead of in the
+evening; nothing else changes. P1 for paper-trading operation; no financial record was
+affected.

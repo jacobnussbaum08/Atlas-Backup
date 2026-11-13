@@ -16,9 +16,10 @@ import pytest
 from sqlalchemy import func, select
 
 from app.database.models.accounting import AssetQuantityRecord
-from app.database.models.execution import OrderRecord
+from app.database.models.execution import OrderRecord, PositionEventRecord
 from app.database.sessions import session_scope
-from app.execution.enums import ExitReason, OrderPurpose, OrderType
+from app.execution import monitor as monitor_module
+from app.execution.enums import ExitReason, OrderPurpose, OrderType, PositionEventType
 from app.risk import governance
 from app.risk.enums import TradeDirection
 from app.tests.integration.simulation_support import SESSION, D, Sim, make_simulation
@@ -405,3 +406,83 @@ def test_stale_data_defers_protection_and_exits_nothing(sim):
     sim.quote(asset, "94.00", "94.05", at=SESSION + timedelta(minutes=2))
     sim.monitor_once()
     assert sim.position(entry).trigger_reason is None
+
+
+# ---------------------------------------------------------------------- tick grid (D-229)
+def exit_events(sim: Sim, entry) -> list[dict[str, Any]]:
+    position = sim.position(entry)
+    assert position is not None
+    with session_scope(sim.factory) as session:
+        rows = session.scalars(
+            select(PositionEventRecord)
+            .where(
+                PositionEventRecord.position_id == position.id,
+                PositionEventRecord.event_type == PositionEventType.EXIT_SUBMITTED,
+            )
+            .order_by(PositionEventRecord.sequence)
+        ).all()
+        return [dict(r.details) for r in rows]
+
+
+def test_a_target_off_the_tick_grid_rests_on_the_grid_at_or_beyond_it(sim):
+    """Strategy targets are computed levels (entry + k x ATR), almost never on the tick
+    grid. The take-profit must still be accepted: its limit is the first grid price at or
+    beyond the target, and it is placed once."""
+    account, asset, _r, entry = open_long(sim, "PMG", target="101.0037")
+    summary = sim.monitor_once()
+    assert (summary.take_profits_placed, summary.exits_refused, summary.errors) == (1, 0, [])
+    (tp,) = exits(sim, entry)
+    assert (tp.order_type, tp.limit_price, tp.quantity) == (
+        OrderType.TAKE_PROFIT,
+        D("101.01"),
+        D(10),
+    )
+    assert sim.position(entry).target_price == D("101.0037")  # the strategy's level is kept
+    assert [e["decision"] for e in exit_events(sim, entry)] == ["ORDER_CREATED"]
+    for _ in range(3):
+        again = sim.monitor_once()
+        assert (again.take_profits_placed, again.exits_refused) == (0, 0)
+    assert len(exits(sim, entry)) == 1
+    sim.ex.dispatch()
+    sim.later(30)
+    sim.trade(asset, "101.03", "200")
+    sim.later(1)
+    sim.simulate()
+    position = sim.position(entry)
+    assert position.status.value == "CLOSED"
+    assert position.exit_reason is ExitReason.TAKE_PROFIT
+    assert position.realized_pnl == D("14.30")  # (101.01 - 99.58) x 10
+    assert reconciled(sim, account) == "PASSED"
+
+
+def test_a_refused_take_profit_is_reported_and_not_resubmitted_every_pass(sim, monkeypatch):
+    """A submission the execution engine refuses creates no order. It must not be counted
+    as placed, must stay visible on every pass and must not be resubmitted (with a new
+    idempotency key and a new event) every few seconds."""
+    monkeypatch.setattr(monitor_module, "take_profit_limit", lambda target, tick, direction: target)
+    _account, _asset, _r, entry = open_long(sim, "PMR", target="101.0037")
+    first = sim.monitor_once()
+    assert (first.take_profits_placed, first.exits_refused) == (0, 1)
+    assert len(first.errors) == 1
+    assert "PRICE_PRECISION" in first.errors[0]["error"]
+    assert exits(sim, entry) == []
+    for _ in range(5):
+        sim.later(5)
+        again = sim.monitor_once()
+        assert (again.take_profits_placed, again.exits_refused) == (0, 0)
+        assert len(again.errors) == 1  # still no take-profit: the pass says so
+    events = exit_events(sim, entry)
+    assert [e["decision"] for e in events] == ["REFUSED"]
+    assert events[0]["exit_reason"] == "TAKE_PROFIT"
+    # After the retry interval the same request is tried once more (and refused again).
+    sim.later(15 * 60)
+    retried = sim.monitor_once()
+    assert retried.exits_refused == 1
+    assert [e["decision"] for e in exit_events(sim, entry)] == ["REFUSED", "REFUSED"]
+    # With the grid rule restored the take-profit is placed on the next pass.
+    monkeypatch.undo()
+    sim.later(15 * 60)
+    fixed = sim.monitor_once()
+    assert (fixed.take_profits_placed, fixed.exits_refused, fixed.errors) == (1, 0, [])
+    (tp,) = exits(sim, entry)
+    assert tp.limit_price == D("101.01")

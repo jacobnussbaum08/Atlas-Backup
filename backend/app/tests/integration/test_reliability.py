@@ -338,18 +338,29 @@ def test_daily_jobs_missed_during_an_outage_are_caught_up(bench):
     calls = bench.calls
     research = {"decision_outcomes": calls.stub("outcomes")}
 
-    # Tuesday 2026-11-03 22:30 UTC = 17:30 New York: after the close plus the delays.
+    # Tuesday 2026-11-03 22:30 UTC = 17:30 New York: after the close plus the delays. The
+    # research job reads final daily bars (D-230): Tuesday's bar is not final before
+    # midnight New York, so the newest session whose data is ready is Monday's.
     runtime = bench.orchestrator(run_decision_outcomes=True, research=research)
     tick(runtime)
     assert calls.counts["outcomes"] == 1
     outcomes = jobs(bench, JobKind.DECISION_OUTCOMES)
-    assert outcomes["close:2026-11-03"].status is JobStatus.SUCCEEDED
-    # The days before the first run are recorded as covered, not run three more times.
-    assert {s: j.status for s, j in outcomes.items() if s != "close:2026-11-03"} == {
-        "close:2026-10-29": JobStatus.SUPERSEDED,
-        "close:2026-10-30": JobStatus.SUPERSEDED,
-        "close:2026-11-02": JobStatus.SUPERSEDED,
+    assert outcomes["daily:2026-11-02"].status is JobStatus.SUCCEEDED
+    # The days before the first run are recorded as covered, not run two more times.
+    assert {s: j.status for s, j in outcomes.items() if s != "daily:2026-11-02"} == {
+        "daily:2026-10-29": JobStatus.SUPERSEDED,
+        "daily:2026-10-30": JobStatus.SUPERSEDED,
     }
+    # Later the same evening nothing more is due; after midnight New York (plus the
+    # margin) Tuesday's data is final and its slot runs, once.
+    bench.clock.set(datetime(2026, 11, 4, 4, 0, tzinfo=UTC))  # 23:00 New York
+    tick(runtime)
+    assert calls.counts["outcomes"] == 1
+    bench.clock.set(datetime(2026, 11, 4, 5, 20, tzinfo=UTC))  # 00:20 New York
+    tick(runtime)
+    tick(runtime)
+    assert calls.counts["outcomes"] == 2
+    assert jobs(bench, JobKind.DECISION_OUTCOMES)["daily:2026-11-03"].status is JobStatus.SUCCEEDED
     reviews = jobs(bench, JobKind.SESSION_CLOSE_REVIEW)
     assert sorted(reviews) == [
         "eod:2026-10-29",
@@ -365,19 +376,18 @@ def test_daily_jobs_missed_during_an_outage_are_caught_up(bench):
         run_decision_outcomes=True, research=research, worker_id="orchestrator:restarted"
     )
     report = tick(restarted)
-    assert calls.counts["outcomes"] == 2  # once, for the newest missed day
+    assert calls.counts["outcomes"] == 3  # once, for the newest session (Friday's)
     outcomes = jobs(bench, JobKind.DECISION_OUTCOMES)
-    assert outcomes["close:2026-11-06"].status is JobStatus.SUCCEEDED
-    assert outcomes["close:2026-11-06"].result["caught_up"] is True
-    assert outcomes["close:2026-11-04"].status is JobStatus.SUPERSEDED
-    assert outcomes["close:2026-11-05"].status is JobStatus.SUPERSEDED
+    assert outcomes["daily:2026-11-06"].status is JobStatus.SUCCEEDED
+    assert outcomes["daily:2026-11-04"].status is JobStatus.SUPERSEDED
+    assert outcomes["daily:2026-11-05"].status is JobStatus.SUPERSEDED
     reviews = jobs(bench, JobKind.SESSION_CLOSE_REVIEW)
     for day in ("2026-11-04", "2026-11-05", "2026-11-06"):  # each missed day on its own
         assert reviews[f"eod:{day}"].status is JobStatus.SUCCEEDED
         assert reviews[f"eod:{day}"].result["day"] == day
     assert any(j.caught_up for j in report.jobs)
     tick(restarted)
-    assert calls.counts["outcomes"] == 2  # nothing runs twice
+    assert calls.counts["outcomes"] == 3  # nothing runs twice
 
 
 def test_interval_gaps_are_reported_and_not_back_filled(bench):

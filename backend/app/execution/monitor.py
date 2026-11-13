@@ -15,7 +15,8 @@ transaction under the account lock:
    of a still-working entry order, cancels resting take-profit orders (one-cancels-other)
    and, once nothing else can fill, submits **one** MARKET exit for what the position holds.
    With no trigger, a resting TAKE_PROFIT limit is kept at the target for the quantity no
-   other exit covers.
+   other exit covers. The limit is the target moved onto the instrument's tick grid, never
+   to the near side of it (strategy targets are computed levels, rarely on the grid).
 4. **costs**: short positions accrue borrow daily (6A ``financing_cost``, accrued) at the
    model's rate on the last fresh mark; a closed position's accrued borrow is paid (6A
    ``accrual_settlement``).
@@ -24,6 +25,12 @@ Every exit goes through the execution engine's normal submission (authorized sub
 ``system:execution-position-monitor``, validation, idempotency key derived from the
 position) and the paper broker; every change is a ``position_events`` row. Exits are never
 blocked by new-entry circuit breakers (D-157); nothing here can open or increase exposure.
+
+A submission the execution engine **refuses** creates no order. It is never counted as an
+exit: it is recorded (``EXIT_SUBMITTED`` event with ``decision: REFUSED``), reported in the
+pass summary's ``errors`` (the worker's heartbeat turns DEGRADED) and counted in
+``exits_refused``. A refused protective exit is retried on every pass (it protects the
+position); an identical refused take-profit only after ``refused_retry_interval`` (D-229).
 """
 
 from __future__ import annotations
@@ -50,12 +57,14 @@ from app.database.models.execution import (
     OrderRecord,
     PaperPositionRecord,
     PositionCloseRequestRecord,
+    PositionEventRecord,
 )
 from app.database.models.portfolio import PortfolioSnapshotRecord
 from app.events.outbox import enqueue
 from app.execution.enums import (
     FINAL_ORDER_STATUSES,
     CloseRequestStatus,
+    ExecutionDecision,
     ExitReason,
     OrderPurpose,
     OrderStatus,
@@ -63,7 +72,7 @@ from app.execution.enums import (
     PositionEventType,
     PositionStatus,
 )
-from app.execution.models import OrderRequest, plain
+from app.execution.models import OrderRequest, SubmissionResult, plain
 from app.execution.positions import PositionBook
 from app.execution.protection import Levels, decide
 from app.execution.service import RECONCILE_TOPIC, ExecutionService
@@ -71,7 +80,7 @@ from app.execution.simulation import market_open
 from app.execution.validation import closable_quantity
 from app.paper_broker import market
 from app.paper_broker.execution_model import DEFAULT_MODEL, ExecutionModel
-from app.paper_broker.fill_model import cost_round
+from app.paper_broker.fill_model import ceil_to, cost_round, floor_to
 from app.portfolio.pricing import valuation_price
 from app.portfolio.valuation import ValuationService
 from app.risk.enums import TradeDirection
@@ -88,6 +97,9 @@ CANCELLING = frozenset({OrderStatus.CANCEL_PENDING})
 class MonitorConfig:
     valuation_interval: timedelta = timedelta(minutes=15)
     batch: int = 200
+    # An identical take-profit the execution engine refused is not resubmitted before this
+    # (a refusal is a validation result: the same request gets the same answer).
+    refused_retry_interval: timedelta = timedelta(minutes=15)
 
 
 @dataclass
@@ -96,6 +108,7 @@ class MonitorSummary:
     triggers: int = 0
     exits_submitted: int = 0
     take_profits_placed: int = 0
+    exits_refused: int = 0
     cancels_requested: int = 0
     borrow_accruals: int = 0
     valuations: int = 0
@@ -113,6 +126,32 @@ class CloseResult:
 
 def _midnight(day: Any) -> datetime:
     return datetime.combine(day, time(0), tzinfo=UTC)
+
+
+def take_profit_limit(target: Decimal, tick: Decimal | None, direction: TradeDirection) -> Decimal:
+    """The limit of a resting take-profit: ``target`` on the tick grid, at or beyond it (a
+    long sells at or above its target, a short covers at or below), so the simulated exit
+    never books a level the strategy's target had not reached. Unchanged when it is already
+    on the grid or the tick is unknown."""
+    if tick is None or tick <= ZERO:
+        return target
+    if direction is TradeDirection.LONG:
+        return ceil_to(target, tick)
+    below = floor_to(target, tick)
+    return below if below > ZERO else ceil_to(target, tick)
+
+
+def _refused(result: SubmissionResult) -> bool:
+    return result.decision is ExecutionDecision.REFUSED or result.order_id is None
+
+
+def _refusal(position: PaperPositionRecord, what: str, result: SubmissionResult) -> dict[str, Any]:
+    codes = ", ".join(str(r.get("code")) for r in result.reasons) or "no reason given"
+    return {
+        "position_id": str(position.id),
+        "error": f"{what} for {position.symbol} was refused by the execution engine ({codes}); "
+        "no order exists",
+    }
 
 
 class PositionMonitor:
@@ -451,7 +490,19 @@ class PositionMonitor:
         closable = min(closable_quantity(session, entry), position.open_quantity)
         if closable <= 0:
             return
-        self._submit_exit(session, position, closable, OrderType.MARKET, None, reason, now)
+        result = self._submit_exit(session, position, closable, OrderType.MARKET, None, reason, now)
+        if _refused(result):
+            # No order exists: the trigger stands and the next pass tries again.
+            summary.exits_refused += 1
+            summary.errors.append(_refusal(position, f"the {reason.value} exit", result))
+            logger.error(
+                "execution.protective_exit_refused",
+                simulated=True,
+                position_id=str(position.id),
+                exit_reason=reason.value,
+                codes=[r.get("code") for r in result.reasons][:10],
+            )
+            return
         summary.exits_submitted += 1
         for request in requests:
             if request.status is CloseRequestStatus.PENDING:
@@ -472,16 +523,68 @@ class PositionMonitor:
         uncovered = min(closable_quantity(session, entry), position.open_quantity)
         if uncovered <= 0:
             return
-        self._submit_exit(
+        limit = take_profit_limit(
+            position.target_price, position.price_increment, position.direction
+        )
+        earlier = self._refused_take_profit(session, position, uncovered, limit, now)
+        if earlier is not None:
+            summary.errors.append(earlier)  # still without a take-profit: stay visible
+            return
+        result = self._submit_exit(
             session,
             position,
             uncovered,
             OrderType.TAKE_PROFIT,
-            position.target_price,
+            limit,
             ExitReason.TAKE_PROFIT,
             now,
         )
+        if _refused(result):
+            summary.exits_refused += 1
+            summary.errors.append(_refusal(position, "the take-profit order", result))
+            logger.error(
+                "execution.take_profit_refused",
+                simulated=True,
+                position_id=str(position.id),
+                codes=[r.get("code") for r in result.reasons][:10],
+            )
+            return
         summary.take_profits_placed += 1
+
+    def _refused_take_profit(
+        self,
+        session: Session,
+        position: PaperPositionRecord,
+        quantity: Decimal,
+        limit: Decimal,
+        now: datetime,
+    ) -> dict[str, Any] | None:
+        """The error to report when the newest exit attempt was this same take-profit,
+        refused less than ``refused_retry_interval`` ago; None when it may be submitted."""
+        last = session.scalar(
+            select(PositionEventRecord)
+            .where(
+                PositionEventRecord.position_id == position.id,
+                PositionEventRecord.event_type == PositionEventType.EXIT_SUBMITTED,
+            )
+            .order_by(PositionEventRecord.sequence.desc())
+            .limit(1)
+        )
+        if last is None or last.details.get("decision") != ExecutionDecision.REFUSED.value:
+            return None
+        if last.details.get("exit_reason") != ExitReason.TAKE_PROFIT.value:
+            return None
+        if last.quantity != quantity or last.price != limit:
+            return None
+        if now - last.occurred_at >= self.config.refused_retry_interval:
+            return None
+        codes = ", ".join(str(r.get("code")) for r in last.details.get("reasons", []))
+        return {
+            "position_id": str(position.id),
+            "error": f"the take-profit order for {position.symbol} at {plain(limit)} was "
+            f"refused at {last.occurred_at.isoformat()} ({codes or 'no reason given'}); no "
+            "take-profit is resting",
+        }
 
     def _submit_exit(
         self,
@@ -492,7 +595,7 @@ class PositionMonitor:
         limit: Decimal | None,
         reason: ExitReason,
         now: datetime,
-    ) -> None:
+    ) -> SubmissionResult:
         number = position.exits_submitted + 1
         expires = now + self.service.config.protective_order_lifetime
         if position.expires_at is not None and reason is ExitReason.TAKE_PROFIT:
@@ -525,8 +628,15 @@ class PositionMonitor:
             quantity=quantity,
             price=limit,
             order_id=result.order_id,
-            details={"reasons": result.reasons, "request_id": str(result.request_id)},
+            details={
+                "reasons": result.reasons,
+                "request_id": str(result.request_id),
+                "decision": result.decision.value,
+                "order_type": order_type.value,
+                "exit_reason": reason.value,
+            },
         )
+        return result
 
     def _tidy_closed(
         self,

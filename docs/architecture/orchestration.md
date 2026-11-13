@@ -73,9 +73,9 @@ One `orchestration_jobs` row per (kind, slot), claimed under a lease:
 | WORKER_HEALTH | every 300 s | stale or failed workers ─▶ `WORKER_UNHEALTHY` (once per worker per hour) |
 | DATA_FRESHNESS (10B) | every 300 s, regular session | open positions without a fresh price ─▶ `FEED_STALE` |
 | SESSION_OPEN_CHECK (10B) | trading day, open − 30 min … open + 60 min | readiness checklist ─▶ `SESSION_NOT_READY` |
-| MARKET_INTELLIGENCE | trading day, close + 65 min | a LIVE intelligence run |
-| DECISION_OUTCOMES | trading day, close + 65 min | decision evaluation against baselines |
-| DEGRADATION_MONITOR (10B) | trading day, close + 65 min | the 8B degradation pass (warns; suspends only under an approved rule) |
+| MARKET_INTELLIGENCE | trading day, once its daily bars are final: midnight New York + 15 min (D-230) | a LIVE intelligence run |
+| DECISION_OUTCOMES | as MARKET_INTELLIGENCE | decision evaluation against baselines |
+| DEGRADATION_MONITOR (10B) | as MARKET_INTELLIGENCE | the 8B degradation pass (warns; suspends only under an approved rule) |
 | SESSION_CLOSE_REVIEW (10B) | trading day, close + 15 min | the day's operational summary (intents, orders, fills, positions, alerts, jobs) |
 
 States: RUNNING (leased) ─▶ SUCCEEDED, or FAILED (retry with back-off 30 s, 60 s, … ≤ 15 min)

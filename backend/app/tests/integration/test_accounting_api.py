@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from decimal import Decimal as D
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -129,7 +130,7 @@ def test_accounting_errors_surface_in_the_overview(api, books, fresh_engine):
 
 
 def test_cli_commands(books, capsys, tmp_path):
-    def run(*argv: str) -> tuple[int, object]:
+    def run(*argv: str) -> tuple[int, Any]:
         code = cli.run(books.ctx, cli._parser().parse_args(list(argv)))
         out = capsys.readouterr().out
         return code, json.loads(out) if out.strip() else None

@@ -35,7 +35,7 @@ def test_rsi_matches_wilders_definition():
     gains = [max(b - a, 0.0) for a, b in itertools.pairwise(closes)]
     losses = [max(a - b, 0.0) for a, b in itertools.pairwise(closes)]
     avg_g, avg_l = sum(gains[:n]) / n, sum(losses[:n]) / n
-    expected = [None] * len(closes)
+    expected: list[float | None] = [None] * len(closes)
     expected[n] = 100 - 100 / (1 + avg_g / avg_l)
     for i in range(n, len(gains)):
         avg_g += (gains[i] - avg_g) / n
@@ -55,12 +55,16 @@ def test_macd_line_signal_and_histogram():
     closes = [float(10 + (i % 7) + i * 0.3) for i in range(60)]
     line, signal, hist = ind.macd(closes, 12, 26, 9)
     fast, slow = ind.ema(closes, 12), ind.ema(closes, 26)
+    assert fast[25] is not None
+    assert slow[25] is not None
     assert line[25] == pytest.approx(fast[25] - slow[25])
     assert line[24] is None
     assert signal[25 + 8 - 1] is None
     assert signal[25 + 8] is not None
     defined = [v for v in line if v is not None]
     assert signal[-1] == pytest.approx(ind.ema(defined, 9)[-1])
+    assert line[-1] is not None
+    assert signal[-1] is not None
     assert hist[-1] == pytest.approx(line[-1] - signal[-1])
     with pytest.raises(ValueError, match="shorter"):
         ind.macd(closes, 26, 12, 9)
@@ -71,6 +75,9 @@ def test_bollinger_bands_agree_with_width():
     middle, upper, lower = ind.bollinger_bands(closes, 20, 2.0)
     width = ind.bollinger_width(closes, 20, 2.0)
     assert middle[-1] == pytest.approx(sum(closes[-20:]) / 20)
+    assert upper[-1] is not None
+    assert lower[-1] is not None
+    assert middle[-1] is not None
     assert (upper[-1] - lower[-1]) / middle[-1] == pytest.approx(width[-1])
     assert middle[18] is None
 
@@ -191,7 +198,7 @@ def bars(count: int, *, start: float = 100.0) -> dict[date, Bar]:
 
 def history(data: dict[date, Bar], periods=None) -> BarHistory:
     keys = periods if periods is not None else sorted(data)
-    return BarHistory("1Day", keys, data)
+    return BarHistory("1Day", keys, dict(data.items()))
 
 
 def feature(name: str, **params):

@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import inspect
 import uuid
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -56,7 +55,7 @@ def test_six_independent_families_are_discovered():
     assert len(strategies) == 6
     assert {s.family for s in strategies} == set(StrategyFamily)
     assert len({s.strategy_id for s in strategies}) == 6
-    modules = {inspect.getmodule(type(s)).__name__ for s in strategies}
+    modules = {type(s).__module__ for s in strategies}
     assert len(modules) == 6  # one module each
     assert all(m.startswith(families.__name__ + ".") for m in modules)
 
@@ -97,7 +96,8 @@ def test_event_driven_requires_news_and_cannot_make_it_optional():
     ]
     # Phase 4B: counts anchored to the newest session close, so events precede the reaction.
     counts = [f for f in news if f.definition.name == "period_news_count"]
-    assert len(counts) == 1 + len(params.categories)  # ANY plus each category
+    categories = getattr(params, "categories")  # noqa: B009  # the family's own field
+    assert len(counts) == 1 + len(categories)  # ANY plus each category
     assert all(not f.optional for f in counts)
     assert TriggerKind.NEWS_EVENT in strategy.schedule.triggers
 
@@ -129,7 +129,7 @@ def test_parameter_schemas_validate(strategy_id, params, message):
 def test_parameters_are_immutable():
     params = default_registry().get("breakout").default_parameters()
     with pytest.raises(Exception, match="frozen"):
-        params.channel_length = 99  # type: ignore[misc]
+        setattr(params, "channel_length", 99)  # noqa: B010  # frozen: must raise
 
 
 class _Probe(InterfaceOnlyStrategy):

@@ -11,6 +11,7 @@ import threading
 import uuid
 from datetime import timedelta
 from decimal import Decimal
+from typing import Any
 
 import pytest
 from sqlalchemy import func, select, text, update
@@ -103,6 +104,9 @@ def test_evaluation_records_a_complete_traceable_proposal(lab, asset):
             )
         ).all()
         snapshot = session.get(StrategyFeatureSnapshotRecord, snapshot_ids[0])
+    assert evaluation is not None
+    assert proposal is not None
+    assert snapshot is not None
     assert evaluation.status is EvaluationStatus.PROPOSED
     assert evaluation.data_cutoff == NOW == evaluation.known_at  # LIVE: RECORDED at claim
     assert evaluation.finished_at == NOW
@@ -117,6 +121,8 @@ def test_evaluation_records_a_complete_traceable_proposal(lab, asset):
     assert proposal.feature_snapshot_ids == [snapshot.id]
     newest = bar_close(39)
     assert proposal.reference_entry == newest
+    assert proposal.invalidation_level is not None
+    assert proposal.target_reference is not None
     assert proposal.invalidation_level < proposal.reference_entry < proposal.target_reference
     assert proposal.holding_horizon_periods == 5
     assert proposal.signal_strength == Decimal("0.5000")
@@ -130,6 +136,8 @@ def test_evaluation_records_a_complete_traceable_proposal(lab, asset):
     assert proposal.expires_at == sessions(NOW + timedelta(days=1, hours=1), 1)[0].regular_close
     # The snapshot holds the values with their availability, all before the cutoff.
     assert snapshot.valid_count == snapshot.feature_count == 2
+    assert snapshot.inputs_available_at is not None
+    assert snapshot.last_period_event_at is not None
     assert snapshot.inputs_available_at <= NOW
     assert snapshot.last_period_event_at <= NOW
     assert snapshot.features["close.v1()@1Day"]["value"] == repr(float(newest))
@@ -147,7 +155,7 @@ def test_duplicate_update_is_evaluated_once(lab, asset):
 
 def test_concurrent_identical_requests_produce_one_evaluation(lab, asset):
     req = request(lab, asset)
-    results: list = []
+    results: list[Any] = []
     barrier = threading.Barrier(6)
 
     def worker() -> None:
@@ -198,6 +206,8 @@ def test_concurrent_batch_isolates_failures(lab, asset):
             select(StrategyProposalRecord).where(StrategyProposalRecord.asset_id == other)
         ).one()
     assert short.direction is Direction.SHORT
+    assert short.invalidation_level is not None
+    assert short.target_reference is not None
     assert short.invalidation_level > short.reference_entry > short.target_reference
 
 
@@ -225,9 +235,9 @@ def test_timeout_fails_the_evaluation_and_discards_the_late_result(fresh_engine)
     threading.Event().wait(SlowStrategy.delay + 0.5)
     assert count(lab, StrategyProposalRecord) == 0
     with session_scope(lab.factory) as session:
-        assert session.get(StrategyEvaluationRecord, result.evaluation_id).status is (
-            EvaluationStatus.FAILED
-        )
+        timed_out = session.get(StrategyEvaluationRecord, result.evaluation_id)
+        assert timed_out is not None
+        assert timed_out.status is (EvaluationStatus.FAILED)
 
 
 def test_interrupted_evaluation_is_reclaimed_after_its_lease(lab, asset):
@@ -253,6 +263,7 @@ def test_missing_bar_in_window_skips_without_calling_the_strategy(fresh_engine):
     assert result.status is EvaluationStatus.SKIPPED  # FailingStrategy was never called
     with session_scope(lab.factory) as session:
         evaluation = session.get(StrategyEvaluationRecord, result.evaluation_id)
+    assert evaluation is not None
     reasons = {r["feature"]: r["status"] for r in evaluation.skip_reasons}
     assert reasons == {"sma.v1(length=5)@1Day": "MISSING_INPUTS"}
     assert errors(lab, result.evaluation_id) == []
@@ -263,6 +274,7 @@ def test_missing_news_coverage_blocks_the_event_strategy(lab, asset):
     assert result.status is EvaluationStatus.SKIPPED
     with session_scope(lab.factory) as session:
         evaluation = session.get(StrategyEvaluationRecord, result.evaluation_id)
+    assert evaluation is not None
     [reason] = evaluation.skip_reasons
     assert reason["feature"].startswith("news_event_count.v1(")
     assert reason["status"] == "UNAVAILABLE"
@@ -305,7 +317,9 @@ def test_recorded_inputs_exclude_bars_available_after_the_cutoff(lab):
     assert rebuilt.status is EvaluationStatus.PROPOSED
     with session_scope(lab.factory) as session:
         proposal = session.get(StrategyProposalRecord, rebuilt.proposal_ids[0])
+        assert proposal is not None
         snapshot = session.get(StrategyFeatureSnapshotRecord, proposal.feature_snapshot_ids[0])
+        assert snapshot is not None
     assert proposal.basis is KnowledgeBasis.RECONSTRUCTED
     assert proposal.mode is EvaluationMode.HISTORICAL
     assert snapshot.known_at == late + timedelta(minutes=1)
@@ -332,8 +346,11 @@ def test_unfinished_session_is_never_an_input(lab):
     )
     with session_scope(lab.factory) as session:
         proposal = session.get(StrategyProposalRecord, result.proposal_ids[0])
+        assert proposal is not None
         snapshot = session.get(StrategyFeatureSnapshotRecord, proposal.feature_snapshot_ids[0])
+        assert snapshot is not None
     assert proposal.reference_entry == bar_close(38)  # not the 3 Nov bar (index 39)
+    assert snapshot.last_period_event_at is not None
     assert snapshot.last_period_event_at < cutoff.replace(hour=5)
 
 

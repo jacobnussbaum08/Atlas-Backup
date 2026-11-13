@@ -74,9 +74,13 @@ class OrchestratorSettings(BaseSettings):
     execution_reconcile_seconds: int = Field(default=1800, ge=60, le=86_400)
     accounting_reconcile_seconds: int = Field(default=3600, ge=60, le=86_400)
     worker_health_seconds: int = Field(default=300, ge=60, le=86_400)
-    # Daily, after the regular close plus this delay (bars settled): market intelligence
-    # and the evaluation of past decisions' outcomes.
+    # Daily research jobs (market intelligence, which retrieves the session's daily bars;
+    # the evaluation of past decisions' outcomes; degradation monitoring): not before the
+    # regular close plus this delay, and never before the session's daily bar is final for
+    # the data engine (the end of its New York day) plus ``daily_data_margin_seconds``. A
+    # daily bar retrieved earlier is stored INCOMPLETE and no strategy may read it (D-230).
     after_close_delay_seconds: int = Field(default=3900, ge=0, le=6 * 3600)
+    daily_data_margin_seconds: int = Field(default=900, ge=0, le=6 * 3600)
     run_market_intelligence: bool = True
     run_decision_outcomes: bool = True
     decision_outcome_lookback_days: int = Field(default=60, ge=1, le=730)

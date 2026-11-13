@@ -21,6 +21,9 @@ many orchestrators tick or restart.
   the newest missed day and the older missed days are recorded SUPERSEDED. Interval jobs
   are never back-filled (a past risk check is meaningless now); the first slot after a gap
   reports how many slots were missed (``ORCHESTRATION_SCHEDULE_GAP``).
+* **Daily data** (D-230): the research jobs that read the session's daily bars run once
+  those bars are final for the data engine (the end of the session's New York day), not at
+  the close: a daily bar retrieved earlier is stored INCOMPLETE and is never an input.
 * **Sweep**: a RUNNING job of an older slot whose lease expired is never reclaimed by its
   slot function again; the sweep finishes it FAILED (or DEAD) and reports it. A FAILED job
   that will never be offered again because a later slot of its kind has SUCCEEDED becomes
@@ -34,7 +37,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -44,7 +47,8 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.core.clocks import Clock
 from app.core.logging import get_logger
 from app.core.security.redaction import redact_text
-from app.data_engine.calendar import local_date, trading_day
+from app.data_engine.calendar import TradingDay, local_date, trading_day
+from app.data_engine.timeframes import DAY_1, bar_interval_end
 from app.database.models.audit_log import ActorType, AuditLog
 from app.database.models.orchestration import OrchestrationJobRecord
 from app.database.models.reservations import SystemHealthEventRecord
@@ -106,6 +110,38 @@ def after_close(delay_seconds: int, prefix: str = "close") -> SlotFn:
         if day is None or at < day.regular_close + timedelta(seconds=delay_seconds):
             return None
         return _day_slot(prefix, day.day)
+
+    return slot
+
+
+def daily_data_final(day: TradingDay) -> datetime:
+    """When the data engine treats the session's daily bar as final: the end of the bar's
+    interval, i.e. the end of the session's New York day (``bar_interval_end``, D-022). A
+    daily bar retrieved before that is stored INCOMPLETE and no feature, regime or strategy
+    reads it."""
+    end = bar_interval_end(day.at(time(0)), DAY_1)
+    assert end is not None  # noqa: S101  # a one-day bar always has an end
+    return end
+
+
+def after_daily_data(delay_seconds: int, margin_seconds: int, prefix: str = "daily") -> SlotFn:
+    """Slot = the newest trading day whose daily data is ready at ``at``: not before its
+    regular close plus ``delay_seconds`` and not before its daily bar is final plus
+    ``margin_seconds``. The slot stays current until the next trading day's data is ready
+    (over a weekend it is Friday's), so the job runs once per session, after midnight New
+    York, before the next session opens. None only when no trading day is found."""
+    delay, margin = timedelta(seconds=delay_seconds), timedelta(seconds=margin_seconds)
+
+    def slot(at: datetime) -> str | None:
+        cursor = local_date(at)
+        for _ in range(14):  # weekends and holidays
+            day = trading_day(cursor)
+            if day is not None and at >= max(
+                day.regular_close + delay, daily_data_final(day) + margin
+            ):
+                return _day_slot(prefix, day.day)
+            cursor = cursor - timedelta(days=1)
+        return None
 
     return slot
 
@@ -680,8 +716,10 @@ __all__ = [
     "JobRunner",
     "JobSpec",
     "after_close",
+    "after_daily_data",
     "around_open",
     "backoff",
+    "daily_data_final",
     "every",
     "previous_days",
     "slot_day",

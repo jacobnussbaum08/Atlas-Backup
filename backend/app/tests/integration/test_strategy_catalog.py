@@ -6,7 +6,7 @@ from dataclasses import replace
 from typing import ClassVar
 
 import pytest
-from sqlalchemy import func, select, text, update
+from sqlalchemy import Executable, func, select, text, update
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import sessionmaker
 
@@ -61,6 +61,7 @@ def test_sync_registers_the_six_families_once(factory):
         assert {v.strategy_id for v in versions} == {s.strategy_id for s in families}
         assert all(v.implemented for v in versions)  # Phase 4B
         momentum = catalog.latest_version(session, "momentum")
+        assert momentum is not None
         config = catalog.configuration(session, momentum)
     # Every parameter is stored explicitly (defaults included) with its feature keys.
     assert config.parameters["lookback_periods"] == 20
@@ -130,7 +131,7 @@ def test_invalid_parameters_are_rejected_without_a_version(factory, params, mess
 
 def test_versions_configurations_and_definitions_are_append_only(factory):
     sync(factory, default_registry())
-    statements = [
+    statements: list[Executable] = [
         update(StrategyVersionRecord).values(reason="rewritten"),
         update(StrategyConfigurationRecord).values(parameters={}),
         update(FeatureDefinitionRecord).values(method="rewritten"),

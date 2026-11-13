@@ -14,8 +14,9 @@ retries it)::
                                                                 entry session, gate open
     deliver intent events: reserve (6C, risk veto) + submit (7A)   per intent, one txn
     scheduled jobs: risk monitor, reconciliations, worker health, data freshness, session
-                    checks, market intelligence, decision outcomes and degradation
-                    monitoring after the close (missed days caught up); sweep stuck jobs
+                    checks; market intelligence, decision outcomes and degradation
+                    monitoring once the session's daily bars are final (D-230; missed days
+                    caught up); sweep stuck jobs
     heartbeat with counters and the gate
 
 What happens after an order exists is the existing workers' job: the paper execution
@@ -61,6 +62,7 @@ from app.orchestration.jobs import (
     JobRunner,
     JobSpec,
     after_close,
+    after_daily_data,
     around_open,
     every,
     previous_days,
@@ -73,6 +75,11 @@ STATUS_NAME = "trading-orchestrator"
 WORKER_NAME = "orchestrator-worker"  # the Docker Compose service (workers report)
 SYSTEM_ACTOR = "system:orchestrator"
 UNHEALTHY_REPEAT = timedelta(hours=1)
+# Slots of the research jobs that need the session's final daily bars (D-230). Until then
+# they were "close:<day>" slots that ran 65 minutes after the close, before the bars were
+# final; the new name keeps those earlier rows as history and lets the first run after the
+# change retrieve the final bars of a day whose "close" slot had already run.
+DAILY_SLOT = "daily"
 
 
 @dataclass
@@ -240,14 +247,17 @@ class Orchestrator:
             if fn is not None:
                 specs.append(JobSpec(kind, every(seconds), _wrap(fn), interval_seconds=seconds))
 
-        def daily(kind: JobKind, delay: int, fn: Callable[[], Any] | None, prefix: str) -> None:
+        def daily(kind: JobKind, fn: Callable[[], Any] | None) -> None:
+            """A research job on the session's final daily data (D-230)."""
             if fn is not None:
                 specs.append(
                     JobSpec(
                         kind,
-                        after_close(delay, prefix),
+                        after_daily_data(
+                            s.after_close_delay_seconds, s.daily_data_margin_seconds, DAILY_SLOT
+                        ),
                         _wrap(fn),
-                        past=previous_days(prefix),
+                        past=previous_days(DAILY_SLOT),
                     )
                 )
 
@@ -266,26 +276,11 @@ class Orchestrator:
         interval(JobKind.WORKER_HEALTH, s.worker_health_seconds, self.check_workers)
         interval(JobKind.DATA_FRESHNESS, s.data_freshness_seconds, st.data_freshness)
         if s.run_market_intelligence:
-            daily(
-                JobKind.MARKET_INTELLIGENCE,
-                s.after_close_delay_seconds,
-                st.market_intelligence,
-                "close",
-            )
+            daily(JobKind.MARKET_INTELLIGENCE, st.market_intelligence)
         if s.run_decision_outcomes:
-            daily(
-                JobKind.DECISION_OUTCOMES,
-                s.after_close_delay_seconds,
-                st.decision_outcomes,
-                "close",
-            )
+            daily(JobKind.DECISION_OUTCOMES, st.decision_outcomes)
         if s.run_degradation_monitor:
-            daily(
-                JobKind.DEGRADATION_MONITOR,
-                s.after_close_delay_seconds,
-                st.degradation_monitor,
-                "close",
-            )
+            daily(JobKind.DEGRADATION_MONITOR, st.degradation_monitor)
         if s.run_session_checks:
             if st.session_open_check is not None:
                 specs.append(
@@ -489,6 +484,7 @@ class Orchestrator:
 
 
 __all__ = [
+    "DAILY_SLOT",
     "STATUS_NAME",
     "SYSTEM_ACTOR",
     "UNHEALTHY_REPEAT",

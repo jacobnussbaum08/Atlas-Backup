@@ -261,8 +261,9 @@ class Bench:
             return list(rows)
 
 
-def make_bench(engine: Any, name: str = "orch-test") -> Bench:
-    ex = make_execution(engine)
+def make_bench(engine: Any, name: str = "orch-test", *, now: datetime | None = None) -> Bench:
+    """``now`` moves the fixed clock (default: the fixtures' NOW, 2026-11-03 22:30 UTC)."""
+    ex = make_execution(engine) if now is None else make_execution(engine, now=now)
     account = ex.account(name)
     control = build_control_context(ex.factory, ex.risk.clock, accounting=ACCOUNTING)
     return Bench(ex, account, name, control, Calls())

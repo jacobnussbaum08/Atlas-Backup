@@ -10,13 +10,16 @@ import pytest
 from app.core.config.settings import InvalidSettingsError
 from app.core.security.operators import TOKEN_PREFIX, digest, new_token
 from app.core.security.redaction import REDACTED, redact_text
+from app.data_engine.calendar import trading_day
 from app.monitoring.heartbeats import MISSED_PASSES, STALE_FLOOR, stale_after
 from app.orchestration.alerts import ACTIONS, action_for
 from app.orchestration.config import OrchestratorSettings, check_environment
 from app.orchestration.enums import DAILY_JOBS, FINAL_JOB_STATUSES, JobKind, JobStatus
 from app.orchestration.jobs import (
     after_close,
+    after_daily_data,
     around_open,
+    daily_data_final,
     every,
     previous_days,
     slot_day,
@@ -43,6 +46,33 @@ def test_interval_slots_round_trip_and_daily_slots_name_the_trading_day():
     assert after_close(900, "eod")(TUE_CLOSE + timedelta(minutes=15)) == "eod:2026-11-03"
     assert slot_day("eod:2026-11-03") == TUE_CLOSE.date()
     assert slot_day("2026-11-03T14:30:00Z") is None
+
+
+def test_research_jobs_wait_for_the_final_daily_bar():
+    """D-230: a daily bar is final for the data engine at the end of its New York day. The
+    research slot of a session opens then (plus the margin), never 65 minutes after the
+    close, and stays current until the next session's data is ready."""
+    tuesday = trading_day(TUE_CLOSE.date())
+    assert tuesday is not None
+    assert daily_data_final(tuesday) == datetime(2026, 11, 4, 5, 0, tzinfo=UTC)  # 00:00 EST
+    slot = after_daily_data(3900, 900)
+    assert slot(TUE_CLOSE + timedelta(minutes=66)) == "daily:2026-11-02"  # Monday's, still
+    assert slot(datetime(2026, 11, 4, 5, 14, tzinfo=UTC)) == "daily:2026-11-02"
+    assert slot(datetime(2026, 11, 4, 5, 15, tzinfo=UTC)) == "daily:2026-11-03"
+    assert slot(datetime(2026, 11, 4, 20, 0, tzinfo=UTC)) == "daily:2026-11-03"  # next session
+    # Friday's slot is current through the weekend until Monday's data is ready.
+    assert slot(SAT) == "daily:2026-11-06"
+    assert slot(datetime(2026, 11, 9, 16, 0, tzinfo=UTC)) == "daily:2026-11-06"
+    # Daylight time: midnight New York is 04:00 UTC (Tuesday 2026-07-07).
+    assert slot(datetime(2026, 7, 8, 4, 14, tzinfo=UTC)) == "daily:2026-07-06"
+    assert slot(datetime(2026, 7, 8, 4, 15, tzinfo=UTC)) == "daily:2026-07-07"
+    # An early close (Friday 2026-11-27, 13:00) changes nothing: the bar's day ends at midnight.
+    assert slot(datetime(2026, 11, 28, 4, 59, tzinfo=UTC)) == "daily:2026-11-25"
+    assert slot(datetime(2026, 11, 28, 5, 15, tzinfo=UTC)) == "daily:2026-11-27"
+    # A long close delay still applies when it is the later of the two.
+    assert after_daily_data(9 * 3600, 0)(datetime(2026, 11, 4, 5, 30, tzinfo=UTC)) == (
+        "daily:2026-11-02"
+    )
 
 
 def test_the_open_check_slot_covers_the_lead_and_window_of_a_trading_day_only():
