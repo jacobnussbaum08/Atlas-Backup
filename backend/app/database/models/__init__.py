@@ -108,6 +108,17 @@ from app.database.models.reference_data import (
     ProviderAssetRecord,
     ProviderExchangeCodeRecord,
 )
+from app.database.models.risk import (
+    RiskAssessmentReasonRecord,
+    RiskAssessmentRecord,
+    RiskAssetClassificationRecord,
+    RiskCircuitBreakerEventRecord,
+    RiskConfigurationRecord,
+    RiskConfigurationVersionRecord,
+    RiskEventRecord,
+    RiskExposureSnapshotRecord,
+    RiskPeriodBaselineRecord,
+)
 from app.database.models.strategy import (
     FeatureDefinitionRecord,
     StrategyConfigurationRecord,
@@ -226,6 +237,15 @@ __all__ = [
     "RecoveryJobRecord",
     "RecoveryStatusRecord",
     "RegimeClassificationRecord",
+    "RiskAssessmentReasonRecord",
+    "RiskAssessmentRecord",
+    "RiskAssetClassificationRecord",
+    "RiskCircuitBreakerEventRecord",
+    "RiskConfigurationRecord",
+    "RiskConfigurationVersionRecord",
+    "RiskEventRecord",
+    "RiskExposureSnapshotRecord",
+    "RiskPeriodBaselineRecord",
     "ScoringVersionRecord",
     "StrategyConfigurationRecord",
     "StrategyEvaluationErrorRecord",

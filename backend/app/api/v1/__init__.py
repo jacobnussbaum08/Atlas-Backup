@@ -15,6 +15,7 @@ from app.api.v1 import (
     ml,
     news,
     portfolio,
+    risk,
     strategies,
 )
 
@@ -33,5 +34,6 @@ router.include_router(ml.router)
 router.include_router(ai.router)
 router.include_router(portfolio.portfolio_router)
 router.include_router(portfolio.accounting_router)
+router.include_router(risk.router)
 
 __all__ = ["router"]

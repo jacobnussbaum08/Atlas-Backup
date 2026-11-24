@@ -313,3 +313,12 @@ CLI (init, post, checkpoint, reconcile)          API (GET only)        Dashboard
   ReconciliationService -> reconciliation_runs / results (HIGH on any discrepancy)
 ```
 
+
+## Deterministic risk engine (Phase 6B)
+
+`app/risk` (configuration, governance, pure sizing and assessment, periods, breakers,
+point-in-time data, marked state, service, read models), migration 0014, the router
+`/api/v1/risk` (GET, plus the operator-gated kill-switch engage), the CLI
+`python -m app.risk.cli` and the dashboard page `/risk`. Conventions:
+[`risk.md`](risk.md); decisions D-138 to D-147. The risk engine reads stored rows only and
+imports no strategy, ML, LLM or AI code; none of those import it.

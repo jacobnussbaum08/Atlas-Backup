@@ -272,6 +272,19 @@ def test_openapi_exposes_no_order_endpoints(build_client):
         "/api/v1/accounting/reconciliation",
         "/api/v1/accounting/reconciliation/{run_id}",
         "/api/v1/accounting/fx-rates",
+        # Phase 6B risk engine: reads, plus the fail-safe kill-switch engage (operator token).
+        # Limits, resets, releases and assessments are operator CLI actions.
+        "/api/v1/risk/state",
+        "/api/v1/risk/limits",
+        "/api/v1/risk/exposure",
+        "/api/v1/risk/exposure/snapshots",
+        "/api/v1/risk/assessments",
+        "/api/v1/risk/assessments/{assessment_id}",
+        "/api/v1/risk/circuit-breakers",
+        "/api/v1/risk/circuit-breakers/events",
+        "/api/v1/risk/configurations",
+        "/api/v1/risk/events",
+        "/api/v1/risk/kill-switch/engage",
     }
     # Market trades (exchange prints) are read-only market data, not trading: the one
     # allowed path containing "trade" must expose GET only.
@@ -308,4 +321,15 @@ def test_openapi_exposes_no_order_endpoints(build_client):
         "/api/v1/strategies/{strategy_id}/versions",
         "/api/v1/strategies/{strategy_id}/status",
         "/api/v1/ml/models/{model_id}/status",
+        "/api/v1/risk/kill-switch/engage",
     }
+    # Phase 6B: the only risk write can only halt; it cannot release, reset or loosen.
+    assert set(paths["/api/v1/risk/kill-switch/engage"]) == {"post"}
+    assert not [p for p in paths if p.startswith("/api/v1/risk/") and "release" in p]
+    assert not [
+        p
+        for p in paths
+        if p.startswith("/api/v1/risk/")
+        and p != "/api/v1/risk/kill-switch/engage"
+        and set(paths[p]) != {"get"}
+    ]

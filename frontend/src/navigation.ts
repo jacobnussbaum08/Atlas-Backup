@@ -103,6 +103,14 @@ export const NAV_SECTIONS: readonly NavSection[] = [
     summary: "The simulated paper account's double-entry books: funding, cash by currency, holdings, exposure, P/L, costs, journal, balances and reconciliation.",
   },
   {
+    path: "/risk",
+    title: "Risk Center",
+    icon: ShieldAlert,
+    specSection: "22.8",
+    phase: 6,
+    summary: "Hard limits, live exposure, daily and weekly loss, drawdown, circuit breakers, the kill switch and every risk decision with its reasons.",
+  },
+  {
     path: "/data-health",
     title: "Data Health",
     icon: DatabaseZap,
@@ -141,14 +149,6 @@ export const NAV_SECTIONS: readonly NavSection[] = [
  * phase; their URLs render an explicit "not built" page with no numbers.
  */
 export const UPCOMING_SECTIONS: readonly NavSection[] = [
-  {
-    path: "/risk",
-    title: "Risk Center",
-    icon: ShieldAlert,
-    specSection: "22.8",
-    phase: 6,
-    summary: "Hard limits, reservations, circuit breakers and the kill switch.",
-  },
   {
     path: "/backtesting",
     title: "Backtesting",

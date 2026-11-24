@@ -1757,3 +1757,120 @@ the read-only market-data trades path.
 
 **Decision:** the dashboard formats the API's decimal strings with BigInt half-even rounding
 (accepting Python's exponent form, e.g. `0E-8`), so displayed money is exactly the ledger's.
+
+## Phase 6B — deterministic risk engine
+
+The risk conventions themselves are in [`risk.md`](risk.md).
+
+### D-138 Phase 6B builds on 6A; an assessment is a pure function of stored inputs
+
+**Decision:** this branch started at `main` (Phase 4B) and was fast-forwarded to the Phase 6A
+commit (`3e95e37`, which contains 5A/5B); 6A was verified first (1589 passed, 1 skipped,
+the same as its report). The assessment is `app.risk.assessment.assess(inputs)`: no
+database, clock or randomness. Its inputs (proposal, instrument, market data, the marked
+portfolio, correlations, configuration) are stored as JSON with every assessment, so a
+stored decision replays to the same content hash (`RiskService.replay`, CLI `replay`).
+**Why:** reproducible decisions (spec 3.4) and deterministic vectors that test the real
+code, not a copy of it.
+
+### D-139 Hard limits and preferences are immutable, operator-only versions in the database
+
+**Decision:** one configuration per portfolio account; every change is a new gapless
+version with previous and new values, field diff, actor, reason and time, written in one
+transaction under the account lock and mirrored to the audit log. Hard limits (risk per
+trade, positions, loss limits, drawdown, leverage, gross/net/asset/class/sector/correlated/
+short/margin limits, stop and short policies) are separate from preferences (cost and
+slippage assumptions, correlation threshold and ages, assessment TTL), which never relax a
+hard limit. The actor must match `operator:<name>`: the service refuses any other and the
+database CHECK refuses it again. Limits cannot come from environment variables. The
+starting values are spec 14.1 plus conservative framework values; none is described or
+tuned as optimal. `max_leverage` is capped at 1 because the 6A chart has no margin loan.
+
+### D-140 Strategies and AI contribute levels only
+
+**Decision:** `Proposal` has no score, strength, probability, expected value or text field
+(extra fields are refused). Strategy proposals and AI decisions are converted by reading
+database rows (`app.risk.proposals`): entry, invalidation level (stop), target, horizon,
+expiry, ids. Only `PRIORITIZE_FOR_REVIEW` decisions are accepted. Static tests assert that
+`app.ai_engine`, `app.strategies`, `app.ml_engine`, `app.news` and `app.workers` import
+nothing from `app.risk`, and that `app.risk` imports none of them. **Why:** absolute
+separation of recommendation and authority (spec 3.3, 3.6, 12.6).
+
+### D-141 Circuit breakers are an append-only event stream with fixed recovery rules
+
+**Decision:** state = latest event per (account, breaker) (`risk_circuit_breaker_states`
+view); no mutable state row. Events are numbered without gaps and must start from the
+previous state (trigger). Loss, drawdown, exposure, reconciliation, execution-safety and
+kill-switch breakers need an operator reset, refused while the condition is still breached
+or cannot be measured (the refusal is recorded); only DATA_QUALITY recovers automatically,
+recorded as a SYSTEM reset (the database refuses a system reset of anything else). A trip
+blocks new entries (RISK_HALTED); nothing is liquidated; monitoring continues; the event
+records that risk-reducing operations stay permitted for the execution phases.
+
+### D-142 Sizing never lets rounding add risk
+
+**Decision:** spec formula first, then: entry moved adversely and stop away from entry on
+the tick grid (provider increment, else the SEC Rule 612 increment for US equities; crypto
+needs a reported increment); loss per unit includes half spread and slippage at entry, half
+spread and stop slippage at exit, fees on both legs, FX conversion cost, and borrow over the
+holding period for shorts; commissions per unit with a per-leg minimum; quantity solved in
+closed form, floored to the lot, then verified with losses rounded up (currency, then
+functional) against the budget rounded down, stepping down a lot while it exceeds. Every
+capacity limit (capital, gross, leverage, net, single asset, asset class, sector, correlated
+cluster, short exposure, margin, liquidity) is a quantity; the smallest binds and is named.
+Shorts get `short_risk_budget_fraction` (0.5) of the budget: a stop does not cap a gap.
+Forex is refused (no contract specification; 6A holds currencies as balances).
+
+### D-143 Loss periods follow the NYSE calendar; baselines are fixed once
+
+**Decision:** one portfolio-wide calendar, XNYS (as 6A freshness). A risk day ends at the
+regular close (early closes included); a risk week is the ISO week of the risk day.
+Start-of-period equity is, in order: the latest COMPLETE equity observation during the
+session that closed at the boundary, else the earliest one after it and before the next
+open; the opening funding if funded during the period; else the first observation in the
+period (flagged FIRST_OBSERVATION_IN_PERIOD: earlier losses are not captured). It is stored
+once per period. Loss = fall in investment return (equity − contributed capital), so it
+includes realized and unrealized P/L, FX and costs and never counts funding. Peak equity =
+highest investment return observed (zero at funding) + capital.
+
+### D-144 Exposure is the ledger marked in memory; nothing is netted or invented
+
+**Decision:** the risk state applies the 6A valuation template to a copy of the ledger
+state with fresh prices and rates, without posting, so equity and exposure follow the
+accounting equation. Long = 1100+1150, short = 2100+2150 per asset. Any stale or missing
+input makes the mark STALE/INCOMPLETE (DATA_QUALITY). Gross adds long and short; sector,
+class and correlated exposures are gross. A held asset counts as correlated with the
+candidate if it is the same asset, shares an operator cluster tag, or |corr| ≥ threshold
+(newest OK Phase 3B PAIR row ≤ 7 days); an unmeasured pair counts under ASSUME_CORRELATED
+(default). Unclassified assets share one UNCLASSIFIED sector bucket (default POOL). Pending
+exposure is 0 with the reason (no reservations before 6C).
+
+### D-145 Short safeguards reject on missing data by default
+
+**Decision:** a short needs shorts enabled, a supported instrument, a provider reference
+that says shortable and easy-to-borrow (unknown is a rejection), and a short margin
+requirement unless policy says USE_CONFIGURED_MINIMUM (then recorded as an assumption).
+Provider margin percentages are read as collateral beyond the restricted proceeds, the
+conservative reading; the larger of that and `min_short_margin_rate` (Reg T 50%) is used.
+Borrow cost is an ASSUMED annual rate (no borrow-rate source exists), recorded with each
+assessment. Short exposure and margin usage are limits.
+
+### D-146 The API reads; its only write can only halt
+
+**Decision:** `/api/v1/risk/*` is GET, plus `POST /risk/kill-switch/engage` (operator
+token, actor `operator:api`). Releasing the switch, resetting breakers, changing limits,
+classifying assets and recording assessments are CLI actions (`python -m app.risk.cli`)
+with `--actor operator:<name>` and a reason. **Why:** without `ATLAS_OPERATOR_TOKEN` the
+development API is unauthenticated; nothing reachable that way may loosen risk.
+
+### D-147 Database guards, and what they do not guarantee
+
+**Decision:** `atlas_risk_assessment_guard` refuses a PASS_FOR_RESERVATION row whose
+configuration is not the latest, whose budget exceeds equity × the configured risk per
+trade, or while any breaker of the account is tripped; CHECKs require a pass to be sized
+within its budget; `atlas_risk_assessment_consistent` (deferred) requires the stored
+result to follow from the stored checks; checks can only be written in their assessment's
+transaction; every risk table is append-only. Services take the portfolio account lock.
+**Not guaranteed:** a pass reserves nothing, so two passes may together exceed a limit;
+the guards read committed state only and cannot recompute a sizing. Phase 6C must re-check
+under the lock and persist the reservation in the same transaction.

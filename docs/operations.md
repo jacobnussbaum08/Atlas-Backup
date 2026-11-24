@@ -818,6 +818,94 @@ uv run python -m app.accounting.cli reverse --account "Controlled test" --entry 
 **Immutability:** every ledger table rejects UPDATE, DELETE and TRUNCATE. `currency_balances`
 is a cache that reconciliation re-checks against the journal lines.
 
+## Risk engine (Phase 6B)
+
+Prerequisites: the database at head (migration 0014), the paper account (Phase 6A `init`)
+and a passing, current reconciliation. Decisions D-138 to D-147; conventions in
+[`architecture/risk.md`](architecture/risk.md). Paper only: an assessment executes,
+reserves and submits nothing, and no breaker ever liquidates.
+
+Operator actions need `--actor operator:<name>` and a `--reason`; each writes an immutable,
+audited record. Strategies, models and LLM tasks cannot run them (refused by the service
+and by the database).
+
+**Create the risk configuration** (version 1: the documented starting values, which are
+not optimal or recommended settings). Re-running is a no-op:
+
+```bash
+uv run python -m app.risk.cli init --actor operator:jacob --reason "initial starting values"
+```
+
+**Change limits or preferences** (writes the next version with the field-by-field diff):
+
+```bash
+uv run python -m app.risk.cli set --actor operator:jacob --reason "fewer simultaneous positions" --hard max_open_positions=6
+```
+
+**Classify an asset** (sector and correlation cluster used by the concentration limits;
+unclassified assets share one UNCLASSIFIED bucket):
+
+```bash
+uv run python -m app.risk.cli classify --actor operator:jacob --symbol NVDA --sector SEMICONDUCTORS --cluster SEMICONDUCTORS --provenance "operator classification"
+```
+
+**Monitor** (marks the ledger to fresh prices in memory, fixes the period baselines, records
+an exposure snapshot and trips breakers). Run it periodically, and at least once after each
+regular close so the next day's start-of-period equity is observed at the boundary:
+
+```bash
+uv run python -m app.risk.cli monitor
+```
+
+**Assess a proposal** (manual levels, a stored strategy proposal or a prioritized AI
+decision; `--strict` exits 1 unless it passes). A PASS_FOR_RESERVATION is not an execution
+approval:
+
+```bash
+uv run python -m app.risk.cli assess --symbol AAPL --direction LONG --entry 150.25 --stop 145.00
+```
+
+```bash
+uv run python -m app.risk.cli assess --decision-id <ai-decision-id>
+```
+
+**Replay** a stored assessment from its stored inputs (exit 1 if it does not reproduce):
+
+```bash
+uv run python -m app.risk.cli replay --assessment <assessment-id>
+```
+
+**Kill switch and breakers.** Engaging is also possible from the dashboard (operator token);
+releasing and resetting are CLI-only. A reset is refused while the breaker's condition is
+still breached (for a daily loss: until the next trading day's loss is below the limit);
+DATA_QUALITY recovers automatically, recorded, once every price is fresh again:
+
+```bash
+uv run python -m app.risk.cli kill-switch engage --actor operator:jacob --reason "manual halt"
+```
+
+```bash
+uv run python -m app.risk.cli kill-switch release --actor operator:jacob --reason "reviewed, resuming"
+```
+
+```bash
+uv run python -m app.risk.cli reset --breaker DAILY_LOSS --actor operator:jacob --reason "loss reviewed"
+```
+
+**State** as JSON (live figures are computed, not recorded):
+
+```bash
+uv run python -m app.risk.cli show
+```
+
+**API:** `GET /api/v1/risk/{state,limits,exposure,exposure/snapshots,assessments,
+assessments/{id},circuit-breakers,circuit-breakers/events,configurations,events}` and
+`POST /api/v1/risk/kill-switch/engage` (operator token). Dashboard: **Risk Center** (`/risk`).
+
+**Immutability:** every risk table rejects UPDATE, DELETE and TRUNCATE; the database refuses
+a passing assessment while a breaker is tripped, against an outdated configuration, above the
+configured risk per trade, or whose stored result does not follow from its stored checks.
+
 ## Backup and restore
 
 ```bash
