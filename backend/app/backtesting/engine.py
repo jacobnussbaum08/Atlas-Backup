@@ -32,7 +32,10 @@ seed is recorded and seeds an unused generator so any future stochastic element 
 
 from __future__ import annotations
 
+import itertools
+import math
 import random
+import statistics
 import uuid
 from collections import Counter
 from collections.abc import Callable
@@ -56,7 +59,17 @@ from app.asset_discovery.sessions import (
     previous_trading_day,
 )
 from app.backtesting.broker import SimFill, SimOrder, evaluate
-from app.backtesting.config import ResolvedAsset, ResolvedConfig, ResolvedStrategy, sha256_of
+from app.backtesting.config import (
+    ExclusionWindowSpec,
+    ExecutionConventions,
+    ExecutionFidelitySpec,
+    ResolvedAsset,
+    ResolvedConfig,
+    ResolvedStrategy,
+    sha256_of,
+)
+from app.backtesting.corrections import DividendCorrection
+from app.backtesting.corrections import load_set as load_correction_set
 from app.backtesting.data import (
     CALENDAR,
     DayBar,
@@ -65,6 +78,8 @@ from app.backtesting.data import (
     SplitEvent,
     sessions_between,
 )
+from app.backtesting.dividends import POLICY_V2 as DIVIDEND_POLICY_V2
+from app.backtesting.dividends import PROVIDER_ROW_STATS, PointInTimeDividends
 from app.backtesting.enums import (
     EntryOrderType,
     FeatureAdjustment,
@@ -76,8 +91,16 @@ from app.backtesting.enums import (
     TradeStatus,
     UniverseMode,
 )
-from app.backtesting.ledger import BacktestTemplateContext, LedgerError, SimulatedLedger
+from app.backtesting.exclusion_windows import blocked_on
+from app.backtesting.ledger import (
+    BacktestTemplateContext,
+    CashDividendParams,
+    LedgerError,
+    SimulatedLedger,
+)
+from app.backtesting.pipeline import CoordinatorStage, Draft
 from app.backtesting.portfolio import PositionMark, RiskBook
+from app.backtesting.spreads import OPEN_WINDOW, PointInTimeSpreads
 from app.data_engine.enums import PriceAdjustment
 from app.database.models import AssetClass
 from app.execution.enums import AttemptOutcome, OrderSide, OrderStatus, OrderType
@@ -86,12 +109,14 @@ from app.feature_engine.registry import DAILY, WEEKLY, ResolvedFeature
 from app.market_intelligence.enums import KnowledgeBasis
 from app.paper_broker.execution_model import AssetClassModel, ExecutionModel
 from app.paper_broker.fill_model import cost_round
+from app.research import store as research_store
 from app.risk import data as risk_data
 from app.risk.assessment import assess
 from app.risk.config import RiskConfiguration
 from app.risk.enums import AssessmentResult, ProposalSource, TradeDirection
 from app.risk.models import (
     AssessmentInputs,
+    Correlation,
     InstrumentData,
     MarketData,
     PortfolioView,
@@ -109,6 +134,9 @@ from app.strategies.registry import StrategyRegistry, default_registry
 ONE = Decimal(1)
 PRICE_PLACES = Decimal("0.0000000001")
 NAMESPACE = uuid.UUID("6f1c2a52-8a1e-4b7a-9a5e-0c8a4f8b2d31")
+# D-239 replay-bars-v1 correlations: 60 daily log returns, at least 40 in common.
+REPLAY_CORRELATION_SESSIONS = 60
+REPLAY_CORRELATION_MIN_OBSERVATIONS = 40
 LIQUIDITY_SESSIONS = 60
 
 
@@ -301,6 +329,8 @@ class Trade:
     borrow_paid: Decimal = ZERO
     borrow_through: date | None = None
     split_factor: Decimal = ONE
+    # D-237: cash dividends received (+) or paid on a short (-); None: not modelled.
+    dividends: Decimal | None = None
     exit_reason: str | None = None
     closed_at: datetime | None = None
     last_session: date | None = None
@@ -325,12 +355,15 @@ class Trade:
 
     @property
     def net_pnl(self) -> Decimal:
-        return self.realized_gross + self.unrealized - self.costs
+        return self.realized_gross + self.unrealized - self.costs + (self.dividends or ZERO)
 
     def as_json(self) -> dict[str, Any]:
         avg_entry = None if self.entry_quantity == 0 else self.entry_value / self.entry_quantity
         avg_exit = None if self.exit_quantity == 0 else self.exit_value / self.exit_quantity
+        # Only runs that model dividends carry the key (earlier results keep their hashes).
+        extra = {} if self.dividends is None else {"dividends": str(self.dividends)}
         return {
+            **extra,
             "seq": self.seq,
             "proposal_seq": self.proposal_seq,
             "strategy_id": self.strategy_id,
@@ -683,6 +716,134 @@ class BacktestEngine:
         self._liquidity: dict[tuple[uuid.UUID, date], tuple[Decimal | None, str | None]] = {}
         self._prepared = self._prepare()
         self._last_reconciliation: dict[str, Any] = {}
+        # D-234 live-pipeline stages (absent: the 8A replay, unchanged).
+        self.calendar = CALENDAR
+        pipeline = config.pipeline
+        self.coordinator = (
+            CoordinatorStage(self) if pipeline is not None and pipeline.coordinator else None
+        )
+        self.spreads: PointInTimeSpreads | None = None
+        self.spread_spec = None if pipeline is None else pipeline.measured_spreads
+        if self.spread_spec is not None:
+            self.spreads = PointInTimeSpreads.load(
+                session, self.assets, feed=self.spread_spec.feed, known_at=config.known_at
+            )
+        self.live_entry_expiry = pipeline is not None and pipeline.live_entry_expiry
+        self.fill_spreads: Counter[str] = Counter()
+        # E1 entry-order experiment (D-235; absent: entries unchanged).
+        self.opening = None if pipeline is None else pipeline.opening_entry
+        # E7 execution-model audit (D-236; absent: the 7B/8A conventions, unchanged).
+        # Engine 8A.2 (D-237): daily-v2 runs use every correction unless the research
+        # option names its own flags; daily-v1 (every run stored before 8A.2) uses none.
+        explicit = None if pipeline is None else pipeline.execution_fidelity
+        if explicit is not None:
+            self.fidelity: ExecutionFidelitySpec | None = explicit
+        elif config.conventions is ExecutionConventions.DAILY_V2:
+            self.fidelity = ExecutionFidelitySpec()
+        else:
+            self.fidelity = None
+        self.fidelity_stats: Counter[str] = Counter()
+        self.open_spreads: PointInTimeSpreads | None = None
+        if (self.opening is not None and self.opening.open_spreads) or (
+            self.fidelity is not None and self.fidelity.open_spreads
+        ):
+            self.open_spreads = PointInTimeSpreads.load(
+                session,
+                self.assets,
+                feed=self.spread_spec.feed if self.spread_spec else config.data.feed,
+                known_at=config.known_at,
+                window=OPEN_WINDOW,
+            )
+        self.opening_stats: Counter[str] = Counter()
+        # D-239 research universe spans and delisting dates (absent: earlier behaviour).
+        self.research_spans: dict[uuid.UUID, list[research_store.Span]] = {}
+        if config.universe.mode is UniverseMode.RESEARCH:
+            assert config.universe.research_universe is not None  # noqa: S101  # validated
+            self.research_spans = research_store.universe_members(
+                session, config.universe.research_universe, known_at=config.known_at
+            )
+        self.delisted: dict[uuid.UUID, date] = (
+            research_store.delistings(session, self.assets, known_at=config.known_at)
+            if config.delisting_policy is not None
+            else {}
+        )
+        # D-242 date-bounded exclusions, as resolved into the configuration (absent: none).
+        self.exclusion_windows: dict[uuid.UUID, list[ExclusionWindowSpec]] = {}
+        self.exclusion_stats: Counter[str] = Counter()
+        self._blocked: dict[uuid.UUID, ExclusionWindowSpec] = {}
+        if config.exclusions is not None:
+            found = research_store.exclusion_sets(session, known_at=config.known_at)
+            if found != config.exclusions.sets:
+                raise BacktestError(
+                    "configuration",
+                    "the research exclusion sets registered by the run's knowledge time differ "
+                    f"from those it was resolved under ({sorted(found)} vs "
+                    f"{sorted(config.exclusions.sets)})",
+                )
+            for spec in config.exclusions.windows:
+                self.exclusion_windows.setdefault(uuid.UUID(spec.asset_id), []).append(spec)
+        self._window_cache: dict[date, list[date]] = {}
+        # D-237 cash dividends (None: not modelled, as in every run stored before 8A.2).
+        self.dividends: PointInTimeDividends | None = None
+        self.dividend_stats: Counter[str] = Counter()
+        self.dividend_cash = ZERO
+        if config.dividend_policy is not None:
+            applied: list[DividendCorrection] = []
+            if config.corporate_actions is not None:
+                # D-243: the named correction set, as registered by the knowledge time; its
+                # recomputed hash must be the one the run was resolved under.
+                loaded = load_correction_set(
+                    session, config.corporate_actions["code"], known_at=config.known_at
+                )
+                if loaded.content_sha256 != config.corporate_actions["content_sha256"]:
+                    raise BacktestError(
+                        "configuration",
+                        f"correction set {loaded.code} hashes to {loaded.content_sha256}, not "
+                        f"the recorded {config.corporate_actions['content_sha256']}",
+                    )
+                applied = loaded.dividends()
+            self.dividends = PointInTimeDividends.load(
+                session,
+                {a: ref.symbol for a, ref in self.assets.items()},
+                start=config.start_date,
+                end=config.end_date,
+                known_at=config.known_at,
+                corrections=applied,
+                policy=config.dividend_policy,
+            )
+
+    def symbol_of(self, asset_id: uuid.UUID) -> str:
+        if asset_id in self.assets:
+            return self.assets[asset_id].symbol
+        for ref in (self.config.benchmark, *self.config.reference_assets):
+            if ref is not None and uuid.UUID(ref.asset_id) == asset_id:
+                return ref.symbol
+        return "?"
+
+    def liquidity_at(
+        self, asset_id: uuid.UUID, day: SessionDay, t: datetime
+    ) -> tuple[Decimal | None, str | None]:
+        return self._liquidity_at(asset_id, day, t)
+
+    def _spread_point(self, asset_id: uuid.UUID, at: datetime) -> Any:
+        if self.spreads is None or self.spread_spec is None:
+            return None
+        return self.spreads.at(asset_id, at, timedelta(hours=self.spread_spec.max_age_hours))
+
+    def _fill_model(
+        self, asset_id: uuid.UUID, bar: DayBar, model: AssetClassModel
+    ) -> AssetClassModel:
+        """The class model, with the half spread measured for this session when one is
+        available (D-234); otherwise the model's assumption, counted."""
+        if self.spread_spec is None:
+            return model
+        point = self._spread_point(asset_id, bar.available_at)
+        if point is None or point.bps is None:
+            self.fill_spreads["assumed"] += 1
+            return model
+        self.fill_spreads["measured"] += 1
+        half = (point.bps * self.spread_spec.multiplier / 2).quantize(Decimal("0.0001"))
+        return model.model_copy(update={"assumed_half_spread_bps": min(half, Decimal(1000))})
 
     # ------------------------------------------------------------------ preparation
     def _prepare(self) -> list[_PreparedStrategy]:
@@ -711,6 +872,16 @@ class BacktestEngine:
         sessions = sessions_between(self.config.start_date, self.config.end_date)
         if not sessions:
             raise BacktestError("configuration", "the date range contains no trading session")
+        # X3.1 (D-244): never decide or execute on a day the market did not trade. A session
+        # with no bar for any loaded asset, or a bar on a closed day, means the calendar and
+        # the data disagree; the run stops instead of guessing.
+        conflicts = self.dataset.calendar_conflicts(self.config.end_date)
+        if any(conflicts.values()):
+            raise BacktestError(
+                "data",
+                "the session calendar and the loaded bars disagree: "
+                + "; ".join(f"{k}={v[:5]}" for k, v in conflicts.items() if v),
+            )
         first = sessions[0]
         funded_at = first.regular_open - timedelta(minutes=1)
         capital = self.config.initial_capital
@@ -775,8 +946,11 @@ class BacktestEngine:
     def _session(self, day: SessionDay, t: datetime) -> None:
         for event in self.dataset.splits_on(day.day):
             self._split(event, day, t)
+        self._dividends(day, t)
+        self._delistings(day, t)
         self._execute(day, t)
         self._expire(day, t)
+        self._exclusion_exits(day, t)
         self._value(day, t)
         self._reconcile(t)
         evaluated = self._snapshot(day, t)
@@ -792,6 +966,232 @@ class BacktestEngine:
             )
         self._horizon_exits(day, t)
         self._decide(day, t)
+
+    def _dividends(self, day: SessionDay, t: datetime) -> None:
+        """D-237: positions held over the previous close receive (long) or pay (short) the
+        cash dividends going ex on this session, before any order of the session executes.
+        Rounded against Atlas: received down, paid up, to the currency's minor unit."""
+        if self.dividends is None:
+            return
+        minor = Decimal(1).scaleb(-currency(self.config.currency).minor_units)
+        for div in self.dividends.on(day.day):
+            for trade in self.trades:
+                if trade.asset_id != div.asset_id or trade.open_quantity <= 0:
+                    continue
+                raw = div.rate * trade.open_quantity
+                amount = raw.quantize(minor, rounding=ROUND_FLOOR if trade.long else ROUND_CEILING)
+                if amount <= 0:
+                    continue
+                self._post(
+                    "cash_dividend",
+                    CashDividendParams(
+                        asset_id=trade.asset_id,
+                        currency=self.config.currency,
+                        direction="LONG" if trade.long else "SHORT",
+                        ex_date=div.ex_date,
+                        rate=div.rate,
+                        quantity=trade.open_quantity,
+                        amount=amount,
+                    ),
+                    t,
+                    f"trade:{trade.seq}:dividend:{div.ex_date.isoformat()}"
+                    + (f":{div.correction}" if div.correction else ""),
+                )
+                signed = amount if trade.long else -amount
+                trade.dividends = (trade.dividends or ZERO) + signed
+                self.dividend_stats["credited" if trade.long else "charged"] += 1
+                self.dividend_cash += signed
+                if div.correction:
+                    self.dividend_stats["from_corrections"] += 1
+                if div.special:
+                    self.dividend_stats["special"] += 1
+                if div.foreign:
+                    self.dividend_stats["foreign_gross_no_withholding"] += 1
+
+    def _delistings(self, day: SessionDay, t: datetime) -> None:
+        """D-239: a position in a security that stopped trading (its last trade before this
+        session, by the security master) is closed at its last session's close with the
+        model's costs; entries for it are cancelled. Proceeds of a merger or liquidation
+        are unknown and not invented: the last trade is the price used, labelled."""
+        if not self.delisted:
+            return
+        for order in self.orders:
+            last = self.delisted.get(order.asset_id)
+            if order.role is OrderRole.ENTRY and order.working and last and day.day > last:
+                order.cancel(t, f"security delisted (last trade {last.isoformat()})")
+                self._entry_final(order, t)
+        for trade in self.trades:
+            last = self.delisted.get(trade.asset_id)
+            if trade.open_quantity <= 0 or last is None or day.day <= last:
+                continue
+            bar = self.dataset.last_raw_on_or_before(trade.asset_id, last)
+            if bar is None:
+                self._event(t, RunEventKind.DATA_MISSING, trade.symbol, "delisted: no last bar")
+                continue
+            for order in self._trade_exits(trade):
+                order.cancel(t, f"security delisted (last trade {last.isoformat()})")
+            side = OrderSide.SELL if trade.long else OrderSide.BUY_TO_COVER
+            order = self._new_order(
+                OrderRole.EXIT,
+                trade.asset_id,
+                side,
+                OrderType.MARKET,
+                trade.open_quantity,
+                bar.start,  # priced on the last trading session (labelled)
+                t,
+                f"security delisted after {last.isoformat()}: closed at its last trade",
+                reference_price=bar.close,
+                trade_seq=trade.seq,
+                proposal_seq=trade.proposal_seq,
+            )
+            trade.exit_order_seqs.append(order.seq)
+            model = self._fill_model(
+                trade.asset_id, bar, self._class_model(self.assets[trade.asset_id].asset_class)
+            )
+            # The last close (fidelity off): delisting exits do not trade at a next open.
+            ev = evaluate(order, bar, model, max_fill=trade.open_quantity)
+            if ev is None or ev.fill is None:
+                self._event(t, RunEventKind.DATA_MISSING, trade.symbol, "delisted: no exit fill")
+                continue
+            fill = self._fill(order, ev, bar, t)
+            share = trade.cost_open * fill.quantity / trade.open_quantity
+            trade.realized_gross += (
+                (fill.notional - share) if trade.long else (share - fill.notional)
+            )
+            trade.cost_open -= share
+            trade.open_quantity -= fill.quantity
+            trade.exit_quantity += fill.quantity
+            trade.exit_value += fill.notional
+            trade.exit_costs += fill.commission + fill.fees
+            trade.notes.append(f"delisted: closed at the last trade of {bar.session.isoformat()}")
+            if trade.open_quantity == 0:
+                self._close_trade(trade, t, "DELISTED")
+
+    def _exclusion_exits(self, day: SessionDay, t: datetime) -> None:
+        """D-242: from ``blocked_from`` (the session before an asset's contaminated
+        observations) no entry for it stays working, and a position still open is closed at
+        that session's close (the last clean observation) with the model's costs, so no
+        holder is ever valued across the contaminated sessions."""
+        if not self.exclusion_windows:
+            return
+        for order in self.orders:
+            w = blocked_on(self.exclusion_windows.get(order.asset_id, ()), day.day)
+            if w is not None and order.role is OrderRole.ENTRY and order.working:
+                order.cancel(t, f"date-bounded exclusion {w.code} ({w.blocked_from.isoformat()})")
+                self._entry_final(order, t)
+                self.exclusion_stats["entries_cancelled"] += 1
+        for trade in self.trades:
+            if trade.open_quantity <= 0:
+                continue
+            w = blocked_on(self.exclusion_windows.get(trade.asset_id, ()), day.day)
+            if w is None:
+                continue
+            bar = self.dataset.last_raw_on_or_before(trade.asset_id, min(day.day, w.blocked_from))
+            if bar is None:
+                self._event(t, RunEventKind.DATA_MISSING, trade.symbol, "exclusion: no last bar")
+                continue
+            reason = (
+                f"date-bounded exclusion {w.code}: contaminated observations "
+                f"{w.contaminated_from.isoformat()}..{w.contaminated_to.isoformat()}"
+            )
+            for order in self._trade_exits(trade):
+                order.cancel(t, reason)
+            side = OrderSide.SELL if trade.long else OrderSide.BUY_TO_COVER
+            order = self._new_order(
+                OrderRole.EXIT,
+                trade.asset_id,
+                side,
+                OrderType.MARKET,
+                trade.open_quantity,
+                bar.start,  # priced on the last clean session (labelled)
+                t,
+                f"{reason}: closed at the close of {bar.session.isoformat()}",
+                reference_price=bar.close,
+                trade_seq=trade.seq,
+                proposal_seq=trade.proposal_seq,
+            )
+            trade.exit_order_seqs.append(order.seq)
+            model = self._fill_model(
+                trade.asset_id, bar, self._class_model(self.assets[trade.asset_id].asset_class)
+            )
+            # The session's close (fidelity off), as the delisting exit.
+            ev = evaluate(order, bar, model, max_fill=trade.open_quantity)
+            if ev is None or ev.fill is None:
+                self._event(t, RunEventKind.DATA_MISSING, trade.symbol, "exclusion: no exit fill")
+                continue
+            fill = self._fill(order, ev, bar, t)
+            share = trade.cost_open * fill.quantity / trade.open_quantity
+            trade.realized_gross += (
+                (fill.notional - share) if trade.long else (share - fill.notional)
+            )
+            trade.cost_open -= share
+            trade.open_quantity -= fill.quantity
+            trade.exit_quantity += fill.quantity
+            trade.exit_value += fill.notional
+            trade.exit_costs += fill.commission + fill.fees
+            trade.notes.append(f"{reason}: closed at the close of {bar.session.isoformat()}")
+            self.exclusion_stats["positions_closed"] += 1
+            if trade.open_quantity == 0:
+                self._close_trade(trade, t, "CA_EXCLUSION")
+
+    def _window_days(self, day: date, count: int) -> list[date]:
+        """The ``count`` sessions ending with ``day`` (oldest first)."""
+        found = self._window_cache.get(day)
+        if found is None or len(found) < count:
+            days = [day]
+            while len(days) < count:
+                days.append(previous_trading_day(CALENDAR, days[-1]).day)
+            found = list(reversed(days))
+            self._window_cache[day] = found
+        return found[-count:]
+
+    def _replay_correlations(
+        self, candidate: uuid.UUID, held: list[uuid.UUID], day: SessionDay, t: datetime
+    ) -> list[Correlation]:
+        """D-239 ``replay-bars-v1``: |Pearson correlation| of daily log returns over the last
+        60 completed sessions (split-adjusted closes, so splits do not create returns),
+        computed from the replay's own bars; fewer than 40 common returns -> not measured
+        (the configured missing-correlation policy then applies)."""
+        days = self._window_days(day.day, REPLAY_CORRELATION_SESSIONS + 1)
+
+        def returns(asset: uuid.UUID) -> list[float | None]:
+            bars = self.dataset.split.get(asset, {})
+            closes = [
+                float(bars[d].close) if d in bars and bars[d].valid and bars[d].close > 0 else None
+                for d in days
+            ]
+            return [
+                math.log(b / a) if a is not None and b is not None else None
+                for a, b in itertools.pairwise(closes)
+            ]
+
+        base = returns(candidate)
+        out: list[Correlation] = []
+        for other in held:
+            if other == candidate:
+                continue
+            pairs = [
+                (x, y)
+                for x, y in zip(base, returns(other), strict=True)
+                if x is not None and y is not None
+            ]
+            value = None
+            if len(pairs) >= REPLAY_CORRELATION_MIN_OBSERVATIONS:
+                xs, ys = zip(*pairs, strict=True)
+                if statistics.pstdev(xs) > 0 and statistics.pstdev(ys) > 0:
+                    value = abs(statistics.correlation(xs, ys))
+            if value is None:
+                out.append(Correlation(asset_id=other))
+                continue
+            out.append(
+                Correlation(
+                    asset_id=other,
+                    value=Decimal(str(round(value, 6))),
+                    as_of=t,
+                    source=f"replay bars: {len(pairs)} daily log returns to {day.day.isoformat()}",
+                )
+            )
+        return out
 
     # ------------------------------------------------------------------ helpers
     def _post(self, template: str, params: Any, at: datetime, ref: str) -> int:
@@ -1053,11 +1453,19 @@ class BacktestEngine:
             bar = self.dataset.bar(asset_id, day.day)
             if bar is None or not bar.valid:
                 continue
-            model = self._class_model(self.assets[asset_id].asset_class)
+            model = self._fill_model(
+                asset_id, bar, self._class_model(self.assets[asset_id].asset_class)
+            )
             entries = [o for o in by_asset[asset_id] if o.role is OrderRole.ENTRY]
             for order in sorted(entries, key=lambda o: o.seq):
                 self._run_entry(order, bar, model, t)
-            for role in (OrderRole.STOP, OrderRole.TAKE_PROFIT, OrderRole.EXIT):
+            roles = (OrderRole.STOP, OrderRole.TAKE_PROFIT, OrderRole.EXIT)
+            if self.fidelity is not None and self.fidelity.market_orders_at_open:
+                # E7: orders that execute at the open come before a stop reached later.
+                # A take-profit that did not open beyond its target still yields to a stop
+                # reached in the same session (its own stop-first rule).
+                roles = (OrderRole.EXIT, OrderRole.TAKE_PROFIT, OrderRole.STOP)
+            for role in roles:
                 current = [
                     o
                     for o in self.orders
@@ -1109,8 +1517,64 @@ class BacktestEngine:
         self.fills.append(record)
         return record
 
+    def _open_half_spread(self, order: SimOrder, bar: DayBar) -> Decimal | None:
+        """The measured opening half spread of the order's first session (E1), or of any
+        session under the E7 conventions (D-236), or None."""
+        if self.open_spreads is None:
+            return None
+        if not (order.opening and order.attempts == 0) and self.fidelity is None:
+            return None
+        bounds = OPEN_WINDOW.bounds(bar.session)
+        if bounds is None:
+            return None
+        point = self.open_spreads.at(order.asset_id, bounds[1], timedelta(minutes=1))
+        if point is None or point.bps is None:
+            return None
+        return (point.bps / 2).quantize(Decimal("0.0001"))
+
+    def _opened_through(self, order: SimOrder, bar: DayBar) -> bool:
+        """E7: the session opened beyond the order's limit (a take-profit opened at or
+        beyond its target)."""
+        if self.fidelity is None or not self.fidelity.limit_marketable_at_open:
+            return False
+        limit = order.limit_price
+        if limit is None:
+            return False
+        return bar.open < limit if order.side.buys else bar.open > limit
+
+    def _count_fidelity(self, ev: Any, half: Decimal | None) -> None:
+        if self.fidelity is None or ev is None or ev.fill is None:
+            return
+        for note in ev.fill.assumptions:
+            if note.startswith("E7 "):
+                self.fidelity_stats[note.split(":")[0]] += 1
+                key = "open_spread_measured" if half is not None else "open_spread_not_measured"
+                if "open" in note.split(":")[0]:
+                    self.fidelity_stats[key] += 1
+
     def _run_entry(self, order: SimOrder, bar: DayBar, model: AssetClassModel, t: datetime) -> None:
-        ev = evaluate(order, bar, model, max_fill=order.remaining)
+        first = order.opening and order.attempts == 0
+        half = self._open_half_spread(order, bar)
+        ev = evaluate(
+            order,
+            bar,
+            model,
+            max_fill=order.remaining,
+            open_half_spread_bps=half,
+            fidelity=self.fidelity,
+        )
+        self._count_fidelity(ev, half)
+        if first and ev is not None:
+            opened = ev.fill is not None and any(
+                a.startswith("opening entry") for a in ev.fill.assumptions
+            )
+            if opened:
+                key = "open_fill_measured" if half is not None else "open_fill_assumed"
+                self.opening_stats[key] += 1
+            elif ev.fill is not None:
+                self.opening_stats["limit_fill_after_gap_beyond_worst"] += 1
+            else:
+                self.opening_stats["not_filled_first_session"] += 1
         if ev is None or ev.fill is None:
             return
         fill = self._fill(order, ev, bar, t)
@@ -1154,6 +1618,7 @@ class BacktestEngine:
             stop_level=stop,
             target_level=proposal.target_reference,
             horizon_periods=proposal.holding_horizon_periods,
+            dividends=None if self.dividends is None else ZERO,
         )
         if self.config.execution.exit_at_horizon:
             trade.horizon_end = expires_at(
@@ -1213,7 +1678,20 @@ class BacktestEngine:
             if order.role is OrderRole.TAKE_PROFIT and trade.stop_order_seq:
                 stop_order = self.orders[trade.stop_order_seq - 1]
                 order.adverse_level = stop_order.current_stop or stop_order.stop_price
-        ev = evaluate(order, bar, model, max_fill=trade.open_quantity)
+                if self._opened_through(order, bar):
+                    # E7: the open came first; a stop reached later in the session is not
+                    # ahead of it.
+                    order.adverse_level = None
+        half = self._open_half_spread(order, bar)
+        ev = evaluate(
+            order,
+            bar,
+            model,
+            max_fill=trade.open_quantity,
+            open_half_spread_bps=half,
+            fidelity=self.fidelity,
+        )
+        self._count_fidelity(ev, half)
         if ev is None:
             return
         if (
@@ -1463,26 +1941,64 @@ class BacktestEngine:
 
     # ------------------------------------------------------------------ 7. decisions
     def _universe(self, day: SessionDay, t: datetime) -> list[uuid.UUID]:
+        joined: str | None = None
+        left: str | None = None
         if self.config.universe.mode is UniverseMode.EXPLICIT:
             current = set(self.assets)
+        elif self.config.universe.mode is UniverseMode.RESEARCH:
+            # D-239: members whose span (formed from data up to the formation session,
+            # effective from the next) contains this completed session.
+            current = {
+                a
+                for a, spans in self.research_spans.items()
+                if a in self.assets and any(s.contains(day.day) for s in spans)
+            }
+            code = self.config.universe.research_universe
+            joined = f"member of research universe {code} on {day.day.isoformat()}"
+            left = f"no longer a member of research universe {code}"
         else:
             assert self.config.universe.layer is not None  # noqa: S101  # validated
             members = members_at(self.session, self.config.universe.layer, t, known_at=t)
             current = {a for a in members if a in self.assets}
-            for added in sorted(current - self.universe, key=lambda a: self.assets[a].symbol):
-                self._event(
-                    t,
-                    RunEventKind.UNIVERSE_ADDED,
-                    self.assets[added].symbol,
-                    f"member of {self.config.universe.layer.value} at {t.isoformat()}",
+            joined = f"member of {self.config.universe.layer.value} at {t.isoformat()}"
+            left = f"no longer a member of {self.config.universe.layer.value}"
+        # D-242: a member inside a date-bounded exclusion is not decided on (its read window
+        # or holding period would contain contaminated observations).
+        blocked: dict[uuid.UUID, ExclusionWindowSpec] = {}
+        if self.exclusion_windows:
+            for a in current:
+                w = blocked_on(self.exclusion_windows.get(a, ()), day.day)
+                if w is not None:
+                    blocked[a] = w
+            current -= set(blocked)
+            self.exclusion_stats["blocked_member_sessions"] += len(blocked)
+        for added in sorted(current - self.universe, key=lambda a: self.assets[a].symbol):
+            message = joined
+            if added in self._blocked:
+                w = self._blocked[added]
+                message = (
+                    f"date-bounded exclusion {w.code} ended after {w.blocked_through.isoformat()}"
+                    + (f"; {joined}" if joined else "")
                 )
-            for gone in sorted(self.universe - current, key=lambda a: self.assets[a].symbol):
-                self._event(
-                    t,
-                    RunEventKind.UNIVERSE_REMOVED,
-                    self.assets[gone].symbol,
-                    f"no longer a member of {self.config.universe.layer.value}",
+            if message is not None:
+                self._event(t, RunEventKind.UNIVERSE_ADDED, self.assets[added].symbol, message)
+        for gone in sorted(self.universe - current, key=lambda a: self.assets[a].symbol):
+            if gone in blocked:
+                w = blocked[gone]
+                message = (
+                    f"date-bounded exclusion {w.code}: contaminated observations "
+                    f"{w.contaminated_from.isoformat()}..{w.contaminated_to.isoformat()}; out "
+                    f"of the decision universe {w.blocked_from.isoformat()}.."
+                    f"{w.blocked_through.isoformat()}"
                 )
+            else:
+                message = left
+            if message is not None:
+                self._event(t, RunEventKind.UNIVERSE_REMOVED, self.assets[gone].symbol, message)
+        self._blocked = {
+            **{a: w for a, w in self._blocked.items() if a not in current},
+            **blocked,
+        }
         self.universe = current
         return sorted(current, key=lambda a: self.assets[a].symbol)
 
@@ -1503,7 +2019,7 @@ class BacktestEngine:
                 {"breaker": record.breaker.value, "actor": record.actor},
             )
         view = evaluated.view.model_copy(update={"active_breakers": self.book.active()})
-        drafts: list[tuple[tuple[Any, ...], _PreparedStrategy, uuid.UUID, Any, Any]] = []
+        drafts: list[tuple[tuple[Any, ...], _PreparedStrategy, uuid.UUID, Any, Any, Any]] = []
         for timeframe in timeframes:
             for prepared in self._prepared:
                 if timeframe not in prepared.resolved.timeframes:
@@ -1525,10 +2041,52 @@ class BacktestEngine:
                                 asset_id,
                                 spec,
                                 result[1],
+                                result[2],
                             )
                         )
-        for _key, prepared, asset_id, spec, feature_sha in sorted(drafts, key=lambda d: d[0]):
-            view = self._propose(prepared, asset_id, spec, feature_sha, day, t, view)
+        ordered = sorted(drafts, key=lambda d: d[0])
+        if self.coordinator is None:
+            for _key, prepared, asset_id, spec, feature_sha, _inputs in ordered:
+                view = self._propose(prepared, asset_id, spec, feature_sha, day, t, view)
+            return
+        if not ordered:
+            return
+        items = [
+            Draft(
+                key=key,
+                prepared=prepared,
+                asset_id=asset_id,
+                spec=spec,
+                feature_sha=sha,
+                inputs=inputs,
+                proposal_id=uuid.uuid5(NAMESPACE, f"draft:{day.day}:{key}"),
+            )
+            for key, prepared, asset_id, spec, sha, inputs in ordered
+        ]
+        stage = self.coordinator.run(t, day.day, items)
+        for draft, outcome, code, message in sorted(stage.declined, key=lambda x: x[0].key):
+            self._reject(
+                t,
+                RejectionStage.COORDINATOR,
+                None,
+                draft.prepared.resolved.strategy_id,
+                self.assets[draft.asset_id].symbol,
+                draft.spec.direction.value,
+                code[:64],
+                f"{outcome}: {message} (market volatility {stage.market_volatility}, "
+                f"trend {stage.market_trend})",
+            )
+        for draft, decision_expires in sorted(stage.selected, key=lambda x: x[0].key):
+            view = self._propose(
+                draft.prepared,
+                draft.asset_id,
+                draft.spec,
+                draft.feature_sha,
+                day,
+                t,
+                view,
+                expires=min(decision_expires, draft.spec.expires_at),
+            )
 
     def _evaluate(
         self,
@@ -1537,7 +2095,7 @@ class BacktestEngine:
         timeframe: str,
         day: SessionDay,
         t: datetime,
-    ) -> tuple[list[Any], str] | None:
+    ) -> tuple[list[Any], str, Any] | None:
         asset = self.assets[asset_id]
         sid = prepared.resolved.strategy_id
         bar = self.dataset.bar(asset_id, day.day)
@@ -1612,7 +2170,7 @@ class BacktestEngine:
                     "DRAFT_LEFT_OUT",
                     note,
                 )
-        return decision.specs, inputs.content_sha256()
+        return decision.specs, inputs.content_sha256(), inputs
 
     def _liquidity_at(
         self, asset_id: uuid.UUID, day: SessionDay, t: datetime
@@ -1651,9 +2209,14 @@ class BacktestEngine:
         day: SessionDay,
         t: datetime,
         view: PortfolioView,
+        *,
+        expires: datetime | None = None,
     ) -> PortfolioView:
         asset = self.assets[asset_id]
         rs = prepared.resolved
+        # Through the coordinator, a proposal lives no longer than its decision (10A/6B
+        # ``from_ai_decision``); otherwise its own expiry, as in 8A.
+        proposal_expires = spec.expires_at if expires is None else expires
         record = ProposalRecord(
             seq=len(self.proposals) + 1,
             decided_at=t,
@@ -1669,7 +2232,7 @@ class BacktestEngine:
             target_reference=spec.target_reference,
             signal_strength=spec.signal_strength,
             holding_horizon_periods=spec.holding_horizon_periods,
-            expires_at=spec.expires_at,
+            expires_at=proposal_expires,
             reasoning=spec.reasoning,
             evidence=[dict(e) for e in spec.evidence],
             levels=dict(spec.levels),
@@ -1677,17 +2240,28 @@ class BacktestEngine:
         )
         self.proposals.append(record)
         direction = TradeDirection(spec.direction.value)
+        entry = spec.reference_entry
+        if self.opening is not None:
+            # E1 (D-235): the worst entry price W; risk sizes the trade with it.
+            if self.opening.tolerance_pct is not None:
+                tolerance = spec.reference_entry * self.opening.tolerance_pct
+            else:
+                assert self.opening.tolerance_atr is not None  # noqa: S101  # validated
+                tolerance = Decimal(str(spec.levels["atr"])) * self.opening.tolerance_atr
+            sign = ONE if direction is TradeDirection.LONG else -ONE
+            entry = (spec.reference_entry + sign * tolerance).quantize(PRICE_PLACES)
+            record.levels = {**record.levels, "e1_worst_entry": str(entry)}
         proposal = Proposal(
             source=ProposalSource.STRATEGY_PROPOSAL,
             asset_id=asset_id,
             direction=direction,
-            entry=spec.reference_entry,
+            entry=entry,
             stop=spec.invalidation_level,
             target=spec.target_reference,
             expected_holding_days=min(spec.holding_horizon_periods, 365)
             if spec.timeframe == DAILY
             else None,
-            expires_at=spec.expires_at,
+            expires_at=proposal_expires,
             strategy_proposal_id=uuid.uuid5(NAMESPACE, f"proposal:{record.seq}"),
         )
         bar = self.dataset.bar(asset_id, day.day)
@@ -1722,7 +2296,24 @@ class BacktestEngine:
             classification_id=tags.record_id,
         )
         adv, adv_metric = self._liquidity_at(asset_id, day, t)
+        quote: dict[str, Any] = {}
+        point = self._spread_point(asset_id, t)
+        if point is not None and point.bid is not None and point.ask is not None:
+            bid, ask = point.bid, point.ask
+            assert self.spread_spec is not None  # noqa: S101  # a point needs a spec
+            if self.spread_spec.multiplier != ONE:  # stress: widen around the observed mid
+                mid, half = (bid + ask) / 2, (ask - bid) / 2 * self.spread_spec.multiplier
+                bid, ask = mid - half, mid + half
+            # The observed quote of the session's sample window (15 min before the close),
+            # standing in for the quote live risk would read at the decision.
+            quote = {
+                "bid": bid,
+                "ask": ask,
+                "quote_observed_at": point.quote_at,
+                "quote_fresh": True,
+            }
         market = MarketData(
+            **quote,
             price=bar.close,
             price_status="FRESH",
             price_source="BAR_CLOSE",
@@ -1744,9 +2335,12 @@ class BacktestEngine:
             )
         )
         prefs = self.risk_config.preferences
-        correlations = risk_data.correlations(
-            self.session, asset_id, held, t, timedelta(days=prefs.correlation_max_age_days)
-        )
+        if self.config.correlation_source == "replay-bars-v1":
+            correlations = self._replay_correlations(asset_id, held, day, t)
+        else:
+            correlations = risk_data.correlations(
+                self.session, asset_id, held, t, timedelta(days=prefs.correlation_max_age_days)
+            )
         outcome = assess(
             AssessmentInputs(
                 assessed_at=t,
@@ -1840,9 +2434,15 @@ class BacktestEngine:
             if kind in (EntryOrderType.STOP, EntryOrderType.STOP_LIMIT)
             else None,
             protection_price=worst,
-            expires_at=spec.expires_at,
+            # 10A ``order_expiry``: the decision comes after the close, so the entry gets
+            # the next regular session (its close), and never outlives the proposal.
+            expires_at=min(next_trading_day(CALENDAR, day.day).regular_close, proposal_expires)
+            if self.live_entry_expiry
+            else proposal_expires,
             proposal_seq=record.seq,
         )
+        if self.opening is not None and kind is EntryOrderType.LIMIT:
+            order.opening = True
         record.order_seq = order.seq
         return view.model_copy(
             update={
@@ -1854,6 +2454,90 @@ class BacktestEngine:
     # ------------------------------------------------------------------ end of run
     def _finish(self, last: SessionDay) -> None:
         t = last.regular_close + self.settle
+        if self.config.pipeline is not None or self.config.execution_conventions is not None:
+            details: dict[str, Any] = {}
+            if self.config.execution_conventions is not None:  # engine 8A.2 (D-237)
+                details["execution_conventions"] = self.config.conventions.value
+            if self.dividends is not None:
+                missing = sorted(
+                    self.assets[a].symbol
+                    for a, status in self.dividends.coverage.items()
+                    if status != "RETRIEVED"
+                )
+                details["dividends"] = {
+                    "policy": self.config.dividend_policy,
+                    "events_in_period": self.dividends.count(),
+                    "assets_retrieved": len(self.dividends.coverage) - len(missing),
+                    "assets_not_retrieved": missing,
+                    "postings": dict(self.dividend_stats),
+                    "net_cash": str(self.dividend_cash),
+                    **(
+                        {
+                            "corrections": {
+                                **(self.config.corporate_actions or {}),
+                                **{
+                                    k: v
+                                    for k, v in self.dividends.corrections.items()
+                                    if k not in PROVIDER_ROW_STATS
+                                },
+                                # Not retrieved under their own symbol, but credited the
+                                # verified dividends of their former tickers.
+                                "not_retrieved_assets_with_corrections": sorted(
+                                    self.assets[a].symbol
+                                    for a in self.dividends.corrected_assets()
+                                    if self.dividends.coverage.get(a) != "RETRIEVED"
+                                ),
+                            }
+                        }
+                        if self.config.corporate_actions is not None
+                        else {}
+                    ),
+                    "fallback": "assets without a retrieval covering the period: no dividend "
+                    "credited or charged (unknown, not zero)",
+                }
+                if self.config.dividend_policy == DIVIDEND_POLICY_V2:
+                    # X3.1 (D-244): how the provider rows were joined (v2 only).
+                    details["dividends"]["provider_rows"] = {
+                        k: self.dividends.corrections.get(k, 0) for k in PROVIDER_ROW_STATS
+                    }
+            if self.coordinator is not None:
+                details["coordinator"] = self.coordinator.summary()
+            if self.spreads is not None and self.spread_spec is not None:
+                details["spreads"] = {
+                    "feed": self.spread_spec.feed,
+                    "multiplier": str(self.spread_spec.multiplier),
+                    "max_age_hours": self.spread_spec.max_age_hours,
+                    "lookups": self.spreads.coverage(),
+                    "fills": dict(self.fill_spreads),
+                }
+            if self.opening is not None:
+                details["opening_entry"] = {
+                    "tolerance_pct": None
+                    if self.opening.tolerance_pct is None
+                    else str(self.opening.tolerance_pct),
+                    "tolerance_atr": None
+                    if self.opening.tolerance_atr is None
+                    else str(self.opening.tolerance_atr),
+                    "first_session": dict(self.opening_stats),
+                    "open_spread_lookups": None
+                    if self.open_spreads is None
+                    else self.open_spreads.coverage(),
+                }
+            if self.fidelity is not None:
+                details["execution_fidelity"] = {
+                    **self.fidelity.model_dump(),
+                    "corrected_fills": dict(self.fidelity_stats),
+                    "open_spread_lookups": None
+                    if self.open_spreads is None
+                    else self.open_spreads.coverage(),
+                }
+            self._event(
+                t,
+                RunEventKind.PIPELINE_SUMMARY,
+                None,
+                "live-pipeline stages of this run (D-234)",
+                details,
+            )
         for order in self.orders:
             if order.role is OrderRole.ENTRY and order.working and order.proposal_seq:
                 proposal = self.proposals[order.proposal_seq - 1]

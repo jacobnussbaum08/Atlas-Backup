@@ -1046,6 +1046,12 @@ current one is refused (the reservation was sized with the approved stop).
 give a changed model a new `version`. Orders already working keep the version they started
 with; new orders use the new one. Every version stays in `execution_models`.
 
+* Version 2 (D-217) added the gap rule.
+* Version 3 (D-237, the current default) fills a limit at its first post-arrival
+  observation, plus costs, never worse than the limit. It applies when that observation
+  (a trade, or a 1-minute bar's open) is already through the limit and no fresh quote
+  executed the order. Before version 3, such a fill was at the limit.
+
 **When nothing fills:** look at `orders show --id ID` -> `execution.attempts`. DEFERRED codes
 (`MARKET_CLOSED`, `STALE_QUOTE`, `NO_QUOTE`, `LIQUIDITY_UNKNOWN`, `VOLUME_UNKNOWN`) mean the
 data was insufficient; NO_FILL codes (`LIMIT_NOT_THROUGH`, `WAITING_FOR_QUOTE`,
@@ -1096,6 +1102,22 @@ cost and participation assumptions (a new content-addressed execution model);
 `data.settle_seconds` and `data.feature_adjustment` (`POINT_IN_TIME_SPLIT` | `RAW`) set the
 availability policies; `breaker_reset_policy` is `NEXT_SESSION_IF_CLEAR` or `NEVER`.
 
+**Engine 8A.2 (D-237).** New runs use the corrected execution conventions
+(`execution_conventions: "daily-v2"`, default) and credit cash dividends (`dividends: true`,
+default).
+* Pass `"execution_conventions": "daily-v1"` for the Phase 8A conventions, a pessimistic
+  comparison.
+* Runs stored before 8A.2 replay and reproduce under daily-v1 without dividends.
+* Dividends need migration 0023 and a retrieval covering the run's dates (GET-only):
+
+```bash
+uv run python -m app.backtesting.dividends --symbols SYMBOLS --start 2019-01-01 --end 2026-11-10
+```
+
+A symbol without a covering retrieval is reported as `NOT_RETRIEVED` in the run summary and is
+credited nothing. Retrieval rows are append-only; a changed provider value becomes a new
+revision, and a run uses only rows retrieved by its knowledge time.
+
 **When a run trades little:** look at the run's rejection reasons. `SECTOR_EXPOSURE` and
 `CORRELATED_EXPOSURE` bind when assets have no sector classification
 (`risk_asset_classifications`) or correlation measurements for past dates: the 6B policies
@@ -1109,6 +1131,535 @@ for example news without retrieval coverage).
 reconcile, which would be a bug, or when the configuration cannot be replayed (a stored
 strategy version whose logic differs from the code). The error is on the run's page and in
 `backtest_run_errors`.
+
+## Research data foundation (D-239)
+
+**Simulation database only.** The CLI refuses a database whose name lacks `sim`. Requests to
+the provider and to the SEC are GET-only, and credentials are never printed. The tables need
+migrations 0024 and 0025 (`research_exclusions`). Both are applied to `atlas_sim_profitability`
+only; the main database stays at 0022. Run the steps in this order:
+
+```bash
+uv run python -m app.research.cli build-universe      # security master, formations, universes
+```
+
+```bash
+uv run python -m app.research.cli correct-symbology   # reused tickers (traded months), fund collisions
+```
+
+```bash
+uv run python -m app.research.cli form-current        # the current universes (point-in-time identity)
+```
+
+```bash
+uv run python -m app.research.cli load-bars           # 2016-2019 SIP daily bars (RAW, SPLIT)
+```
+
+```bash
+uv run python -m app.research.cli infer-delistings
+```
+
+```bash
+uv run python -m app.research.cli dividends
+```
+
+```bash
+uv run python -m app.research.cli lots-missing        # lot evidence + registration for new members
+```
+
+```bash
+uv run python -m app.research.cli classify            # SIC as filed -> Fama-French 12 sectors
+```
+
+```bash
+uv run python -m app.research.cli validate            # writes runs/research_validation[.N].json
+```
+
+```bash
+uv run python -m app.research.cli reserve             # reservations with the dataset hash
+```
+
+**Reserved data.** A backtest that overlaps 2016-2019 (`V1_2016_2019`), or that trades a member
+of a reserved research universe, is refused unless its request names a registered
+pre-registration (`"preregistration": "CODE"`) that lists those reservations. Register one
+from its final document; this starts no experiment:
+
+```bash
+uv run python -m app.research.cli preregister CODE docs/phase-reports/DOC.md V1_2016_2019
+```
+
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+```bash
+uv run python -m app.research.cli exclusion-evidence research_validation.5.json research_bar_manifest.5.json
+```
+
+```bash
+uv run python -m app.research.cli register-exclusions docs/phase-reports/x1-phantom-split-exclusions-preregistration.md config/simulation/runs/research_exclusions_x1_evidence.json
+```
+
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+**Corporate-action audit (D-241, read only).** `app.research.ca_audit` scans the current
+universes for corporate-action defects. It writes only JSON artifacts, never the database.
+It refuses to overwrite an output, and it records every provider look-up (GET only) so a
+rerun with an existing look-up file is offline. Run from `backend/` in the simulation
+environment:
+
+```bash
+uv run python -m app.research.ca_audit ../config/simulation/runs/ca_audit_N.json ../config/simulation/runs/ca_audit_provider_actions_1.json ../config/simulation/runs/ca_audit_provider_lookups_N.json
+```
+
+`reconcile OUT LOOKUPS` and `identity OUT LOOKUPS` (as the first arguments) price candidate
+corrections and identity probes. Findings:
+`docs/phase-reports/corporate-action-integrity-audit.md`.
+
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+```bash
+uv run python -m app.research.cli x2-evidence
+```
+
+```bash
+uv run python -m app.research.cli register-x2 docs/phase-reports/x2-corporate-action-exclusions-preregistration.md config/simulation/runs/research_exclusions_x2_evidence.json
+```
+
+Registration refuses if X2 exists already, if a file changed after it was hashed, or if an
+event's audited RAW closes are no longer in the database. In a research run the replay closes
+a position at the close before the contaminated session (exit reason `CA_EXCLUSION`). It also
+keeps the asset out of every decision whose read window contains that session, and keeps a
+splice inside a span out through the span's end. The run records the policy, the read
+window, every set's content hash and its windows under `config.exclusions`. A replay whose
+registered sets differ from the recorded ones refuses to start.
+
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+```bash
+uv run python -m app.research.cli x3-evidence --lookups ca_dividend_lookups_2.json
+```
+
+```bash
+uv run python -m app.research.cli register-x3 docs/phase-reports/x3-dividend-identity-corrections-preregistration.md config/simulation/runs/ca_dividend_corrections_evidence.2.json
+```
+
+A run applies a set only when it names it: `"corporate_actions": "CA_DIVIDEND_IDENTITY_V1"`,
+with dividends modelled. The configuration records the code, content hash, policy and
+pre-registration, and the replay refuses a set whose recomputed hash differs. The run's
+`dividends.corrections` summary counts credited events, voided rows, skipped duplicates and
+not-retrieved assets credited through corrections. X1 and X2 stay in force; a correction never
+releases an exclusion.
+
+**Dividend completeness, calendar and identity X3.1 (D-244).**
+
+* **Retrieval.** The provider filters corporate actions on the *processing* date. Dividend
+  retrievals (`python -m app.backtesting.dividends --symbols ... --start ... --end ...`) now
+  take an **ex-date** range: they query the processing-date window `[start − 31 d,
+  end + 366 d]` and record `details.basis = "ex_date"`.
+* **Dividend policy v2.** New runs use `cash-at-ex-date-v2`, which credits only from
+  ex-date-basis retrievals. To cover a symbol, retrieve it again. Stored runs keep v1.
+* **Calendar.** It now carries the unscheduled NYSE closures since 2001. It matches the
+  provider's calendar day by day from 2004. A replay stops (`data` stage) if the loaded bars
+  contradict the calendar.
+* **Commands, in order.** Each run is GET only; artifacts are never replaced; the evidence is
+  built offline once the look-ups exist.
+
+```bash
+uv run python -m app.research.cli x31-calendar
+```
+
+```bash
+uv run python -m app.research.cli x31-retrieve
+```
+
+```bash
+uv run python -m app.research.cli x31-evidence --lookups x31_dividend_lookups_1.json
+```
+
+```bash
+uv run python -m app.research.cli x31-table config/simulation/runs/x31_dividend_completeness_evidence.json docs/phase-reports/x31-dividend-completeness-by-asset.md
+```
+
+```bash
+uv run python -m app.research.cli register-x31 docs/phase-reports/x31-dividend-completeness-preregistration.md config/simulation/runs/x31_dividend_completeness_evidence.json
+```
+
+`x31-retrieve` appends provider rows to the simulation database; it never changes stored rows.
+The registered set `CA_DIVIDEND_IDENTITY_V2` holds every V1 member plus the X3.1 records. A
+research run on V4 should name it (`"corporate_actions": "CA_DIVIDEND_IDENTITY_V2"`, with
+`"dividends": true`).
+
+**Historical universe evidence X4.1 (D-245).** This is evidence for rebuilding the 2016-2018
+universes without today's listings. It lives in `config/simulation/evidence/x4`, where every
+artifact is listed in `manifest.json` with its source, parameters, retrieval time and SHA-256.
+Capture is GET only, write-once and resumable, and steps on different hosts may run in
+parallel. No database row is written.
+
+```bash
+uv run python -m app.research.cli x4-capture assets
+```
+
+The other steps, run the same way: `snapshot`, `archive`, `sec`, `sweep` (optionally
+`--formation` and `--length`), `classes`, `history`, `dividends`, `derive`. Verify offline:
+
+```bash
+uv run python -m app.research.cli x4-verify
+```
+
+`x4-verify` recomputes every hash and re-derives every report from the raw evidence. A derived
+report is never overwritten: a changed derivation must be written as a new artifact.
+
+**Security lifecycle ledger X4.2 (D-246).** Migration 0028 adds the append-only lifecycle
+tables. It is applied only to the disposable copy `atlas_sim_x42_rehearsal`; the simulation
+database stays at 0027. Build the ledger from the X4.1 evidence (a file; deterministic, never
+replaced):
+
+```bash
+uv run python -m app.research.cli x42-build
+```
+
+Register it once into a database at 0028; the command refuses any other version:
+
+```bash
+uv run python -m app.research.cli x42-register config/simulation/lifecycle/x42_ledger_v1.json
+```
+
+The 0028 downgrade refuses while the ledger holds rows.
+
+**Historical entity resolution X4.3 (D-247).** X4.3 evidence lives in its own write-once store,
+`config/simulation/evidence/x43`. The identity snapshot is read-only, in one read-only
+transaction, against the database that `ATLAS_POSTGRES_DB` selects (the simulation database).
+The probes are GET only:
+
+```bash
+uv run python -m app.research.cli x43-capture identities
+uv run python -m app.research.cli x43-capture asof
+```
+
+Build the identity graph from X4.1, the X4.2 ledger (checked against its SHA-256) and X4.3.
+The result is a file, written once:
+
+```bash
+uv run python -m app.research.cli x43-build
+```
+
+`x43-verify` checks the X4.3 hashes, rebuilds the graph and compares content hashes:
+
+```bash
+uv run python -m app.research.cli x43-verify
+```
+
+Nothing is written to a database.
+
+**Lifecycle ledger V2 X4.3.1 (D-248).** V2 is built from V1, the X4.3 graph and the stored
+evidence; each input is checked against its SHA-256. It is a file, written once:
+
+```bash
+uv run python -m app.research.cli x431-build
+```
+
+`x431-verify` recomputes V2's hashes and rebuilds it offline:
+
+```bash
+uv run python -m app.research.cli x431-verify
+```
+
+Register V2 beside V1 only into a database at 0028; the command refuses any other version. It
+has been rehearsed only on the disposable copy `atlas_sim_x431_rehearsal`:
+
+```bash
+uv run python -m app.research.cli x431-register config/simulation/lifecycle/x431_ledger_v2.json.gz
+```
+
+**Identity graph V2 X4.3.2 (D-249).** The provider's corporate actions go into the X4.3.2 store
+(GET only; written once). Graph V2 is built from X4.1, X4.3, X4.3.2, the X4.3 graph and
+Ledger V2, each checked against its SHA-256. It is a file, written once, and nothing is written
+to a database:
+
+```bash
+uv run python -m app.research.cli x432-capture
+uv run python -m app.research.cli x432-build
+```
+
+`x432-verify` checks the X4.3.2 hashes, rebuilds graph V2 and compares content hashes:
+
+```bash
+uv run python -m app.research.cli x432-verify
+```
+
+**Historical universe X4.4 (D-250).** This builds the point-in-time equity and ETF universes from
+the stored evidence, Ledger V2 and graph V2 (each input checked against its SHA-256). It is a
+file, written once, and nothing is written to a database:
+
+```bash
+uv run python -m app.research.cli x44-build
+```
+
+`x44-verify` recomputes the hash, rebuilds the universe and compares:
+
+```bash
+uv run python -m app.research.cli x44-verify
+```
+
+**Member data X4.5 (D-251).** This retrieves the market data of the confirmed X4.4 members. It
+needs the simulation environment with provider credentials from `.env`; the values are never
+printed. Capture writes to the write-once store `config/simulation/evidence/x45`, and an
+artifact already captured is not fetched again. Run the bars first, then the corporate actions,
+then the recoveries, which are worked out from the captured bars:
+
+```bash
+uv run python -m app.research.cli x45-capture bars
+uv run python -m app.research.cli x45-capture actions
+uv run python -m app.research.cli x45-capture recovery
+```
+
+The build is offline. It checks the universe, Ledger V2, graph V2 and the store manifest against
+their SHA-256 and writes `config/simulation/lifecycle/x45_member_data_v1.json.gz` once; it
+refuses to overwrite. Nothing is written to a database:
+
+```bash
+uv run python -m app.research.cli x45-build
+```
+
+`x45-verify` checks every evidence hash, rebuilds the dataset and compares content hashes:
+
+```bash
+uv run python -m app.research.cli x45-verify
+```
+
+**Research-data validation X4.6 (D-252).** This runs offline. It first checks every earlier X4
+artifact against its reported SHA-256 and refuses to run if any differs. It then writes
+`config/simulation/lifecycle/x46_validation_v1.json.gz`, which holds the status, restrictions and
+usable range of every membership slot, and the derived table
+`docs/phase-reports/x46-slot-status.csv`. Both are written once. Nothing is written to a
+database:
+
+```bash
+uv run python -m app.research.cli x46-build
+```
+
+`x46-verify` rechecks the pinned hashes, rebuilds the validation and compares content hashes:
+
+```bash
+uv run python -m app.research.cli x46-verify
+```
+
+Research code reads member data by slot (`x46_validation.Lookup`), only inside the slot's
+`usable_range`, and skips its `excluded_sessions`.
+
+**Corrections X4.6.1 (D-253).** These steps write revisions and never change an earlier
+artifact. Captures are GET only (SEC filings; provider bars and actions of admitted members)
+into `config/simulation/evidence/x461`:
+
+```bash
+uv run python -m app.research.cli x461-capture filings
+uv run python -m app.research.cli x461-capture bars
+uv run python -m app.research.cli x461-capture actions
+```
+
+`x461-build` writes, once each:
+* `x44_historical_universe_v2.json.gz`;
+* `x45_member_data_v2.json.gz`, with terminal values;
+* `x46_validation_v2.json.gz`, with `docs/phase-reports/x461-slot-status.csv`.
+
+```bash
+uv run python -m app.research.cli x461-build
+```
+
+`x461-verify` checks the X4.6.1 evidence hashes and every pin, then rebuilds all three revisions
+and compares content hashes:
+
+```bash
+uv run python -m app.research.cli x461-verify
+```
+
+Research uses the V2 files and the V2 validation from here on. V1 remains for audit.
+
+**Corporate actions and total returns X5 (D-254).** These steps read the V2 files, pinned by
+SHA-256, and never change an earlier artifact. Captures are GET only (EDGAR filings; raw SIP
+bars of securities received in exits or distributed in spin-offs) into
+`config/simulation/evidence/x5`:
+
+```bash
+uv run python -m app.research.cli x5-capture filings
+uv run python -m app.research.cli x5-capture prices
+```
+
+`x5-build` writes, once each:
+* `x5_corporate_actions_v1.json.gz`: the ledger, terminal values and spin-off review;
+* `x5_total_returns_v1.json.gz`: daily total-return factors and verification.
+
+```bash
+uv run python -m app.research.cli x5-build
+```
+
+`x5-verify` checks the evidence hashes and every pin, then rebuilds both artifacts and compares
+content hashes:
+
+```bash
+uv run python -m app.research.cli x5-verify
+```
+
+Rules for research that uses these files:
+* Use a slot's total-return factors only inside its usable range.
+* A break (`MISSING_OR_EXCLUDED` or `RESTRICTED_*`) is never bridged.
+* An exit adds value only through its `terminal_step`, which exists for `VALUED` and
+  `VALUED_DEFAULT_NO_ELECTION` only.
+* Dividends and the cash part of an exit are receivables, never spendable cash: the evidence
+  has no pay dates.
+
+**Execution realism and portfolio accounting X6 (D-255).** X6 is a library for later
+backtests (`research.x6_data`, `x6_execution`, `x6_portfolio`). It runs no backtest and places
+no order, and it writes nothing to a database. It reads the final X5 artifacts and the X4.6.1
+V2 files, and refuses to start if any file's SHA-256 differs from its pin.
+
+`x6-build` writes `x6_execution_inputs_v2.json.gz` once (V1, `aeda44c1…`, predates the exact-share fix of D-256 and stays for audit). It holds:
+* the pins and the configuration's hash and labelled assumptions;
+* every slot's formation step;
+* the exit and spin-off treatments;
+* the ledger's reconciliation with X5's factors;
+* worked executions.
+
+```bash
+uv run python -m app.research.cli x6-build
+```
+
+`x6-verify` checks every pin, rebuilds the artifact and compares content hashes:
+
+```bash
+uv run python -m app.research.cli x6-verify
+```
+
+Rules for research that uses X6:
+* Decide at a session's close with data up to it; the execution is in the next session
+  (`X6Config.timing`).
+* **Shorts:** every short is rejected unless `X6Config.borrow_book` holds a sourced borrow
+  entry for both sessions. There is no historical borrow evidence.
+* **Fees not modelled unless configured:** regulatory fees, withholding, taxes and interest on
+  cash. Each needs a configured value with its source.
+* **Frozen positions:** a snapshot with `equity_complete: false` has positions held at their
+  last valid mark (a break, a restricted spin-off, an unvalued exit, or a window end without
+  data). Treat its equity as incomplete, not as a value.
+* **Configuration changes:** a changed configuration has a different `X6Config.sha256()`.
+  Record it with any result.
+
+**Historical backtest X7 (D-256).** **This is a hypothetical, long-only simulation. It places
+no order, runs no paper or live trading, and writes nothing to a database.** Every input is
+checked against its SHA-256 before a build:
+* the X4.6.1 V2 and X5 artifacts;
+* `x6_execution_inputs_v2`;
+* the registered strategy capture;
+* the spread measurements.
+
+1. **Spread capture (once).** `x7-capture-spreads` reads the measured 2017–2019 SIP quoted
+   spreads from the simulation database (SELECT only) into
+   `config/simulation/evidence/x7/`. It is already done; the file is pinned.
+
+   ```bash
+   uv run python -m app.research.cli x7-capture-spreads
+   ```
+
+2. **Signals.** `x7-signals` evaluates the registered strategies at every member decision
+   session and writes `x7_signals_v1.json.gz` once (about 16 minutes with 6 workers).
+
+   ```bash
+   uv run python -m app.research.cli x7-signals --workers 6
+   ```
+
+3. **Backtest.** `x7-backtest` replays the signals through the X6 engine: 6 strategy sets,
+   4 accounts and 7 execution scenarios. It writes `x7_backtest_results_v1.json.gz` once
+   (about 8 minutes).
+
+   ```bash
+   uv run python -m app.research.cli x7-backtest
+   ```
+
+4. **Verify.** `x7-verify` rebuilds both from scratch and compares content hashes and every
+   ledger reconciliation (about 25 minutes).
+
+   ```bash
+   uv run python -m app.research.cli x7-verify
+   ```
+
+Rules for reading the results:
+* A run with `equity_complete: false` has a headline over its complete prefix only. Its
+  incomplete period and frozen positions are listed separately.
+* `costs_off` is a diagnostic, not a result.
+* Sharpe uses a zero risk-free rate.
+* The 2017–2019 period is now seen data for the registered strategies. Confirming any of them
+  needs data outside it.
+
+**X7 V2 (D-257): implemented, not yet run.** V2 implements the frozen correction specification.
+V1 is unchanged and still verifies with `x7-verify`.
+
+1. **One-time evidence** (done, pinned):
+   * the fund classification (offline, from pinned names);
+   * spread evidence V2 (SELECT only, identity-checked).
+
+   ```bash
+   uv run python -m app.research.cli x7v2-classify-funds
+   uv run python -m app.research.cli x7v2-capture-spreads
+   ```
+
+2. **The V2 runs** (refused unless the spec, the pre-registration and the evaluator match
+   `config/simulation/x7/v2_freeze.json`, and, since D-258, unless the fund classification,
+   spread evidence V2 and their two builder sources match its `pre_run_inputs` entries, and,
+   since D-259, unless `x7v2_pipeline.py` matches both its manifest entry and the anchor in
+   `x7v2_gate.py`, which the CLI checks before importing the pipeline):
+
+   ```bash
+   uv run python -m app.research.cli x7v2-backtest
+   uv run python -m app.research.cli x7v2-verify
+   ```
+
+3. **The frozen decision rule,** on the stored V2 results only:
+
+   ```bash
+   uv run python -m app.research.cli x7v2-evaluate
+   ```
+
+**Not built:** the `include_leveraged` sensitivity, which needs an X6 hook proposed
+separately.
+
+**Docker:** starting Docker Desktop restarts the `atlas` compose stack (API, frontend,
+Postgres, Redis). The API container runs no trading worker, and its startup does not migrate.
+
+**Main database and migrations 0023 to 0027.** The main `atlas` database is at 0022; the
+simulation database is at 0027. 0023 to 0025 and 0027 only add tables; 0026 alters only the
+table 0025 adds. A rehearsal on a copy (`atlas_migcheck_0026`, made with `pg_dump` from
+`atlas` on 2026-11-17) ran 0022 to 0026, then 0027 on 2026-11-18. Both ran cleanly,
+`alembic check` reported no drift, and every pre-existing table kept its exact row count. X3.1
+(D-244) adds no migration. Two
+cautions:
+
+* `docker compose up --build` runs `migrate` (`alembic upgrade head`) first, so it **will**
+  apply 0023 to 0027 to the main database.
+* It also rebuilds the paper-trading backend from the working tree, uncommitted changes
+  included (engine 8A.2, `paper_broker` fill and execution model changes).
+
+Decide on both before rebuilding the paper stack.
+
+Each step only adds rows (members without bars, securities without a recorded delisting,
+assets without a classification from that filing), so a rerun is safe. Artifacts in
+`config/simulation/runs/` are never replaced: a rerun writes `name.2.json`, `name.3.json`...
+(`build-universe` is the first-time step; a changed rule needs a new universe code.)
+
+* `"universe": {"mode": "RESEARCH", "research_universe": "RESEARCH_US_EQUITY_V4"}` (current:
+  equity V4 and ETF candidates V5, both with point-in-time identity; earlier versions are
+  kept, superseded and still reserved).
+* Excluded assets (D-240, `research_exclusions` scope `ASSET`) are never part of a research run.
+  An explicit or layer run on reserved data that names one is refused.
+* Date-bounded exclusions (D-242, scope `WINDOW`) work as follows:
+  * A research run closes the position before the contaminated session and leaves the asset
+    out of decisions while its read window contains it.
+  * An explicit or layer run on reserved data whose dates overlap a blocked range is refused.
+  * The run's `exclusions` key records the sets (code → content sha256), the read window and
+    the windows.
+* `"corporate_actions": "CODE"` (D-243) applies a registered correction set. The set is
+  pinned by its content hash and needs `"dividends": true`.
+* Delisting exits apply to research universes.
+* `"correlation_source": "replay-bars-v1"` makes the risk engine's correlations
+  point-in-time, computed from the replay's own bars.
+* Every new key is omitted from the stored configuration when absent.
 
 ## Validation and governance (Phase 8B)
 

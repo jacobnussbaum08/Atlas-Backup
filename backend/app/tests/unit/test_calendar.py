@@ -156,3 +156,71 @@ def test_feed_windows_skip_closed_days_and_clip():
         date(2026, 11, 25),
         date(2026, 11, 27),
     ]
+
+
+# ---------------------------------------------------------------- X3.1 (D-244) history
+HISTORICAL_SPECIAL_CLOSURES = [
+    date(2001, 9, 11),
+    date(2001, 9, 12),
+    date(2001, 9, 13),
+    date(2001, 9, 14),
+    date(2004, 6, 11),
+    date(2007, 1, 2),
+    date(2012, 10, 29),
+    date(2012, 10, 30),
+    date(2018, 12, 5),
+    date(2025, 1, 9),
+]
+
+
+@pytest.mark.parametrize("day", HISTORICAL_SPECIAL_CLOSURES)
+def test_unscheduled_historical_closures_are_not_sessions(day):
+    assert trading_day(day) is None
+    assert closure_reason(day) is ClosureReason.SPECIAL_CLOSURE
+    assert day in holidays(day.year)
+
+
+def test_bush_day_of_mourning_2018_12_05_is_skipped_by_neighbours():
+    from app.data_engine.calendar import next_trading_day, previous_trading_day
+
+    assert previous_trading_day(date(2018, 12, 6)).day == date(2018, 12, 4)
+    assert next_trading_day(date(2018, 12, 4)).day == date(2018, 12, 6)
+    assert [
+        d.day
+        for d in trading_days(
+            datetime(2018, 12, 3, 15, tzinfo=UTC), datetime(2018, 12, 7, 15, tzinfo=UTC)
+        )
+    ] == [date(2018, 12, 3), date(2018, 12, 4), date(2018, 12, 6), date(2018, 12, 7)]
+    assert str(describe_closure(datetime(2018, 12, 5, 15, tzinfo=UTC))).startswith(
+        "National Day of Mourning"
+    )
+
+
+def test_hurricane_sandy_closed_two_days_and_reopened_wednesday():
+    assert trading_day(date(2012, 10, 26)) is not None
+    assert trading_day(date(2012, 10, 31)) is not None
+
+
+def test_historical_rules_regressions():
+    # New Year's Day on Saturday (2011-01-01): not observed; Friday 2010-12-31 traded.
+    assert trading_day(date(2010, 12, 31)) is not None
+    # Christmas on Saturday (2010, 2021): observed Friday Dec 24.
+    assert trading_day(date(2010, 12, 24)) is None
+    assert trading_day(date(2021, 12, 24)) is None
+    # Juneteenth: only from 2022 (2021-06-18 traded, 2022-06-20 closed).
+    assert trading_day(date(2021, 6, 18)) is not None
+    assert trading_day(date(2022, 6, 20)) is None
+    # Early closes of the research years.
+    assert trading_day(date(2018, 12, 24)).early_close  # type: ignore[union-attr]
+    assert trading_day(date(2019, 7, 3)).early_close  # type: ignore[union-attr]
+    assert trading_day(date(2016, 11, 25)).early_close  # type: ignore[union-attr]
+    assert not trading_day(date(2016, 12, 23)).early_close  # type: ignore[union-attr]
+
+
+EVIDENCE = (
+    __import__("pathlib").Path(__file__).resolve().parents[4]
+    / "config/simulation/runs/x31_calendar_evidence.json"
+)
+
+
+# REDACTED_FOR_GITHUB: test of withheld research data removed

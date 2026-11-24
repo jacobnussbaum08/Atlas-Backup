@@ -142,6 +142,9 @@ class OrderState:
     # A triggered stop under the gap rule (model version 2): the price it may fill no
     # better than, recorded with its trigger (``fill_cap``).
     gap_cap: Decimal | None = None
+    # Model version 3 (D-237): no trade or bar after the order's arrival has been evaluated
+    # yet, so the view's first trade (or bar) is the first observation after arrival.
+    first_look: bool = False
 
     @property
     def buys(self) -> bool:
@@ -573,9 +576,38 @@ def _bar_fallback(c: _Ctx, *, cap: Decimal | None, gap: bool) -> Evaluation | No
     )
 
 
+ON_ARRIVAL_NOTE = (
+    "limit marketable on arrival (model v3): the first observation after the order arrived "
+    "was already through the limit; filled at it plus the ASSUMED half spread, slippage and "
+    "impact, never worse than the limit"
+)
+
+
+def _on_arrival(
+    c: _Ctx, observed: Decimal, limit: Decimal, participation: Decimal
+) -> tuple[Decimal, Decimal]:
+    """(price, impact bps) of a limit that was marketable when it arrived (model v3)."""
+    order, model = c.order, c.model
+    impact = model.impact_bps_at_full_participation * participation
+    adjust = (model.assumed_half_spread_bps + model.slippage_bps + impact) / BPS
+    raw = observed * (ONE + adjust) if order.buys else observed * (ONE - adjust)
+    price = adverse_price(raw, order.tick, buys=order.buys)
+    return (min(price, limit) if order.buys else max(price, limit)), impact
+
+
+def _through(price: Decimal, limit: Decimal, *, buys: bool) -> bool:
+    return price < limit if buys else price > limit
+
+
 def _passive(c: _Ctx, limit: Decimal, after: datetime | None) -> Evaluation | None:
-    """A resting limit: only trades (else bars) strictly through the limit, at the limit."""
+    """A resting limit: only trades (else bars) strictly through the limit, at the limit.
+
+    Model version 3: when the first observation after the order's arrival is already
+    through the limit (and no fresh quote executed it), the order was marketable on
+    arrival and fills at that observation plus costs instead (``limit_marketable_on_arrival``).
+    """
     order, model, view = c.order, c.model, c.view
+    on_arrival = model.limit_marketable_on_arrival and order.first_look and after is None
     trades = [t for t in view.trades if after is None or t.event_time > after]
     bars = [b for b in view.bars if after is None or b.start >= after]
     if order.adverse_level is not None:
@@ -621,15 +653,23 @@ def _passive(c: _Ctx, limit: Decimal, after: datetime | None) -> Evaluation | No
         if isinstance(sized, Evaluation):
             return sized
         quantity, participation = sized
+        price, impact = limit, ZERO
+        notes: tuple[str, ...] = (
+            "resting limit: filled only by volume printed strictly through the limit",
+            "queue position unknown: a participation share of that volume, at the limit",
+        )
+        if on_arrival and _through(trades[0].price, limit, buys=order.buys):
+            price, impact = _on_arrival(c, trades[0].price, limit, participation)
+            notes = (ON_ARRIVAL_NOTE,)
         return _finish(
             c,
             quantity=quantity,
-            price=limit,
+            price=price,
             basis=DataBasis.TRADE_THROUGH,
             reference=None if c.fresh is None else c.fresh.mid,
             touch=None,
             spread=None,
-            impact_bps=ZERO,
+            impact_bps=impact,
             liquidity=volume,
             participation=participation,
             gap=False,
@@ -642,10 +682,7 @@ def _passive(c: _Ctx, limit: Decimal, after: datetime | None) -> Evaluation | No
                     "volume": str(volume),
                 }
             },
-            assumptions=(
-                "resting limit: filled only by volume printed strictly through the limit",
-                "queue position unknown: a participation share of that volume, at the limit",
-            ),
+            assumptions=notes,
         )
     if bars:
         through_bars = [b for b in bars if (b.low < limit if order.buys else b.high > limit)]
@@ -670,15 +707,26 @@ def _passive(c: _Ctx, limit: Decimal, after: datetime | None) -> Evaluation | No
         if isinstance(sized, Evaluation):
             return sized
         quantity, participation = sized
+        price, impact = limit, ZERO
+        bar_notes: tuple[str, ...] = (
+            "resting limit, no trade data: bars whose range went strictly through the "
+            "limit; intrabar order unknown, a participation share of the bar volume",
+        )
+        first = bars[0]
+        if on_arrival and _through(first.open, limit, buys=order.buys):
+            price, impact = _on_arrival(c, first.open, limit, participation)
+            price = _inside(price, first.low, first.high, order.tick, buys=order.buys)
+            price = min(price, limit) if order.buys else max(price, limit)
+            bar_notes = (ON_ARRIVAL_NOTE,)
         return _finish(
             c,
             quantity=quantity,
-            price=limit,
+            price=price,
             basis=DataBasis.BAR_THROUGH,
             reference=None,
             touch=None,
             spread=None,
-            impact_bps=ZERO,
+            impact_bps=impact,
             liquidity=volume,
             participation=participation,
             gap=False,
@@ -690,10 +738,7 @@ def _passive(c: _Ctx, limit: Decimal, after: datetime | None) -> Evaluation | No
                     "volume": str(volume),
                 }
             },
-            assumptions=(
-                "resting limit, no trade data: bars whose range went strictly through the "
-                "limit; intrabar order unknown, a participation share of the bar volume",
-            ),
+            assumptions=bar_notes,
         )
     return None
 

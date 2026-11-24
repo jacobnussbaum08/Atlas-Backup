@@ -43,11 +43,33 @@ AFTER_HOURS_CLOSE = time(20, 0)
 # NYSE: on early-close days the Arca/American late sessions close at 17:00.
 EARLY_CLOSE_AFTER_HOURS_CLOSE = time(17, 0)
 
-# Closures that no rule predicts. Each entry names its source.
+# Closures that no rule predicts. Each entry names its source. X3.1 (D-244) added the
+# historical ones: before it, 2018-12-05 (and Sandy's two days) counted as sessions.
+# Cross-check: Alpaca's exchange calendar (/v2/calendar) and the stored SIP daily bars
+# (evidence ``config/simulation/runs/x31_calendar_evidence.json``).
 SPECIAL_CLOSURES: dict[date, str] = {
+    # NYSE closed after the September 11 attacks (reopened 2001-09-17).
+    date(2001, 9, 11): "Closed after the September 11 attacks",
+    date(2001, 9, 12): "Closed after the September 11 attacks",
+    date(2001, 9, 13): "Closed after the September 11 attacks",
+    date(2001, 9, 14): "Closed after the September 11 attacks",
+    # National Day of Mourning for former President Ronald Reagan.
+    date(2004, 6, 11): "National Day of Mourning (President Reagan)",
+    # National Day of Mourning for former President Gerald Ford.
+    date(2007, 1, 2): "National Day of Mourning (President Ford)",
+    # NYSE closed for Hurricane Sandy (NYSE Euronext notices of 2012-10-28 and -29).
+    date(2012, 10, 29): "Hurricane Sandy",
+    date(2012, 10, 30): "Hurricane Sandy",
+    # NYSE notice of 2018-12-01: NYSE, NYSE American, NYSE Arca closed for the National Day
+    # of Mourning for former President George H. W. Bush (Nasdaq closed too).
+    date(2018, 12, 5): "National Day of Mourning (President George H. W. Bush)",
     # NYSE closed for the National Day of Mourning for former President Jimmy Carter.
     date(2025, 1, 9): "National Day of Mourning (President Carter)",
 }
+# Years whose full schedule (sessions and early closes) matches Alpaca's exchange calendar
+# day by day (X3.1). Before 2004 NYSE's rules differed (no Martin Luther King, Jr. Day
+# before 1998; other early closes), and those rules are not modelled.
+CROSS_CHECKED_YEARS = range(2004, 2028)
 
 
 class MarketSession(StrEnum):

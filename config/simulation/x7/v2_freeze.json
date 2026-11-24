@@ -1,0 +1,48 @@
+{
+ "approved_by": "user (session instruction: 'Freeze the spec')",
+ "decision": "D-257 (to be written when V2 is implemented)",
+ "evaluator": {
+  "note": "recorded after implementation and verification, before the first V2 run; any change to the evaluator is a new version",
+  "path": "backend/app/research/x7v2_evaluator.py",
+  "recorded_on": "2026-11-21",
+  "sha256": "a7a3b33921a1e3e3d3dc91cb2d243fea2c93d079c7fd0e85764f4b07d85db0b2"
+ },
+ "files": {
+  "config/simulation/x7/v2_preregistration.md": "ae567df1f61eade934a14210078da44be917b913ac0a517df6f44df510b196c3",
+  "docs/phase-reports/x7-v2-correction-spec.md": "eed2430085a282e6068bc70d8566cf00b254798fb5e30caf4b9bf8d998ccbc33"
+ },
+ "frozen_on": "2026-11-21",
+ "kind": "x7_v2_freeze",
+ "pre_run_inputs": {
+  "decision": "D-258; pipeline and gate added by D-259",
+  "files": {
+   "backend/app/research/x7v2_classification.py": {
+    "role": "C2 classification builder (source; embeds the artifact's pin)",
+    "sha256": "2ce51bfa94f55ca97a2ed577140efaaf1f14052600fcca4235c723e72a1e5773"
+   },
+   "backend/app/research/x7v2_gate.py": {
+    "role": "X7 V2 pipeline anchor and gate (source; holds the pipeline's expected hash) (D-259)",
+    "sha256": "3b73dace8f9697b6ed91a0d7e21104c3175744a7bbe53b6885e47399d1c68163"
+   },
+   "backend/app/research/x7v2_pipeline.py": {
+    "role": "X7 V2 pipeline (source); anchored independently in x7v2_gate.PIPELINE_SHA256 (D-259)",
+    "sha256": "037318f93b9abf95f4ccbacca57edc4e0ac79cc49a45ace734dab4c36ea9fe9e"
+   },
+   "backend/app/research/x7v2_spreads.py": {
+    "role": "C6 spread evidence V2 builder and loader (source; embeds the artifact's pin)",
+    "sha256": "839caa4ffa871c68bf2040ea7ea1949ba56e9fdd974d2497d5db6d875161adcb"
+   },
+   "config/simulation/evidence/x7/sip_quoted_spreads_2017_2019_v2.json.gz": {
+    "role": "C6 spread evidence V2 (artifact)",
+    "sha256": "79f68b802d432c8fb79b8f45099edc58b9979b3ccf7f8df74c2ebb3e329ac2f2"
+   },
+   "config/simulation/x7/fund_classification_v1.json": {
+    "role": "C2 fund classification (artifact, x7v2-fund-classification-1)",
+    "sha256": "94fed7b977bb537ddc7a85bb86967fcd5334e0160904d42e1aae1f60964717ac"
+   }
+  },
+  "note": "recorded on the user's instruction after the independent classification review, before the first V2 run; x7v2_pipeline.verify_inputs refuses to run unless every file below matches its entry and every embedded module pin matches the manifest; any change to a listed file is a new version with its reason",
+  "recorded_on": "2026-11-21"
+ },
+ "rule": "any change to a listed file after this freeze is a new version with its reason; this version and its outcome are kept"
+}

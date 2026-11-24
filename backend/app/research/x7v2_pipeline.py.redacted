@@ -1,0 +1,759 @@
+# ruff: noqa: E501  (result tables read as one row each)
+"""X7 V2 (D-257): the corrected backtest pipeline of the frozen specification.
+
+Implements corrections C1-C12 of ``docs/phase-reports/x7-v2-correction-spec.md`` (frozen
+2026-11-21). V1 (``x7_pipeline``, D-256) is **not modified**: its artifacts embed the SHA-256 of
+its sources, so V2 lives here, reusing V1's functions read-only and subclassing its portfolio.
+
+What changes against V1 (each tagged with its correction):
+
+* C1  exposure-matched SPY, excess series, significance, concentration, annual excess,
+      conditions; the 100%-invested benchmarks stay, labelled *unmatched*.
+* C2  funds classified leveraged / inverse / VIX are never entered
+      (``INSTRUMENT_NOT_LONG_UNLEVERED``). The ``include_leveraged`` sensitivity is **not
+      built**: the spec allows only an ``_exposures`` override, which cannot size the new
+      intent economically (that needs an X6 hook, to be proposed separately; spec C2.3/s4).
+* C3  one open-or-reserved position per issuer in the stock pool (``ISSUER_ALREADY_HELD``);
+      funds are keyed per fund.
+* C4  the horizon counts from the entry fill session.
+* C5  one basis per run record; full-run figures in a separate block; no annualization
+      under 252 sessions; no Sharpe, Sortino or t-statistics under 126 sessions (30 trades).
+* C6  spreads from the identity-checked V2 evidence, per security.
+* C7  the SPY dividend gap and the ETF dividend-gap scan, documented (no value is filled).
+* C8  ``combined_sleeves`` and ``combined_round_robin``; raw strength is never compared
+      across families. V1's ``combined`` is withdrawn.
+* C9  breaker trip session, share of the basis after it, excess over active sessions.
+* C10 coverage per strategy and formation (from the V1 signals artifact, reused unchanged).
+* C11 splits and share factors restate held targets and pending intents.
+* C12 trend following keeps its static stop, labelled.
+
+Nothing here runs unless the freeze is complete (``x7v2_evaluator.check_freeze``) and the V2
+evidence and its builders match the freeze manifest's ``pre_run_inputs`` (D-258,
+``check_pre_run_inputs``), and this file's own SHA-256 matches both the manifest and the
+anchor held outside it in ``x7v2_gate`` (D-259).
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import hashlib
+import itertools
+import json
+import math
+import statistics
+from collections import Counter, defaultdict
+from dataclasses import dataclass, field
+from datetime import date
+from decimal import ROUND_FLOOR, Decimal
+from fractions import Fraction
+from pathlib import Path
+from typing import Any
+
+from app.research import x4_evidence as x4
+from app.research import x5_accounting as acc
+from app.research import x6_data as xd
+from app.research import x6_execution as ex
+from app.research import x6_portfolio as xp
+from app.research import x7_pipeline as p1
+from app.research import x7_signals as sg
+from app.research import x7v2_classification as cls
+from app.research import x7v2_evaluator as ev
+from app.research import x7v2_gate as gate
+from app.research import x7v2_spreads as sp2
+from app.research.x6_execution import ONE, ZERO, Side
+
+D = Decimal
+DECISION = "D-257"
+METHODOLOGY_VERSION = 2
+RESULTS_PATH = p1.OUT / "x7_backtest_results_v2.json.gz"
+EVALUATION_PATH = p1.OUT / "x7_v2_evaluation_v1.json.gz"
+SIGNALS_FILE_SHA256 = "36f114735d3946008d5b25fd06ead03c457c9aba9342c7c3ddc522e4887bdca1"
+SIGNALS_CONTENT_SHA256 = "2632c9975b6e6ff7196f0e9a2bc1ec20e26b02598cedd88368fbc09bd24491c0"
+FAMILIES = tuple(sorted(p1.EVALUABLE))
+STRATEGY_SETS: dict[str, tuple[str, ...]] = {**{f: (f,) for f in FAMILIES},
+                                             "combined_sleeves": FAMILIES, "combined_round_robin": FAMILIES}  # fmt: skip
+PERIODS = p1.PERIODS
+SCENARIOS = p1.SCENARIOS
+SLEEVE_SHARE = D("0.2")
+SLEEVE_DEDICATED, SHARED_POSITIONS = 1, 3
+LABEL = "long positions in unlevered, non-inverse instruments (C2); hypothetical historical simulation on observed 2017-2019 data; not validation"
+C12_LABEL = "static stop at the initial ATR-trail level; trailing exits (spec 11.2) not implemented in the deployed system"
+SOURCES = (*p1.SOURCES, "backend/app/research/x7v2_pipeline.py", "backend/app/research/x7v2_spreads.py",
+           "backend/app/research/x7v2_classification.py", "backend/app/research/x7v2_evaluator.py",
+           "backend/app/research/x7v2_gate.py")  # fmt: skip
+
+
+# ---------------------------------------------------------------------- helpers
+def ratio_on(sd: xd.SlotData, session: str) -> Fraction | None:
+    """The exact share ratio applied on ``session`` (a verified split, or an applied
+    distribution's share factor other than 1), as X6 applies it to held positions."""
+    out: Fraction | None = None
+    for e in sd.by_date.get(session, []):
+        if e["type"] in ("STOCK_SPLIT", "REVERSE_SPLIT"):
+            out = (out or Fraction(1)) * Fraction(str(xd.dec(e["ratio"])))
+        elif e["type"] == "SPIN_OFF" and e["tr_treatment"] == "APPLIED":
+            f = acc._ratio(e["share_factor"])
+            if f != 1:
+                out = (out or Fraction(1)) * f
+    return out
+
+
+def restate(price: D | None, ratio: Fraction) -> D | None:
+    """A price in post-ex-date terms: price x 1/ratio, rounded to 1e-10 (as X6 marks and stops)."""
+    if price is None:
+        return None
+    return (price * D(ratio.denominator) / D(ratio.numerator)).quantize(D("1E-10"))
+
+
+def issuer_map(docs: dict[str, dict[str, Any]]) -> dict[str, str]:
+    """C3: stock slots by issuer (entity key); funds per fund (trust keys are shared)."""
+    out = {}
+    for s in docs[xd.MEMBER_DATA]["slots"]:
+        out[s["slot"]] = (
+            f"ISSUER:{s['entity_key']}"
+            if s["pool"] == "STOCK" and s.get("entity_key")
+            else f"SLOT:{s['slot']}"
+        )
+    return out
+
+
+# ---------------------------------------------------------------------- the portfolio
+@dataclass
+class X7V2Portfolio(p1.X7Portfolio):
+    spreads_v2: sp2.MeasuredSpreadsV2 | None = None  # None: X6's own estimate (scenario)
+    restatements: list[dict[str, Any]] = field(default_factory=list)
+    payout_stops: list[dict[str, Any]] = field(default_factory=list)
+    issuer_peak: float = 0.0  # C3: the largest single-issuer exposure / equity at any close
+
+    def _liquidity(self, slot: str, asof: str) -> ex.Liquidity:
+        liq = xp.Portfolio._liquidity(self, slot, asof)
+        if self.spreads_v2 is not None:
+            sd = self.market.slots[slot]
+            found = self.spreads_v2.at(sd.security, asof)
+            if found is not None:
+                liq = dataclasses.replace(
+                    liq, spread_bps=found[0], spread_basis="MEASURED_SIP_QUOTES_V2"
+                )
+            else:
+                liq = dataclasses.replace(liq, spread_bps=self.config.preferences.fallback_spread_bps,
+                                          spread_basis="ASSUMED_FALLBACK")  # fmt: skip
+        if self.spread_multiplier == ONE:
+            return liq
+        return dataclasses.replace(liq, spread_bps=liq.spread_bps * self.spread_multiplier)
+
+    # C11: held positions: X6 restates quantity, mark and stop; the target is X7's
+    def _split(self, pos: xp.Position, ratio: Fraction, kind: str) -> None:
+        super()._split(pos, ratio, kind)
+        if pos.slot in self.targets:
+            before = self.targets[pos.slot]
+            after = restate(before, ratio) or before
+            self.targets[pos.slot] = after
+            self.restatements.append({"event": "SPLIT_RESTATED_TARGET", "session": self.session, "slot": pos.slot,
+                                      "ratio": str(ratio), "before": str(before), "after": str(after)})  # fmt: skip
+
+    # C11: pending intents executing on an ex-date
+    def _execute_due(self) -> None:
+        s = self.session
+        for r in self.reservations:
+            if r.execute_on != s:
+                continue
+            ratio = ratio_on(self._slot(r.intent.slot), s)
+            if ratio is None:
+                continue
+            it = r.intent
+            q_new = D(math.floor(Fraction(str(r.quantity)) * ratio))
+            new_it = dataclasses.replace(it, quantity=D(math.floor(Fraction(str(it.quantity)) * ratio)),
+                                         stop_price=restate(it.stop_price, ratio), limit_price=restate(it.limit_price, ratio))  # fmt: skip
+            meta = self.intent_meta.get(it.intent_id)
+            before_target = None if not meta else meta.get("target")
+            if meta and meta.get("target") is not None:
+                meta["target"] = str(restate(D(meta["target"]), ratio))
+            if meta is not None:
+                meta["stop"] = None if new_it.stop_price is None else str(new_it.stop_price)
+            self.restatements.append({"event": "SPLIT_RESTATED_INTENT", "session": s, "slot": it.slot,
+                                      "intent_id": it.intent_id, "ratio": str(ratio),
+                                      "before": {"quantity": str(r.quantity), "stop": None if it.stop_price is None else str(it.stop_price),
+                                                 "target": before_target, "limit": None if it.limit_price is None else str(it.limit_price)},
+                                      "after": {"quantity": str(q_new), "stop": None if new_it.stop_price is None else str(new_it.stop_price),
+                                                "target": None if not meta else meta.get("target"),
+                                                "limit": None if new_it.limit_price is None else str(new_it.limit_price)}})  # fmt: skip
+            r.intent = new_it
+            r.quantity = q_new
+            r.reference = restate(r.reference, ratio) or r.reference
+        super()._execute_due()
+
+    def _apply_fill(
+        self, fill: ex.Fill, it: xp.OrderIntent, decided: str, extra: dict[str, Any] | None = None
+    ) -> None:
+        opening = fill.side == Side.BUY and it.slot not in self.positions
+        super()._apply_fill(fill, it, decided, extra)
+        if opening and it.slot in self.trade_meta:
+            self.trade_meta[it.slot]["initial_stop"] = (
+                None if it.stop_price is None else str(it.stop_price)
+            )
+
+    def _close_position(self, pos: xp.Position, why: str) -> None:
+        meta = dict(self.trade_meta.get(pos.slot, {}))
+        n_before = len(self.trades)
+        super()._close_position(pos, why)
+        if len(self.trades) > n_before:
+            self.trades[-1]["initial_stop"] = meta.get("initial_stop")
+
+    def _stops(self, s: str) -> None:
+        before = len(self.fills)
+        super()._stops(s)
+        for f in self.fills[before:]:
+            if f.get("reason") != "STOP" or f.get("status") not in ("FILLED", "PARTIAL"):
+                continue
+            sd = self._slot(f["slot"])
+            payout = sum(
+                (
+                    xd.dec(e["rate"])
+                    for e in sd.by_date.get(s, [])
+                    if e["type"] == "CASH_DIVIDEND" and e["status"] == "COUNTED"
+                ),
+                ZERO,
+            )
+            payout += sum((xd.dec(e["distribution_value_per_share"]) for e in sd.by_date.get(s, [])
+                           if e["type"] == "SPIN_OFF" and e["tr_treatment"] == "APPLIED" and acc._ratio(e["share_factor"]) == 1), ZERO)  # fmt: skip
+            if payout <= 0:
+                continue
+            stop = D(f["stop"])
+            low = sd.bars[s].low
+            self.payout_stops.append({"slot": f["slot"], "session": s, "stop": str(stop), "payout": str(payout),
+                                      "low": str(low), "triggered_only_by_payout": low > stop - payout})  # fmt: skip
+
+
+# ---------------------------------------------------------------------- allocation
+def _flows(pf: X7V2Portfolio, slot: str, start: int) -> D:
+    total = ZERO
+    for e in pf.journal.entries[start:]:
+        if e.get("slot") == slot:
+            for k in ("CASH", "RECEIVABLE_DIVIDENDS", "RECEIVABLE_EXIT_CASH"):
+                total += D(e["lines"].get(k, "0"))
+    return total
+
+
+def sleeve_equity(pf: X7V2Portfolio, family: str, capital: D) -> D:
+    """C8: 20% of the starting capital plus the sleeve's realized and open P&L."""
+    value = capital * SLEEVE_SHARE + sum(
+        (D(t["pnl"]) for t in pf.trades if t["strategy_id"] == family), ZERO
+    )
+    for slot, meta in pf.trade_meta.items():
+        if meta.get("strategy_id") == family and slot in pf.positions:
+            value += pf.positions[slot].market_value + _flows(
+                pf, slot, meta.get("journal_start", 0)
+            )
+    return value
+
+
+@dataclass
+class Picker:
+    """One session's candidate signals and the entry rules applied to each (C2, C3, the
+    window's last session, the stop, one position per slot)."""
+
+    market: xd.Market
+    classification: dict[str, dict[str, Any]]
+    issuers: dict[str, str]
+    skipped: Counter[str]
+    nxt: str
+    held_slots: set[str]
+    held_issuers: set[str]
+    cands: dict[str, list[dict[str, Any]]]
+    taken_slots: set[str] = field(default_factory=set)
+    taken_issuers: set[str] = field(default_factory=set)
+
+    def next_valid(self, family: str) -> dict[str, Any] | None:
+        while self.cands[family]:
+            sig = self.cands[family].pop(0)
+            sd = self.market.slots[sig["slot"]]
+            if self.nxt == sd.window[1] and sd.window[1] != xd.DATA_END:
+                self.skipped["ENTRY_ON_WINDOW_LAST_SESSION"] += 1
+                continue
+            if sd.pool == "FUND" and not self.classification.get(sig["slot"], {}).get(
+                "plain", False
+            ):
+                self.skipped["INSTRUMENT_NOT_LONG_UNLEVERED"] += 1
+                continue
+            if sig["stop"] is None or D(sig["stop"]) >= D(sig["entry"]):
+                self.skipped["STOP_MISSING_OR_NOT_BELOW_ENTRY"] += 1
+                continue
+            if sig["slot"] in self.held_slots or sig["slot"] in self.taken_slots:
+                self.skipped["SLOT_HELD_OR_CHOSEN"] += 1
+                continue
+            issuer = self.issuers.get(sig["slot"], sig["slot"])
+            if sd.pool == "STOCK" and (issuer in self.held_issuers or issuer in self.taken_issuers):
+                self.skipped["ISSUER_ALREADY_HELD"] += 1
+                continue
+            self.taken_slots.add(sig["slot"])
+            if sd.pool == "STOCK":
+                self.taken_issuers.add(issuer)
+            return sig
+        return None
+
+
+def rotation(index: int) -> list[str]:
+    k = index % len(FAMILIES)
+    return list(FAMILIES[k:] + FAMILIES[:k])
+
+
+def simulate(market: xd.Market, signals: list[dict[str, Any]], set_name: str, period: tuple[str, str],
+             scenario: p1.Scenario, *, spreads: sp2.MeasuredSpreadsV2 | None,
+             classification: dict[str, dict[str, Any]], issuers: dict[str, str]) -> X7V2Portfolio:  # fmt: skip
+    """One deterministic V2 run; signals decided at a close execute at the next session."""
+    strategies = STRATEGY_SETS[set_name]
+    start, end = period
+    sessions = xd._sessions(ex.next_session(start), end)
+    allsess = [start, *sessions]
+    idx = {s: i for i, s in enumerate(allsess)}
+    by_session: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for sig in signals:
+        if sig["strategy_id"] in strategies and start <= sig["session"] < end:
+            by_session[sig["session"]].append(sig)
+    pf = X7V2Portfolio(market, scenario.config, p1.CAPITAL, start, spread_multiplier=scenario.spread_multiplier,
+                       spreads=None, spreads_v2=spreads if scenario.spread_source == "MEASURED" else None)  # fmt: skip
+    h = scenario.config.hard_limits
+    for s in sessions:
+        pf.begin_session(s)
+        snap = pf.close_session()
+        equity = D(snap["equity"])
+        by_issuer: dict[str, D] = defaultdict(D)
+        for p in pf.positions.values():
+            by_issuer[issuers.get(p.slot, p.slot)] += abs(p.market_value)
+        if by_issuer and equity > 0:
+            pf.issuer_peak = max(pf.issuer_peak, float(max(by_issuer.values()) / equity))
+        intents: list[xp.OrderIntent] = []
+        for slot in sorted(pf.positions):  # C4: the horizon counts from the entry fill
+            pos, meta = pf.positions[slot], pf.trade_meta.get(slot)
+            if (
+                pos.state != "OPEN"
+                or pos.quantity <= 0
+                or not meta
+                or meta.get("entry_session") not in idx
+            ):
+                continue
+            if idx[s] - idx[meta["entry_session"]] >= int(meta["horizon"]):
+                intents.append(
+                    xp.OrderIntent(
+                        f"{s}|horizon|{slot}", slot, Side.SELL, pos.quantity, reason="HORIZON"
+                    )
+                )
+        nxt = ex.next_session(s)
+        held_slots = set(pf.positions) | {r.intent.slot for r in pf.reservations}
+        held_issuers = {issuers.get(x, x) for x in held_slots if market.slots[x].pool == "STOCK"}
+        picker = Picker(market, classification, issuers, pf.skipped, nxt, held_slots, held_issuers,
+                        {f: [] for f in strategies})  # fmt: skip
+        for cand in sorted(by_session.get(s, []), key=lambda x: (-D(x["strength"]), x["slot"])):
+            picker.cands[cand["strategy_id"]].append(cand)
+        chosen: list[dict[str, Any]] = []
+        next_valid = picker.next_valid
+
+        order = rotation(idx[s])
+        if set_name == "combined_sleeves":
+            counts = {f: 0 for f in FAMILIES}
+            for slot, meta in pf.trade_meta.items():
+                if slot in pf.positions and meta.get("strategy_id") in counts:
+                    counts[meta["strategy_id"]] += 1
+            for r in pf.reservations:
+                m = pf.intent_meta.get(r.intent.intent_id)
+                if r.intent.side.opens and m and m.get("strategy_id") in counts:
+                    counts[m["strategy_id"]] += 1
+            shared = sum(max(0, c - SLEEVE_DEDICATED) for c in counts.values())
+            for f in order:  # dedicated positions first
+                if counts[f] < SLEEVE_DEDICATED and (pick := next_valid(f)):
+                    chosen.append(pick)
+                    counts[f] += 1
+            progress = True
+            while shared < SHARED_POSITIONS and progress:
+                progress = False
+                for f in order:
+                    if shared >= SHARED_POSITIONS:
+                        break
+                    if pick := next_valid(f):
+                        chosen.append(pick)
+                        counts[f] += 1
+                        shared += 1
+                        progress = True
+        elif set_name == "combined_round_robin":
+            progress = True
+            while progress:
+                progress = False
+                for f in order:
+                    if pick := next_valid(f):
+                        chosen.append(pick)
+                        progress = True
+        else:
+            (family,) = strategies
+            while pick := next_valid(family):
+                chosen.append(pick)
+        acct_equity = pf.equity()
+        for rank, sig in enumerate(chosen):
+            entry, stop = D(sig["entry"]), D(sig["stop"])
+            base = (
+                sleeve_equity(pf, sig["strategy_id"], p1.CAPITAL)
+                if set_name == "combined_sleeves"
+                else acct_equity
+            )
+            qty = (h.risk_per_trade_pct * base / (entry - stop)).to_integral_value(ROUND_FLOOR)
+            if qty <= 0:
+                pf.skipped["NO_QUANTITY"] += 1
+                continue
+            iid = f"{s}|entry|{rank:04d}|{sig['strategy_id']}|{sig['slot']}"
+            pf.intent_meta[iid] = {"strategy_id": sig["strategy_id"], "signal_session": s, "horizon": sig["horizon"],
+                                   "target": sig["target"], "strength": sig["strength"], "stop": sig["stop"]}  # fmt: skip
+            intents.append(
+                xp.OrderIntent(
+                    iid, sig["slot"], Side.BUY, qty, stop_price=stop, reason=sig["strategy_id"]
+                )
+            )
+        pf.decide(intents)
+    return pf
+
+
+# ---------------------------------------------------------------------- metrics (C1, C5, C9)
+def _mean_se_t(values: list[float]) -> dict[str, float | None]:
+    n = len(values)
+    if n < 2:
+        return {"mean": statistics.fmean(values) if values else None, "se": None, "t": None}
+    m, sd = statistics.fmean(values), statistics.stdev(values)
+    se = sd / math.sqrt(n)
+    return {"mean": m, "se": se, "t": None if se == 0 else m / se}
+
+
+def r_multiples(trades: list[dict[str, Any]]) -> dict[str, Any]:
+    """Section 2.2: diagnostic only, within one strategy; undefined R is counted, never imputed."""
+    by: dict[str, list[float]] = defaultdict(list)
+    undefined: Counter[str] = Counter()
+    for t in trades:
+        fam = str(t.get("strategy_id"))
+        if t.get("initial_stop") is None or t.get("entry_price") is None:
+            undefined[fam] += 1
+            continue
+        risk = (D(t["entry_price"]) - D(t["initial_stop"])) * D(t["entry_quantity"])
+        if risk <= 0:
+            undefined[fam] += 1
+            continue
+        by[fam].append(float(D(t["pnl"]) / risk))
+    return {f: {"n": len(v), "undefined": undefined.get(f, 0), "mean_R": statistics.fmean(v) if v else None,
+                "median_R": statistics.median(v) if v else None,
+                "t_R_not_dependence_adjusted": (_mean_se_t(v)["t"] if len(v) >= 30 else None)}
+            for f, v in sorted({**{k: [] for k in undefined}, **by}.items())}  # fmt: skip
+
+
+def basis_record(pf: X7V2Portfolio, prefix: list[dict[str, Any]], spy: dict[str, float],
+                 regimes: dict[str, dict[str, str]], bootstrap: bool) -> dict[str, Any]:  # fmt: skip
+    """Every headline metric on the complete basis (C5), with the exposure-matched excess (C1)."""
+    end = prefix[-1]["session"]
+    eq = [float(D(s["equity"])) for s in prefix]
+    lmv = [float(D(s["long_market_value"])) for s in prefix]
+    sessions = [s["session"] for s in prefix]
+    n = len(eq) - 1
+    r = [eq[t] / eq[t - 1] - 1 for t in range(1, n + 1)]
+    e_prev = [lmv[t - 1] / eq[t - 1] for t in range(1, n + 1)]
+    rs = [spy[sessions[t]] - 1 for t in range(1, n + 1)]
+    x = [a - e * b for a, e, b in zip(r, e_prev, rs, strict=True)]
+    matched = 1.0
+    matched_path = [1.0]
+    for e, b in zip(e_prev, rs, strict=True):
+        matched *= 1 + e * b
+        matched_path.append(matched)
+    head = p1.series_metrics([(s["session"], D(s["equity"])) for s in prefix])
+    short = n < 252
+    if short:
+        head.update(
+            annualized_return=None,
+            annualized_volatility=None,
+            annualized_note=f"omitted: {n} sessions < 252 (C5)",
+        )
+    if n < 126:
+        head.update(sharpe=None, sortino=None, ratio_note=f"omitted: {n} sessions < 126 (C5)")
+    trades = [t for t in pf.trades if t["exit_session"] <= end]
+    fills = [
+        f for f in pf.fills if f.get("status") in ("FILLED", "PARTIAL") and f["session"] <= end
+    ]
+    explicit: dict[str, D] = defaultdict(D)
+    for entry in pf.journal.entries:
+        if entry["session"] <= end:
+            for k in (
+                "COMMISSION_EXPENSE",
+                "FEE_EXPENSE",
+                "REGULATORY_FEE_EXPENSE",
+                "BORROW_EXPENSE",
+            ):
+                explicit[k] += D(entry["lines"].get(k, "0"))
+    implicit = sum(((D(f["price"]) - D(f["reference"])) * D(f["quantity"]) if f["side"] in ("BUY", "BUY_TO_COVER")
+                    else (D(f["reference"]) - D(f["price"])) * D(f["quantity"]) for f in fills), ZERO)  # fmt: skip
+    traded = sum((D(f["quantity"]) * D(f["price"]) for f in fills), ZERO)
+    mean_eq = statistics.fmean(eq)
+    xs = _mean_se_t(x)
+    if n < 126:
+        xs["t"] = None
+    pnls = sorted((D(t["pnl"]) for t in trades), reverse=True)
+    net = D(prefix[-1]["equity"]) - D(prefix[0]["equity"])
+    wins = [p for p in pnls if p > 0]
+    losses = sorted(p for p in pnls if p < 0)
+    by_asset: dict[str, D] = defaultdict(D)
+    for t in trades:
+        by_asset[t["slot"]] += D(t["pnl"])
+    total_abs = sum((abs(p) for p in pnls), ZERO)
+    trip = next((s["session"] for s in prefix if "DRAWDOWN" in s["entries_blocked"]), None)
+    active = [v for v, e in zip(x, e_prev, strict=True) if e > 0]
+    cond: dict[str, Any] = {}
+    for dim, label in ev.CONDITIONS:
+        vals = [
+            v
+            for v, e, s in zip(x, e_prev, sessions[:-1], strict=True)
+            if e > 0 and regimes.get(s, {}).get(dim) == label
+        ]
+        cond[f"{dim}_{label}"] = {
+            "active_sessions": len(vals),
+            "mean_excess": statistics.fmean(vals) if vals else None,
+        }
+    tm = p1.trade_metrics(trades)
+    rec: dict[str, Any] = {
+        "end": end, "sessions": n, "headline": head,
+        "net_pnl": str(net),
+        "trades": tm | {"t_mean_pnl_not_dependence_adjusted": (_mean_se_t([float(p) for p in pnls])["t"] if len(pnls) >= 30 else None)},
+        "r_multiples_diagnostic": r_multiples(trades),
+        "costs": {"explicit": {k: str(v) for k, v in sorted(explicit.items())}, "implicit_vs_reference": str(implicit.quantize(D("0.01"))),
+                  "total": str((sum(explicit.values(), ZERO) + implicit).quantize(D("0.01")))},
+        "turnover_annual": None if n == 0 else float(traded) / mean_eq * 252 / n,
+        "exposure": {"average_long_exposure": statistics.fmean(e_prev) if e_prev else None,
+                     "active_sessions": sum(1 for e in e_prev if e > 0),
+                     "blocked_sessions": sum(1 for s in prefix if s["entries_blocked"])},
+        "excess_vs_exposure_matched_spy": {
+            "matched_spy_return": matched - 1, "matched_spy_path": matched_path, "strategy_return": eq[-1] / eq[0] - 1,
+            "annual_excess": (eq[-1] / eq[0] - 1) - (matched - 1),
+            "mean_daily": xs["mean"], "se": xs["se"], "t_not_dependence_adjusted": xs["t"],
+            "annualized_arithmetic": None if short or xs["mean"] is None else xs["mean"] * 252,
+            "mean_daily_active_only": statistics.fmean(active) if active else None,
+        },
+        "bootstrap": {str(L): ev.stationary_bootstrap([x], L) for L in ev.LENGTHS} if bootstrap else "not run (baseline scenario only; spec 2.4.1)",
+        "concentration": {
+            "top5_trades_share_of_abs_pnl": None if total_abs == 0 else float(sum((abs(p) for p in pnls[:5]), ZERO) / total_abs),
+            "top5_assets_share_of_abs_pnl": None if total_abs == 0 else float(sum(sorted((abs(v) for v in by_asset.values()), reverse=True)[:5], ZERO) / total_abs),
+            "net_without_5_best": str(net - sum(wins[:5], ZERO)), "net_without_10_best": str(net - sum(wins[:10], ZERO)),
+            "net_without_5_worst": str(net - sum(losses[:5], ZERO)),
+        },
+        "conditions": cond,
+        "breaker": {"drawdown_trip_session": trip,
+                    "share_of_basis_after_trip": None if trip is None else sum(1 for s in sessions[1:] if s >= trip) / max(n, 1)},
+    }  # fmt: skip
+    return rec
+
+
+def run_record(market: xd.Market, docs: dict[str, dict[str, Any]], signals: list[dict[str, Any]], set_name: str,
+               period_name: str, scenario: p1.Scenario, *, regimes: dict[str, dict[str, str]], spy: dict[str, float],
+               spreads: sp2.MeasuredSpreadsV2, classification: dict[str, dict[str, Any]], issuers: dict[str, str]) -> dict[str, Any]:  # fmt: skip
+    period = PERIODS[period_name]
+    pf = simulate(
+        market,
+        signals,
+        set_name,
+        period,
+        scenario,
+        spreads=spreads,
+        classification=classification,
+        issuers=issuers,
+    )
+    snaps = pf.snapshots
+    prefix, incomplete = p1.complete_prefix(snaps)
+    if incomplete is not None:
+        incomplete["frozen_detail"] = [{"slot": e["slot"], "session": e["session"], "reason": e["reason"], "mark": e["mark"],
+                                        "mark_session": e["mark_session"]} for e in pf.events if e["event"] == "FROZEN"]  # fmt: skip
+    basis = (
+        basis_record(pf, prefix, spy, regimes, bootstrap=scenario.name == "baseline")
+        if len(prefix) > 1
+        else {"note": "no complete equity"}
+    )
+    tr = docs[xd.X5_TOTAL_RETURNS]["series"]
+    end = prefix[-1]["session"] if prefix else period[0]
+    rejected = Counter(r for d in pf.decisions if d["status"] == "REJECTED" for r in d["reasons"])
+    return {
+        "methodology_version": METHODOLOGY_VERSION, "strategy_set": set_name, "period": period_name,
+        "scenario": scenario.name, "diagnostic": scenario.diagnostic,
+        "account": {"start": period[0], "end": period[1], "capital": str(p1.CAPITAL)},
+        "labels": {"evaluation": LABEL, **({"trend_following": C12_LABEL} if "trend_following" in STRATEGY_SETS[set_name] else {}),
+                   **({"combined": "a combined allocation, not the deployed decision coordinator (C8)"} if set_name.startswith("combined") else {})},
+        "equity_complete": incomplete is None, "basis": basis, "incomplete": incomplete,
+        "full_run_including_incomplete_period": {"note": "never used in tables or comparisons (C5)",
+                                                 "trades": p1.trade_metrics(pf.trades), "costs": p1.cost_breakdown(pf)},
+        "series": {"sessions": [s["session"] for s in prefix], "equity": [float(D(s["equity"])) for s in prefix],
+                   "long_market_value": [float(D(s["long_market_value"])) for s in prefix]},
+        "unmatched_benchmarks": {"SPY_total_return": p1.series_metrics(p1.benchmark_equity(tr[sg.BENCHMARK_SLOT], period[0], end, market.slots[sg.BENCHMARK_SLOT], market)),
+                                 "equal_weight_stock_members": p1.equal_weight_universe(market, tr, period[0], end)},
+        "max_issuer_share_of_equity": pf.issuer_peak,
+        "orders": {"decisions": len(pf.decisions), "rejected_by_reason": dict(sorted(rejected.items())),
+                   "signals_not_entered": dict(sorted(pf.skipped.items()))},
+        "c11_restatements": pf.restatements, "c11_payout_stop_diagnostic": pf.payout_stops,
+        "reconciliation": p1.reconcile(pf),
+        "journal_sha256": hashlib.sha256(x4.canonical(pf.journal.entries)).hexdigest(),
+        "trade_list": pf.trades,
+    }  # fmt: skip
+
+
+# ---------------------------------------------------------------------- document-level evidence
+def spy_factors(market: xd.Market, docs: dict[str, dict[str, Any]]) -> dict[str, float]:
+    """X5 SPY factors, plus X6's formation step on SPY's first session (2017-01-03)."""
+    out = {
+        d: float(g) for d, g in docs[xd.X5_TOTAL_RETURNS]["series"][sg.BENCHMARK_SLOT]["returns"]
+    }
+    sd = market.slots[sg.BENCHMARK_SLOT]
+    step = xd.formation_step(sd, market)
+    out[sd.window[0]] = float(D(step["gross"]))
+    return dict(sorted(out.items()))
+
+
+def coverage(sig_doc: dict[str, Any]) -> dict[str, Any]:
+    """C10: evaluations by state per strategy and formation (stock windows are calendar years;
+    the fund formation spans 2017-2019), and the first signal per strategy and calendar year."""
+    out: dict[str, Any] = defaultdict(lambda: defaultdict(Counter))
+    for slot, states in sig_doc["per_slot_states"].items():
+        pool, formation, _ = slot.split("|")
+        bucket = "FUND 2017-2019" if pool == "FUND" else f"STOCK {int(formation[:4]) + 1}"
+        for k, v in states.items():
+            strat, state = k.split("|")
+            out[strat][bucket][state] += v
+    table = {s: {b: {"evaluations": sum(c.values()), "insufficient_data_share": c["INSUFFICIENT_DATA"] / max(1, sum(c.values())),
+                     "states": dict(sorted(c.items()))} for b, c in sorted(bs.items())} for s, bs in sorted(out.items())}  # fmt: skip
+    first: dict[str, dict[str, str]] = defaultdict(dict)
+    for x in sig_doc["signals"]:
+        y = x["session"][:4]
+        if y not in first[x["strategy_id"]] or x["session"] < first[x["strategy_id"]][y]:
+            first[x["strategy_id"]][y] = x["session"]
+    return {
+        "by_strategy_and_formation": table,
+        "first_signal_by_year": {k: dict(sorted(v.items())) for k, v in sorted(first.items())},
+    }
+
+
+def data_gaps(*_args: object, **_kwargs: object) -> object:
+    raise NotImplementedError("REDACTED_FOR_GITHUB")
+
+
+# ---------------------------------------------------------------------- pins, build, verify
+def _sha(path: str | Path) -> str:
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+# D-258: the V2 evidence and its builders, each of which must have an entry in the freeze
+# manifest's ``pre_run_inputs``. The value is the pin embedded in the module (None for a source
+# file); an embedded pin must equal the manifest entry, so neither can change alone.
+PRE_RUN_INPUTS: dict[str, str | None] = {
+    cls.PATH.as_posix(): cls.SHA256,
+    "backend/app/research/x7v2_classification.py": None,
+    sp2.PATH.as_posix(): sp2.SHA256,
+    "backend/app/research/x7v2_spreads.py": None,
+    # D-259: this file, anchored in x7v2_gate (outside it), and the gate itself
+    gate.PIPELINE: gate.PIPELINE_SHA256,
+    gate.SELF: None,
+}
+
+
+def check_pre_run_inputs() -> dict[str, Any]:
+    """D-258: every ``pre_run_inputs`` entry of the freeze manifest checked against its file.
+
+    Refuses when a required entry is missing, when a file differs from its entry, or when a
+    module's embedded pin differs from the manifest. Every entry in the manifest is checked,
+    not only the required ones.
+    """
+    man = json.loads(ev.FREEZE.read_bytes())
+    entries: dict[str, Any] = (man.get("pre_run_inputs") or {}).get("files") or {}
+    bad: dict[str, Any] = {}
+    out: dict[str, Any] = {}
+    for path in PRE_RUN_INPUTS:
+        if not (entries.get(path) or {}).get("sha256"):
+            bad[path] = "not recorded in the freeze manifest"
+    for path, entry in entries.items():
+        recorded = entry.get("sha256")
+        found = _sha(path) if Path(path).is_file() else "missing"
+        embedded = PRE_RUN_INPUTS.get(path)
+        out[path] = {
+            "manifest": recorded,
+            "found": found,
+            **({"embedded": embedded} if embedded else {}),
+        }
+        if found != recorded:
+            bad[path] = {"manifest": recorded, "found": found}
+        elif embedded is not None and embedded != recorded:
+            bad[path] = {"manifest": recorded, "embedded_pin": embedded}
+    if bad:
+        raise xd.PinError(f"the V2 pre-run inputs do not match the freeze manifest: {bad}")
+    return out
+
+
+def verify_inputs() -> dict[str, Any]:
+    """The pipeline anchor (D-259), the V2 inputs against the freeze manifest (D-258), every V1
+    pin, and the freeze. Called first by ``build_results``, before any data is loaded."""
+    anchor = gate.check_pipeline()
+    pre_run = check_pre_run_inputs()
+    pins = p1.verify_inputs(SIGNALS_FILE_SHA256)
+    pins["pipeline_anchor"] = anchor
+    pins["pre_run_inputs"] = pre_run
+    pins["freeze"] = ev.check_freeze()
+    return pins
+
+
+def build_results(runs: list[tuple[str, str, str]] | None = None) -> dict[str, Any]:
+    pins = verify_inputs()
+    docs = xd.load_documents()
+    market = xd.Market.from_documents(docs)
+    sig_doc = x4.read_json(p1.SIGNALS_PATH)
+    if sig_doc["content_sha256"] != SIGNALS_CONTENT_SHA256:
+        raise xd.PinError("signals content differs from the V1 artifact V2 reuses")
+    regimes = p1.spy_regimes(market)
+    spy = spy_factors(market, docs)
+    spreads = sp2.MeasuredSpreadsV2.load(sp2.OPEN_WINDOW)
+    classification = cls.load()
+    issuers = issuer_map(docs)
+    plan = runs or [(s, p, c) for s in STRATEGY_SETS for p in PERIODS for c in SCENARIOS]
+    records = [run_record(market, docs, sig_doc["signals"], s, p, SCENARIOS[c], regimes=regimes, spy=spy, spreads=spreads,
+                          classification=classification, issuers=issuers) for s, p, c in plan]  # fmt: skip
+    doc: dict[str, Any] = {
+        "kind": "x7_backtest_results", "decision": DECISION, "code": "X7_BACKTEST_RESULTS_V2",
+        "methodology_version": METHODOLOGY_VERSION, "label": LABEL,
+        "inputs": {"pins": pins, "signals_content_sha256": SIGNALS_CONTENT_SHA256, "sources_sha256": {p: _sha(p) for p in SOURCES}},
+        "scenarios": {k: v.as_json() for k, v in SCENARIOS.items()},
+        "not_built": {"include_leveraged": "spec C2.3: needs an X6 hook to size the new intent economically; to be proposed separately"},
+        "withdrawn_from_v1": ["combined"],
+        "spy_factors": spy, "regimes": regimes, "coverage": coverage(sig_doc), "benchmark_data_gaps": data_gaps(docs),
+        "classification_summary": json.loads(cls.PATH.read_bytes())["summary"],
+        "runs": records,
+    }  # fmt: skip
+    doc["content_sha256"] = p1.content_sha256(doc)
+    return doc
+
+
+def load_results() -> dict[str, Any]:
+    doc: dict[str, Any] = x4.read_json(RESULTS_PATH)
+    if doc["content_sha256"] != p1.content_sha256(doc):
+        raise xd.PinError("V2 results content hash differs")
+    return doc
+
+
+def write_evaluation(doc: dict[str, Any]) -> str:
+    doc["content_sha256"] = p1.content_sha256(doc)
+    return p1.write_once(doc, EVALUATION_PATH)
+
+
+def cli_backtest() -> dict[str, Any]:
+    doc = build_results()
+    sha = p1.write_once(doc, RESULTS_PATH)
+    return {
+        "results": RESULTS_PATH.as_posix(),
+        "file_sha256": sha,
+        "content_sha256": doc["content_sha256"],
+        "runs": len(doc["runs"]),
+    }
+
+
+def verify() -> dict[str, Any]:
+    stored = load_results()
+    rebuilt = build_results()
+    ok = stored["content_sha256"] == rebuilt["content_sha256"]
+    return {
+        "stored": stored["content_sha256"],
+        "rebuilt": rebuilt["content_sha256"],
+        "file": _sha(RESULTS_PATH),
+        "ok": ok,
+    }

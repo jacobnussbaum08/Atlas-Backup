@@ -1,0 +1,283 @@
+{
+ "atlas_and_sim_identical": true,
+ "captured_at": "2026-11-19",
+ "decision": "D-256",
+ "kind": "x7_registered_strategies",
+ "source": "read-only SELECT of strategy_versions (implemented) joined with strategy_configurations in the main atlas database; the simulation database holds identical rows",
+ "versions": [
+  {
+   "checks": {
+    "logic_version_equals_code": true,
+    "parameters_sha256_recomputed": true,
+    "schema_sha256_equals_code": true
+   },
+   "logic_version": "breakout-1",
+   "parameters": {
+    "atr_length": 14,
+    "bollinger_length": 20,
+    "channel_length": 20,
+    "confirmation_buffer_atr": "0.25",
+    "contraction_history": 100,
+    "directions": [
+     "LONG",
+     "SHORT"
+    ],
+    "failed_breakout_atr": "1.0",
+    "failed_lookback": 20,
+    "holding_horizon_periods": 5,
+    "long_channel_length": 120,
+    "max_range_atr": "8.0",
+    "max_recent_failed": 1,
+    "max_width_percentile": "0.25",
+    "min_close_location": "0.6",
+    "min_signal_strength": "0",
+    "min_volume_ratio": "1.5",
+    "signal_ttl_periods": 1,
+    "target_range_multiple": "1.0",
+    "timeframes": [
+     "1Day"
+    ],
+    "volume_long": 20
+   },
+   "parameters_sha256": "7bb92d9da7adb8e1d4cadbd4cd1403ae5b839d752a164781b16b38a8c1086adf",
+   "reason": "code changed: description, implemented, logic_version, required_features; new parameters at their defaults: failed_lookback, long_channel_length, max_range_atr, max_recent_failed, min_close_location, target_range_multiple",
+   "registered_at": "2026-11-03T22:45:58.352416+00:00",
+   "registered_by": "atlas:strategy-catalog",
+   "schema_sha256": "a39b0966f685a86206bc8b39297e68358e0f22b49a0204fb98cbf18a0149b81b",
+   "strategy_id": "breakout",
+   "version": 2,
+   "version_id": "bb1baa37-a615-4a30-ab20-35882baeaa37"
+  },
+  {
+   "checks": {
+    "logic_version_equals_code": true,
+    "parameters_sha256_recomputed": true,
+    "schema_sha256_equals_code": true
+   },
+   "logic_version": "event-driven-1",
+   "parameters": {
+    "atr_length": 14,
+    "categories": [
+     "EARNINGS",
+     "ANALYST_RATINGS",
+     "MERGERS_ACQUISITIONS",
+     "REGULATORY"
+    ],
+    "confirmation_return_periods": 1,
+    "directions": [
+     "LONG",
+     "SHORT"
+    ],
+    "event_sessions": 1,
+    "holding_horizon_periods": 5,
+    "lookback_hours": 24,
+    "min_close_location": "0.6",
+    "min_events": 1,
+    "min_reaction_atr": "1.0",
+    "min_relevance": "0.5",
+    "min_signal_strength": "0",
+    "min_volume_ratio": "1.5",
+    "signal_ttl_periods": 1,
+    "stop_atr_multiple": "1.5",
+    "target_atr_multiple": "2.5",
+    "timeframes": [
+     "1Day"
+    ],
+    "volume_long": 20
+   },
+   "parameters_sha256": "cea7ad9f8dc201d1164290b4d5e4e0a82dfb9800e269c0e1993d1162dad2bd96",
+   "reason": "code changed: description, implemented, logic_version, required_features; new parameters at their defaults: event_sessions, min_close_location, min_events, min_reaction_atr, min_volume_ratio, stop_atr_multiple, target_atr_multiple",
+   "registered_at": "2026-11-03T22:45:58.352416+00:00",
+   "registered_by": "atlas:strategy-catalog",
+   "schema_sha256": "6e1abf0bc586b944cad175071f46249978913114e95645c22a7309091fb23cc9",
+   "strategy_id": "event_driven",
+   "version": 2,
+   "version_id": "44c7b0d5-10a3-4f71-ad57-40473dac94e5"
+  },
+  {
+   "checks": {
+    "logic_version_equals_code": true,
+    "parameters_sha256_recomputed": true,
+    "schema_sha256_equals_code": true
+   },
+   "logic_version": "mean-reversion-1",
+   "parameters": {
+    "adx_length": 14,
+    "atr_length": 14,
+    "blocked_volatility_regimes": [
+     "EXTREME"
+    ],
+    "bollinger_k": "2.0",
+    "bollinger_length": 20,
+    "directions": [
+     "LONG",
+     "SHORT"
+    ],
+    "holding_horizon_periods": 5,
+    "max_opposing_slope_tstat": "3.0",
+    "min_abs_zscore": "2.0",
+    "min_atr_distance": "1.0",
+    "min_extreme_signals": 2,
+    "min_reversal_close_location": "0.5",
+    "min_signal_strength": "0",
+    "require_reversal_confirmation": true,
+    "require_trend_alignment": true,
+    "respect_market_trend": true,
+    "rsi_length": 14,
+    "rsi_overbought": "70",
+    "rsi_oversold": "30",
+    "signal_ttl_periods": 1,
+    "stop_atr_multiple": "1.5",
+    "timeframes": [
+     "1Day"
+    ],
+    "trend_filter_sma_length": 200,
+    "trend_slope_length": 50,
+    "zscore_length": 20
+   },
+   "parameters_sha256": "f1aa8c0688cf5da5d703543a42121ab742fbdf4af52b07379c30a81ffb4f0c48",
+   "reason": "code changed: description, implemented, logic_version, required_features; new parameters at their defaults: adx_length, blocked_volatility_regimes, max_opposing_slope_tstat, min_atr_distance, min_extreme_signals, min_reversal_close_location, require_trend_alignment, respect_market_trend, stop_atr_multiple, trend_slope_length",
+   "registered_at": "2026-11-03T22:45:58.352416+00:00",
+   "registered_by": "atlas:strategy-catalog",
+   "schema_sha256": "d86091a553b8c21f30708840022fdcd4383c0fc818ed1141a9efe4279f1ed3c2",
+   "strategy_id": "mean_reversion",
+   "version": 2,
+   "version_id": "8f216690-5093-457d-b4fe-ea3400a9869d"
+  },
+  {
+   "checks": {
+    "logic_version_equals_code": true,
+    "parameters_sha256_recomputed": true,
+    "schema_sha256_equals_code": true
+   },
+   "logic_version": "momentum-1",
+   "parameters": {
+    "acceleration_periods": 5,
+    "atr_length": 14,
+    "benchmark_symbol": "SPY",
+    "directions": [
+     "LONG",
+     "SHORT"
+    ],
+    "fast_ema_length": 20,
+    "holding_horizon_periods": 5,
+    "long_lookback_periods": 60,
+    "lookback_periods": 20,
+    "min_abs_return": "0",
+    "min_persistent_periods": 2,
+    "min_relative_strength": "0",
+    "min_signal_strength": "0",
+    "min_volume_ratio": "1.2",
+    "persistence_periods": 3,
+    "require_relative_strength": true,
+    "rsi_length": 14,
+    "rsi_long_max": "80",
+    "rsi_short_min": "20",
+    "signal_ttl_periods": 1,
+    "stop_atr_multiple": "2.0",
+    "target_atr_multiple": "3.0",
+    "timeframes": [
+     "1Day"
+    ],
+    "trend_ema_length": 50,
+    "volume_long": 20,
+    "volume_short": 5
+   },
+   "parameters_sha256": "9ad58ddcf783430179364295e78ea168dcd137897397668c0320e0965ea9aca1",
+   "reason": "code changed: description, implemented, logic_version, required_features; new parameters at their defaults: atr_length, benchmark_symbol, fast_ema_length, long_lookback_periods, min_abs_return, min_persistent_periods, min_relative_strength, require_relative_strength, rsi_long_max, rsi_short_min, stop_atr_multiple, target_atr_multiple",
+   "registered_at": "2026-11-03T22:45:58.352416+00:00",
+   "registered_by": "atlas:strategy-catalog",
+   "schema_sha256": "fa960e7be0aea70042395b96ae740c625bf25ab3687c4ae4751be8b335895ae9",
+   "strategy_id": "momentum",
+   "version": 2,
+   "version_id": "686bea05-062e-43bd-9cd6-13ce3ba748d9"
+  },
+  {
+   "checks": {
+    "logic_version_equals_code": true,
+    "parameters_sha256_recomputed": true,
+    "schema_sha256_equals_code": true
+   },
+   "logic_version": "trend-following-1",
+   "parameters": {
+    "adx_length": 14,
+    "atr_length": 14,
+    "continuation_length": 20,
+    "directions": [
+     "LONG",
+     "SHORT"
+    ],
+    "fast_ema_length": 20,
+    "holding_horizon_periods": 5,
+    "long_sma_length": 200,
+    "max_extension_atr": "3.0",
+    "min_adx": "20",
+    "min_signal_strength": "0",
+    "min_slope": "0.0005",
+    "min_slope_tstat": "2.0",
+    "pullback_atr_multiple": "1.0",
+    "respect_trend_regime": true,
+    "signal_ttl_periods": 1,
+    "slope_length": 20,
+    "slow_ema_length": 50,
+    "target_atr_multiple": "4.0",
+    "timeframes": [
+     "1Day"
+    ],
+    "trailing_atr_multiple": "3.0"
+   },
+   "parameters_sha256": "453a1dd09f8a2c2b12200dd401b5eae4d73b76f61e637e368cc0ee6ac61b6f9f",
+   "reason": "code changed: description, implemented, logic_version, required_features; new parameters at their defaults: continuation_length, max_extension_atr, min_slope, min_slope_tstat, respect_trend_regime, slope_length, target_atr_multiple",
+   "registered_at": "2026-11-03T22:45:58.352416+00:00",
+   "registered_by": "atlas:strategy-catalog",
+   "schema_sha256": "5bfb6f86464c78abe5de6fb005e3efdfe885c2b60714c897cf978991d04698ce",
+   "strategy_id": "trend_following",
+   "version": 2,
+   "version_id": "4201396f-c64a-469d-9c4d-3e1f5300d473"
+  },
+  {
+   "checks": {
+    "logic_version_equals_code": true,
+    "parameters_sha256_recomputed": true,
+    "schema_sha256_equals_code": true
+   },
+   "logic_version": "volatility-1",
+   "parameters": {
+    "atr_long": 20,
+    "atr_short": 5,
+    "blocked_volatility_regimes": [
+     "EXTREME"
+    ],
+    "bollinger_length": 20,
+    "compression_ratio": "0.75",
+    "directions": [
+     "LONG",
+     "SHORT"
+    ],
+    "expansion_ratio": "1.5",
+    "holding_horizon_periods": 5,
+    "max_prior_width_percentile": "0.3",
+    "max_volatility_percentile": "0.95",
+    "min_close_location": "0.7",
+    "min_move_atr": "1.0",
+    "min_signal_strength": "0",
+    "signal_ttl_periods": 1,
+    "stop_atr_multiple": "2.0",
+    "target_atr_multiple": "3.0",
+    "timeframes": [
+     "1Day"
+    ],
+    "volatility_length": 20,
+    "width_history": 100
+   },
+   "parameters_sha256": "ffea3eacc3f53f32bb9984712ee0dc252fee31b436432ba4361cf57f23593e46",
+   "reason": "code changed: description, implemented, logic_version, required_features; new parameters at their defaults: blocked_volatility_regimes, max_prior_width_percentile, max_volatility_percentile, min_close_location, min_move_atr, target_atr_multiple",
+   "registered_at": "2026-11-03T22:45:58.352416+00:00",
+   "registered_by": "atlas:strategy-catalog",
+   "schema_sha256": "e1cd7660b75612a81ae2cd73bf103246c7285ea4a611234bd8196b5e3d7e13a4",
+   "strategy_id": "volatility",
+   "version": 2,
+   "version_id": "b6a0097f-d6ed-4961-987c-43ce5df3d397"
+  }
+ ]
+}

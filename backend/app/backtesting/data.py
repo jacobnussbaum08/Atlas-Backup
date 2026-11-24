@@ -164,6 +164,25 @@ class HistoricalDataset:
     fingerprint_parts: list[str] = field(default_factory=list)
 
     # ------------------------------------------------------------------ bars
+    def calendar_conflicts(self, last: date) -> dict[str, list[str]]:
+        """Where the loaded bars contradict the session calendar (X3.1, D-244): bars dated
+        on a day the calendar says was closed, and calendar sessions *inside* the loaded
+        data (between the first and last day with any bar, up to ``last``) on which not
+        one loaded asset has a bar, i.e. a day the market did not trade (2018-12-05
+        before X3.1). A single asset's missing bar is a data gap, not a conflict."""
+        days = {d for bars in self.raw.values() for d in bars}
+        if not days:
+            return {"sessions_without_any_bar": [], "bars_on_closed_days": []}
+        lo, hi = max(min(days), self.first_session), min(max(days), last)
+        return {
+            "sessions_without_any_bar": [
+                s.day.isoformat() for s in sessions_between(lo, hi) if s.day not in days
+            ],
+            "bars_on_closed_days": sorted(
+                d.isoformat() for d in days if trading_day(CALENDAR, d) is None
+            ),
+        }
+
     def bar(self, asset_id: uuid.UUID, day: date) -> DayBar | None:
         """The RAW bar of a session (execution and valuation prices)."""
         return self.raw.get(asset_id, {}).get(day)

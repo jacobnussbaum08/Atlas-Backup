@@ -20,8 +20,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import and_, exists, func, or_, select
-from sqlalchemy.dialects.postgresql import distinct_on
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from app.database.models import (
     Asset,
@@ -237,13 +236,18 @@ def _news(
         )
     e, rel = NewsEventRecord, EventAssetRelationshipRecord
     # The newest event per article known at known_at (a reclassification or a later
-    # revision supersedes earlier events only once it was available).
-    newest = (
-        select(e.id)
-        .where(e.available_at <= ctx.known_at)
-        .ext(distinct_on(e.article_id))
-        .order_by(e.article_id, e.available_at.desc(), e.id.desc())
-        .subquery()
+    # revision supersedes earlier events only once it was available): no event of the
+    # same article known by then is later by (available_at, id). Expressed per candidate
+    # row so the asset/time filter runs first (D-234: a DISTINCT ON over every stored
+    # event per feature made multi-year replays with news ~10x slower).
+    later = aliased(NewsEventRecord)
+    superseded = exists().where(
+        later.article_id == e.article_id,
+        later.available_at <= ctx.known_at,
+        or_(
+            later.available_at > e.available_at,
+            and_(later.available_at == e.available_at, later.id > e.id),
+        ),
     )
     stmt = (
         select(
@@ -251,14 +255,17 @@ def _news(
             func.max(e.event_time),
             func.max(e.available_at),
         )
-        .join(newest, newest.c.id == e.id)
         .join(rel, rel.event_id == e.id)
         .where(
             rel.asset_id == ctx.asset_id,
             rel.relationship == AssetRelationship.DIRECT_PROVIDER_SYMBOL,
             rel.static_relevance >= p["min_relevance"],
+            rel.event_time > start,
+            rel.event_time <= end,
             e.event_time > start,
             e.event_time <= end,
+            e.available_at <= ctx.known_at,
+            ~superseded,
         )
     )
     category = str(p["category"])

@@ -1,0 +1,174 @@
+# ruff: noqa: E501  (query text and provenance read as one row each)
+"""X7 V2 (D-257, correction C6): spread evidence V2, keyed by asset and verified identity.
+
+V1's evidence (``x7_spreads``) is keyed by symbol only: IR's measurements belong to a later
+REDACTED_FOR_GITHUB
+
+1. ``capture`` reads (SELECT only) every OK SIP ``quoted_spread_bps`` measurement before
+   2020 with its ``asset_id``, the observed bid and ask, ``quote_at`` and the two-sided quote
+   count, and checks each row offline against the pinned X4.5 member bars:
+   * **identity**: the quote midpoint lies within [low x 0.97, high x 1.03] of the bar of a
+     member slot with that ticker on that session; the row is then tied to that slot's
+     security (ledger key and ticker);
+   * **uniqueness**: no other asset with that symbol has a different value at the same window
+     end.
+   A row failing either is excluded, with its reason. The file is written once with the
+   check, its tolerance and every excluded row.
+2. ``MeasuredSpreadsV2.at(security, asof)`` serves the newest verified measurement *of that
+   security* whose window ended by the decision's close and is at most 45 days old. Assets
+   are never merged; a missing or excluded measurement means the labelled 25 bps fallback.
+
+The V1 file and loader are unchanged (V1 stays reproducible).
+"""
+
+from __future__ import annotations
+
+import bisect
+import gzip
+import hashlib
+import json
+from collections import defaultdict
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from pathlib import Path
+from typing import Any
+
+from app.data_engine.timeframes import US_EQUITY_TIMEZONE
+from app.research import x4_evidence as x4
+from app.research import x6_data as xd
+from app.research import x7_spreads as sp1
+
+PATH = Path("config/simulation/evidence/x7/sip_quoted_spreads_2017_2019_v2.json.gz")
+SHA256 = "79f68b802d432c8fb79b8f45099edc58b9979b3ccf7f8df74c2ebb3e329ac2f2"
+MAX_AGE_DAYS = sp1.MAX_AGE_DAYS
+OPEN_WINDOW, CLOSE_WINDOW = sp1.OPEN_WINDOW, sp1.CLOSE_WINDOW
+LOW_TOL, HIGH_TOL = Decimal("0.97"), Decimal("1.03")
+QUERY = (
+    'SELECT a.symbol, a.id::text, v."window", v.feature_version, v.source_start, v.source_end, v.value, '
+    "v.observations, v.details->>'bid', v.details->>'ask', v.details->>'quote_at', v.details->>'two_sided_quotes' "
+    "FROM asset_metric_values v JOIN assets a ON a.id = v.asset_id "
+    "WHERE v.metric = 'quoted_spread_bps' AND v.feed = 'sip' AND v.status = 'OK' "
+    "AND v.source_end < '2020-01-01' ORDER BY a.symbol, v.\"window\", v.source_end, a.id::text"
+)
+COLUMNS = ["symbol", "asset_id", "window", "feature_version", "source_start", "source_end", "value_bps",
+           "quotes", "bid", "ask", "quote_at", "two_sided_quotes"]  # fmt: skip
+
+
+def _bars_by_ticker(market: xd.Market) -> dict[str, list[xd.SlotData]]:
+    out: dict[str, list[xd.SlotData]] = defaultdict(list)
+    for sd in market.slots.values():
+        out[sd.ticker].append(sd)
+    return out
+
+
+def check(rows: list[list[Any]], market: xd.Market) -> dict[str, Any]:
+    """The offline identity and uniqueness checks (pure: rows in, kept and excluded out)."""
+    by_ticker = _bars_by_ticker(market)
+    values: dict[tuple[str, str, str], set[str]] = defaultdict(set)
+    for r in rows:
+        values[(r[0], r[2], r[5])].add(r[6])
+    kept: list[dict[str, Any]] = []
+    excluded: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for r in rows:
+        row = dict(zip(COLUMNS, r, strict=True))
+        session = (
+            datetime.fromisoformat(row["source_end"])
+            .astimezone(US_EQUITY_TIMEZONE)
+            .date()
+            .isoformat()
+        )
+        if len(values[(row["symbol"], row["window"], row["source_end"])]) > 1:
+            excluded.append({**row, "reason": "AMBIGUOUS_SYMBOL_DIFFERENT_VALUES"})
+            continue
+        if row["bid"] is None or row["ask"] is None:
+            excluded.append({**row, "reason": "NO_QUOTE_RECORDED"})
+            continue
+        mid = (Decimal(row["bid"]) + Decimal(row["ask"])) / 2
+        matched = None
+        candidates = [sd for sd in by_ticker.get(row["symbol"], []) if session in sd.bars]
+        for sd in sorted(candidates, key=lambda x: x.slot):
+            b = sd.bars[session]
+            if b.low * LOW_TOL <= mid <= b.high * HIGH_TOL:
+                matched = sd
+                break
+        if matched is None:
+            excluded.append(
+                {**row, "reason": "NO_X45_BAR" if not candidates else "MID_OUTSIDE_BAR_RANGE"}
+            )
+            continue
+        key = (row["symbol"], row["window"], row["source_end"], matched.ledger_key)
+        if key in seen:  # the same measurement under two asset records with equal values
+            excluded.append({**row, "reason": "DUPLICATE_EQUAL_VALUE"})
+            continue
+        seen.add(key)
+        kept.append({**row, "session": session, "ledger_key": matched.ledger_key, "ticker": matched.ticker,
+                     "verified_against": matched.slot})  # fmt: skip
+    reasons: dict[str, int] = defaultdict(int)
+    for e in excluded:
+        reasons[e["reason"]] += 1
+    return {"kept": kept, "excluded": excluded, "excluded_by_reason": dict(sorted(reasons.items()))}
+
+
+def capture(factory: Any, database: str) -> dict[str, Any]:
+    """Read the measurements (SELECT only), check them, and write the evidence file once."""
+    from sqlalchemy import text
+
+    if PATH.exists():
+        raise FileExistsError(f"{PATH} exists: written once")
+    with factory() as session:
+        raw = session.execute(text(QUERY)).all()
+    rows = [[r[0], r[1], r[2], r[3], r[4].astimezone(UTC).isoformat(), r[5].astimezone(UTC).isoformat(), str(r[6]),
+             r[7], r[8], r[9], r[10], None if r[11] is None else int(r[11])] for r in raw]  # fmt: skip
+    market = xd.Market.from_documents(xd.load_documents())
+    result = check(rows, market)
+    doc = {"kind": "x7v2_sip_quoted_spreads", "decision": "D-257", "database": database, "query": QUERY,
+           "columns": COLUMNS, "rows_read": len(rows),
+           "identity_check": {"rule": "quote midpoint within [low x 0.97, high x 1.03] of a member slot's X4.5 bar for that ticker and session; tied to that slot's security",
+                              "uniqueness": "excluded when another asset with the symbol has a different value at the same window end",
+                              "tolerance": [str(LOW_TOL), str(HIGH_TOL)], "member_data_v2_sha256": xd.PINNED[xd.MEMBER_DATA]},
+           **result}  # fmt: skip
+    PATH.parent.mkdir(parents=True, exist_ok=True)
+    data = x4.gz(x4.canonical(doc))
+    PATH.write_bytes(data)
+    return {"path": PATH.as_posix(), "rows_read": len(rows), "kept": len(result["kept"]),
+            "excluded_by_reason": result["excluded_by_reason"], "sha256": hashlib.sha256(data).hexdigest()}  # fmt: skip
+
+
+class MeasuredSpreadsV2:
+    """Verified measurements of one window kind, served per security, point in time."""
+
+    def __init__(self, kept: list[dict[str, Any]], window: str) -> None:
+        self.window = window
+        grouped: dict[tuple[str, str], list[tuple[datetime, Decimal]]] = defaultdict(list)
+        for r in kept:
+            if r["window"] == window:
+                grouped[(r["ledger_key"], r["ticker"])].append(
+                    (datetime.fromisoformat(r["source_end"]), Decimal(r["value_bps"]))
+                )
+        self._by: dict[tuple[str, str], tuple[list[datetime], list[Decimal]]] = {}
+        for k, items in grouped.items():
+            items.sort()
+            self._by[k] = ([t for t, _ in items], [v for _, v in items])
+
+    @classmethod
+    def load(cls, window: str) -> MeasuredSpreadsV2:
+        raw = PATH.read_bytes()
+        if hashlib.sha256(raw).hexdigest() != SHA256:
+            raise xd.PinError(f"{PATH}: not the pinned spread measurements V2")
+        doc = json.loads(gzip.decompress(raw))
+        return cls(doc["kept"], window)
+
+    def at(self, security: tuple[str, str], asof: str) -> tuple[Decimal, str] | None:
+        """(bps, window end) of the newest verified measurement of ``security`` known at the
+        close of ``asof``, at most 45 days old; None otherwise."""
+        found = self._by.get(security)
+        if not found:
+            return None
+        from app.research.x7_signals import _utc
+
+        close = _utc(asof)[1]
+        i = bisect.bisect_right(found[0], close) - 1
+        if i < 0 or close - found[0][i] > timedelta(days=MAX_AGE_DAYS):
+            return None
+        return found[1][i], found[0][i].isoformat()

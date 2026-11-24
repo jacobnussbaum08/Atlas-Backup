@@ -20,7 +20,7 @@ from __future__ import annotations
 import os
 import subprocess  # read-only git query for the code version
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -31,10 +31,15 @@ from sqlalchemy import insert, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.asset_discovery.enums import UniverseLayer
+from app.backtesting import corrections, exclusion_windows
 from app.backtesting import metrics as perf
 from app.backtesting.broker import backtest_model
 from app.backtesting.config import (
+    DELISTING_POLICY,
+    DIVIDEND_POLICY,
     BacktestRequest,
+    ExclusionSpec,
+    PipelineSpec,
     ResolvedAsset,
     ResolvedConfig,
     ResolvedStrategy,
@@ -84,6 +89,7 @@ from app.database.models.ml import MLModelVersionRecord
 from app.database.sessions import session_scope
 from app.feature_engine.registry import FEATURE_REGISTRY_VERSION, FeatureSource
 from app.ml_engine.enums import ValidationStatus
+from app.research import store as research_store
 from app.risk.config import HardLimits, Preferences, RiskConfiguration
 from app.risk.governance import active_configuration
 from app.strategies import catalog
@@ -190,9 +196,24 @@ class BacktestService:
             )
         strategies = tuple(self._strategies(session, request))
         risk, risk_source = self._risk(session, request)
-        model = backtest_model(request.execution.equity_overrides)
+        model = backtest_model(request.execution.equity_overrides, request.execution_conventions)
         if request.universe.mode is UniverseMode.EXPLICIT:
             assets = [_asset(_find_symbol(session, s)) for s in request.universe.symbols]
+        elif request.universe.mode is UniverseMode.RESEARCH:
+            code = request.universe.research_universe
+            assert code is not None  # noqa: S101  # validated
+            if not research_store.universe_exists(session, code, known_at=known_at):
+                raise BacktestRequestError(f"research universe {code} is not registered")
+            spans = research_store.universe_members(session, code, known_at=known_at)
+            ids = [
+                a
+                for a, ss in spans.items()
+                if any(s.start <= request.end_date and s.end >= request.start_date for s in ss)
+            ]
+            rows = session.scalars(select(Asset).where(Asset.id.in_(ids))).all()
+            assets = [_asset(r) for r in sorted(rows, key=lambda r: (r.symbol, str(r.id)))]
+            if not assets:
+                raise BacktestRequestError(f"research universe {code} has no member in range")
         else:
             layer = request.universe.layer
             assert layer is not None  # noqa: S101  # validated
@@ -231,6 +252,70 @@ class BacktestService:
             )
             .order_by(MLModelVersionRecord.model_name, MLModelVersionRecord.version)
         ).all()
+        # D-239: data reserved for independent validation needs a pre-registration.
+        try:
+            prereg = research_store.check_reservations(
+                session,
+                start=request.start_date,
+                end=request.end_date,
+                symbols=[a.symbol for a in assets],
+                universe_code=request.universe.research_universe,
+                preregistration=request.preregistration,
+                at=known_at,
+            )
+            exclusions = None
+            research = request.universe.mode is UniverseMode.RESEARCH
+            if prereg is not None or research:
+                # D-242: every exclusion set known by the run, pinned by content hash, and
+                # the date-bounded windows of its assets for its own read window.
+                sets = research_store.exclusion_sets(session, known_at=known_at)
+                windows = research_store.exclusion_windows(session, known_at=known_at)
+                read = self.read_sessions(strategies, request.pipeline)
+                traded = {uuid.UUID(a.asset_id): a.symbol for a in assets}
+                if prereg is not None and not research:
+                    # D-240/D-242: reserved data never trades an excluded asset nor reads a
+                    # contaminated observation (a research universe leaves ASSET exclusions
+                    # out and the replay applies the windows; an explicit or layer run
+                    # touching one is refused, not narrowed).
+                    research_store.check_exclusions(
+                        session,
+                        traded,
+                        traded,
+                        at=known_at,
+                        blocked=exclusion_windows.blocked_ranges(windows, read),
+                        start=request.start_date,
+                        end=request.end_date,
+                    )
+                if sets:
+                    exclusions = ExclusionSpec(
+                        read_sessions=read,
+                        sets=sets,
+                        windows=tuple(
+                            s
+                            for s in exclusion_windows.specs(windows, traded, read)
+                            if s.blocked_from <= request.end_date
+                            and s.blocked_through >= request.start_date
+                        ),
+                    )
+        except research_store.ReservationError as exc:
+            raise BacktestRequestError(str(exc)) from None
+        corporate_actions = None
+        if request.corporate_actions is not None:
+            # D-243: a named, registered correction set, pinned by its recomputed hash.
+            if not request.dividends:
+                raise BacktestRequestError(
+                    "a dividend correction set needs dividends modelled (dividends: true)"
+                )
+            try:
+                loaded = corrections.load_set(session, request.corporate_actions, known_at=known_at)
+            except corrections.CorrectionSetError as exc:
+                raise BacktestRequestError(str(exc)) from None
+            corporate_actions = {
+                "code": loaded.code,
+                "content_sha256": loaded.content_sha256,
+                "policy": corrections.POLICY,
+                "preregistration_code": loaded.preregistration_code,
+            }
         return ResolvedConfig(
             code_version=self._version(),
             name=request.name,
@@ -251,6 +336,16 @@ class BacktestService:
             reference_assets=tuple(references[s] for s in sorted(references)),
             breaker_reset_policy=request.breaker_reset_policy,
             seed=request.seed,
+            pipeline=request.pipeline,
+            execution_conventions=request.execution_conventions,
+            dividend_policy=DIVIDEND_POLICY if request.dividends else None,
+            delisting_policy=DELISTING_POLICY
+            if request.universe.mode is UniverseMode.RESEARCH
+            else None,
+            correlation_source=request.correlation_source,
+            preregistration=prereg,
+            exclusions=exclusions,
+            corporate_actions=corporate_actions,
             feature_registry_version=FEATURE_REGISTRY_VERSION,
             risk_engine_version=RISK_ENGINE_VERSION,
             model_versions=tuple(
@@ -442,9 +537,14 @@ class BacktestService:
             run.started_at = self.clock.now()
             return _Stored(run.id, ResolvedConfig.model_validate(run.config))
 
-    def load(self, session: Session, config: ResolvedConfig) -> HistoricalDataset:
+    def read_sessions(
+        self, strategies: Iterable[ResolvedStrategy], pipeline: PipelineSpec | None
+    ) -> int:
+        """Sessions of history the replay loads before its first decision: an upper bound
+        on what any one decision reads (strategy features, the coordinator's intelligence,
+        liquidity and correlation look-backs). D-242 blocks on the same number."""
         windows = [1]
-        for rs in config.strategies:
+        for rs in strategies:
             strategy = self.registry.get(rs.strategy_id)
             params = strategy.parse_parameters(rs.parameters)
             for tf in rs.timeframes:
@@ -453,7 +553,15 @@ class BacktestService:
                 )
                 window = max((f.window for f in resolved if f.window), default=1)
                 windows.append(sessions_for(tf, window))
-        lookback = max(windows) + LIQUIDITY_LOOKBACK + 10
+        if pipeline is not None and pipeline.coordinator:
+            # The coordinator's market intelligence reads as much history as live does.
+            from app.backtesting.pipeline import default_intelligence_config, sessions_needed
+
+            windows.append(sessions_needed(default_intelligence_config()))
+        return max(windows) + LIQUIDITY_LOOKBACK + 10
+
+    def load(self, session: Session, config: ResolvedConfig) -> HistoricalDataset:
+        lookback = self.read_sessions(config.strategies, config.pipeline)
         first = sessions_back(config.start_date, lookback)
         ids = [uuid.UUID(a.asset_id) for a in (*config.assets, *config.reference_assets)]
         return load_dataset(

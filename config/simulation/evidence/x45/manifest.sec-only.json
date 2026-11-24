@@ -1,0 +1,6 @@
+{
+ "artifacts": {},
+ "kind": "sec_only_manifest",
+ "note": "Sanitized: only public SEC/EDGAR artifacts. The original manifest is kept offline.",
+ "store": "x45"
+}

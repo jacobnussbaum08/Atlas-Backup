@@ -16,12 +16,14 @@ cash movements). A run whose books do not reconcile fails.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
-from typing import Any
+from enum import StrEnum
+from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.accounting import chart
 from app.accounting.enums import EntryType
@@ -35,12 +37,95 @@ from app.accounting.templates import (
     RateQuote,
     TemplateError,
     ValuationParams,
+    _Builder,
 )
 from app.portfolio.figures import PortfolioFigures, figures
 
 
 class LedgerError(RuntimeError):
     """A posting was refused; in a backtest this stops the run (nothing is skipped)."""
+
+
+class CashDividendParams(BaseModel):
+    """D-237: the cash dividend of one position at an ex-date (backtest ledger only)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    asset_id: uuid.UUID
+    currency: str
+    direction: Literal["LONG", "SHORT"]
+    ex_date: date
+    rate: Decimal = Field(gt=0)
+    quantity: Decimal = Field(gt=0)
+    amount: Decimal = Field(gt=0)
+
+
+def cash_dividend(state: LedgerState, ctx: Any, p: CashDividendParams) -> EntryDraft:
+    """A long position receives the dividend (Dr 1000 Cash / Cr 4000 realized, with the
+    asset); a short position pays it to the lender (Dr 4000 / Cr 1000). The RAW close
+    falls by the dividend on the ex-date, so the position's total return counts it once.
+    Recorded in realized P/L per asset (the chart has no dividend account; the backtest
+    ledger only)."""
+    # The 6A entry types are exactly the 6A templates' (the live journal admits only those),
+    # so the draft carries a placeholder; the backtest journal records BacktestEntryType.
+    b = _Builder(
+        state,
+        ctx,
+        EntryType.FINANCING_COST,
+        f"Cash dividend {p.amount} {p.currency} ({p.direction})",
+    )
+    if p.direction == "LONG":
+        b.pair(
+            chart.CASH,
+            chart.REALIZED_PNL,
+            p.currency,
+            p.amount,
+            b.spot(p.currency, p.amount),
+            credit_asset=p.asset_id,
+            memo="cash dividend received (ex-date)",
+        )
+    else:
+        b.pay_cash(
+            chart.REALIZED_PNL,
+            p.currency,
+            p.amount,
+            p.asset_id,
+            "dividend paid on a short (ex-date)",
+        )
+    return b.done(ex_date=p.ex_date.isoformat(), rate=str(p.rate), quantity=str(p.quantity))
+
+
+class BacktestEntryType(StrEnum):
+    """Journal entry types of the backtest ledger's own templates (never posted live)."""
+
+    DIVIDEND = "DIVIDEND"
+
+
+@dataclass(frozen=True)
+class BacktestTemplateDef:
+    code: str
+    version: int
+    journal_entry_type: BacktestEntryType
+    params: type[BaseModel]
+    build: Callable[..., EntryDraft]
+    description: str
+    rules: tuple[str, ...] = ()
+
+
+BACKTEST_TEMPLATES: dict[str, BacktestTemplateDef] = {
+    "cash_dividend": BacktestTemplateDef(
+        "cash_dividend",
+        1,
+        BacktestEntryType.DIVIDEND,
+        CashDividendParams,
+        cash_dividend,
+        "Cash dividend of a backtest position at its ex-date (D-237; backtest ledger only)",
+        (
+            "long: Dr 1000 Cash / Cr 4000 Realized (asset); short: Dr 4000 (asset) / Cr 1000",
+            "amount = rate x quantity held over the previous close, rounded to minor units",
+        ),
+    )
+}
 
 
 class BacktestTemplateContext:
@@ -70,7 +155,7 @@ class JournalEntry:
     sequence: int
     effective_at: datetime
     template: str
-    entry_type: EntryType
+    entry_type: EntryType | BacktestEntryType
     description: str
     params: dict[str, Any]
     lines: list[dict[str, Any]]
@@ -145,7 +230,7 @@ class SimulatedLedger:
         source_ref: str,
         skip_if_empty: bool = False,
     ) -> JournalEntry | None:
-        definition = TEMPLATES.get(template)
+        definition = TEMPLATES.get(template) or BACKTEST_TEMPLATES.get(template)
         if definition is None:
             raise LedgerError(f"unknown posting template {template!r}")
         raw = params.model_dump(mode="json") if isinstance(params, BaseModel) else params
@@ -173,7 +258,9 @@ class SimulatedLedger:
             sequence=len(self.journal) + 1,
             effective_at=at,
             template=template,
-            entry_type=draft.entry_type,
+            entry_type=definition.journal_entry_type
+            if isinstance(definition, BacktestTemplateDef)
+            else draft.entry_type,
             description=draft.description,
             params=_jsonable(raw),
             lines=[_line(x) for x in draft.lines],

@@ -26,6 +26,7 @@ from app.paper_broker.execution_model import (
     DEFAULT_MODEL,
     EQUITY,
     MODEL_V1,
+    MODEL_V2,
     ExecutionModel,
 )
 from app.paper_broker.fill_model import (
@@ -447,13 +448,32 @@ def test_version_1_is_unchanged_and_version_2_adds_only_the_gap_rule():
         .for_class("EQUITY")
         .gap_fill_at_observed
     )
-    assert DEFAULT_MODEL.version == 2
-    v2 = DEFAULT_MODEL.definition()
+    assert MODEL_V2.version == 2
+    v2 = MODEL_V2.definition()
     for name, rules in v2["classes"].items():
         assert rules.pop("gap_fill_at_observed") is True
         assert rules == MODEL_V1.definition()["classes"][name]
-    assert DEFAULT_MODEL.rules[:-1] == MODEL_V1.rules
-    assert "gap rule" in DEFAULT_MODEL.rules[-1]
+    assert MODEL_V2.rules[:-1] == MODEL_V1.rules
+    assert "gap rule" in MODEL_V2.rules[-1]
+
+
+# Version 2 as Phase 10B defined it (the default until D-237): its hash must not change.
+V2_SHA256 = "5815c24313b81af4e720e9187ebc6c782296f6b180d713cef4f6bb8c4789c338"
+
+
+def test_version_2_is_unchanged_and_version_3_adds_only_the_limit_on_arrival_rule():
+    assert MODEL_V2.definition_sha256() == V2_SHA256
+    assert "limit_marketable_on_arrival" not in MODEL_V2.definition()["classes"]["EQUITY"]
+    assert DEFAULT_MODEL.version == 3
+    v3 = DEFAULT_MODEL.definition()
+    for name, rules in v3["classes"].items():
+        assert rules.pop("limit_marketable_on_arrival") is True
+        assert rules == MODEL_V2.definition()["classes"][name]
+    assert DEFAULT_MODEL.rules[:-1] == MODEL_V2.rules
+    assert "limit marketable on arrival" in DEFAULT_MODEL.rules[-1]
+    # A stored version-2 definition loads with the new rule off.
+    stored = ExecutionModel.model_validate(MODEL_V2.definition())
+    assert not stored.for_class("EQUITY").limit_marketable_on_arrival
 
 
 GAP = EQUITY.model_copy(update={"gap_fill_at_observed": True})

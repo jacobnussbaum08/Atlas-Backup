@@ -203,6 +203,24 @@ def test_expected_tables_exist():
         "evidence_data_audits",
         "evidence_scorecards",
         "evidence_scorecard_entries",
+        # D-237: cash dividends for the backtest
+        "cash_dividends",
+        "cash_dividend_retrievals",
+        # D-239: independent research data foundation
+        "research_securities",
+        "research_universes",
+        "research_universe_candidates",
+        "research_data_reservations",
+        "research_preregistrations",
+        # D-240: research exclusions
+        "research_exclusions",
+        # D-243: corporate-action corrections
+        "corporate_action_events",
+        "corporate_action_sets",
+        "security_entities",
+        "security_identities",
+        "security_lifecycle_events",
+        "security_lifecycle_sets",
     }
 
 

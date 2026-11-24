@@ -266,6 +266,9 @@ class ExecutionSimulator:
             gap_cap=self._gap_cap(session, order, book, rules)
             if rules.gap_fill_at_observed
             else None,
+            # Model v3 (D-237): no trade or bar after arrival has been evaluated yet (the
+            # cursors advance with every evaluation that sees data).
+            first_look=book.trade_cursor_at is None and book.bar_cursor_at is None,
         )
         return view, evaluate(state, view, rules, market_open=market_open(rules, now))
 

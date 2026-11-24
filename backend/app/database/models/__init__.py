@@ -55,6 +55,12 @@ from app.database.models.backtesting import (
     BacktestTradeRecord,
 )
 from app.database.models.base import Base
+from app.database.models.corporate_actions import (
+    CashDividendRecord,
+    CashDividendRetrievalRecord,
+    CorporateActionEventRecord,
+    CorporateActionSetRecord,
+)
 from app.database.models.evidence import (
     EvidenceDataAuditRecord,
     EvidenceProtocolRecord,
@@ -175,6 +181,14 @@ from app.database.models.reliability import (
     OperatorCredentialRecord,
     WorkerHeartbeatRecord,
 )
+from app.database.models.research import (
+    ResearchDataReservationRecord,
+    ResearchExclusionRecord,
+    ResearchPreregistrationRecord,
+    ResearchSecurityRecord,
+    ResearchUniverseCandidateRecord,
+    ResearchUniverseRecord,
+)
 from app.database.models.reservations import (
     RiskReservationApprovalRecord,
     RiskReservationEventRecord,
@@ -194,6 +208,12 @@ from app.database.models.risk import (
     RiskEventRecord,
     RiskExposureSnapshotRecord,
     RiskPeriodBaselineRecord,
+)
+from app.database.models.security_lifecycle import (
+    SecurityEntityRecord,
+    SecurityIdentityRecord,
+    SecurityLifecycleEventRecord,
+    SecurityLifecycleSetRecord,
 )
 from app.database.models.strategy import (
     FeatureDefinitionRecord,
@@ -249,6 +269,10 @@ __all__ = [
     "BacktestStrategyVersionRecord",
     "BacktestTradeRecord",
     "Base",
+    "CashDividendRecord",
+    "CashDividendRetrievalRecord",
+    "CorporateActionEventRecord",
+    "CorporateActionSetRecord",
     "CoverageRecord",
     "CrossAssetRelationshipRecord",
     "CurrencyBalanceRecord",
@@ -357,6 +381,12 @@ __all__ = [
     "RecoveryJobRecord",
     "RecoveryStatusRecord",
     "RegimeClassificationRecord",
+    "ResearchDataReservationRecord",
+    "ResearchExclusionRecord",
+    "ResearchPreregistrationRecord",
+    "ResearchSecurityRecord",
+    "ResearchUniverseCandidateRecord",
+    "ResearchUniverseRecord",
     "RiskAssessmentReasonRecord",
     "RiskAssessmentRecord",
     "RiskAssetClassificationRecord",
@@ -373,6 +403,10 @@ __all__ = [
     "RiskReservationRequestRecord",
     "RiskReservationStateRecord",
     "ScoringVersionRecord",
+    "SecurityEntityRecord",
+    "SecurityIdentityRecord",
+    "SecurityLifecycleEventRecord",
+    "SecurityLifecycleSetRecord",
     "StrategyConfigurationRecord",
     "StrategyEvaluationErrorRecord",
     "StrategyEvaluationRecord",

@@ -1,0 +1,158 @@
+# ruff: noqa: E501  (quoted fund names read as one row each)
+"""X7 V2 (D-257, correction C2): leverage, direction and VIX exposure of the fund members.
+
+Built offline from pinned evidence only:
+
+* the X4.4 universe V2 formation records' ``listed_names`` (the exchange listings bracketing
+  the 2016-12-30 formation);
+* the SEC investment-company series and class lists (``config/simulation/evidence/x4/sec/funds``,
+  the 2015 and 2017 files bracketing the formation), matched by class ticker.
+
+The rule is written here and applied to the quoted names only; no price or return is read.
+Each fund gets ``leverage`` (1, 2 or 3), ``direction`` (LONG or INVERSE), ``vix_futures`` and
+the quoted names with their sources. ``REVIEWED_PLAIN`` lists the names the keyword scan of
+the audit flagged that are *not* leveraged, inverse or VIX (resolved by the rule's exclusions
+and checked explicitly).
+
+The file is written once (``fund_classification_v1.json``) and pinned by SHA-256.
+"""
+
+from __future__ import annotations
+
+import csv
+import gzip
+import hashlib
+import io
+import json
+import re
+from pathlib import Path
+from typing import Any
+
+from app.research import x4_evidence as x4
+from app.research import x6_data as xd
+
+PATH = Path("config/simulation/x7/fund_classification_v1.json")
+SHA256 = "94fed7b977bb537ddc7a85bb86967fcd5334e0160904d42e1aae1f60964717ac"
+SEC_FILES = (
+    "sec/funds/investment_company_series_class_2015.csv.gz",
+    "sec/funds/investment_company_series_class_2017.csv.gz",
+)
+RULE_VERSION = "x7v2-fund-classification-1"
+RULE = {
+    "leverage_3": "a name containing 'UltraPro', '3X' or '3x' (as a word or in 'Bull 3X' / 'Bear 3X')",
+    "leverage_2": "otherwise a name containing 'Ultra' (ProShares Ultra / UltraShort) or '2X' / '2x'",
+    "inverse": "a name containing 'UltraShort', 'Bear', 'Inverse', or the word 'Short' that is not part of 'Short-Term', 'Short Term', 'Short Maturity' or 'Short Duration'",
+    "vix_futures": "a name containing 'VIX' (the word; 'Low Volatility' is not VIX)",
+    "plain": "leverage 1, LONG, not VIX: the only funds a long-only V2 evaluation enters",
+    "evidence": "every name of the fund in the sources is checked; a fund is leveraged / inverse / VIX if any name says so",
+}
+REVIEWED_PLAIN = None  # REDACTED_FOR_GITHUB: per-security research table or provider-derived selection
+_TERM = re.compile(r"\bShort(?:[- ]Term|\s+Maturity|\s+Duration)\b|\bShort Treasury\b", re.I)
+
+
+def classify_name(name: str) -> dict[str, Any]:
+    """The rule applied to one quoted name."""
+    lev = 1
+    if re.search(r"UltraPro|\b3X\b|\b3x\b", name):
+        lev = 3
+    elif re.search(r"Ultra|\b2X\b|\b2x\b", name):
+        lev = 2
+    stripped = _TERM.sub("", name)
+    inverse = bool(re.search(r"UltraShort|\bBear\b|\bInverse\b|\bShort\b", stripped))
+    vix = bool(re.search(r"\bVIX\b", name))
+    return {"leverage": lev, "inverse": inverse, "vix_futures": vix}
+
+
+def _sec_names(store: x4.Store) -> dict[str, list[dict[str, str]]]:
+    out: dict[str, list[dict[str, str]]] = {}
+    for rel in SEC_FILES:
+        raw = gzip.decompress(store.path(rel).read_bytes()).decode("utf-8", "replace")
+        rows = list(csv.reader(io.StringIO(raw)))
+
+        # The two files name their columns differently (2015: "Class Ticker"; 2017:
+        # "class_ticker_symbol"); both are matched by their normalised names.
+        def norm(h: str) -> str:
+            return re.sub(r"[^a-z]", "", h.lower())
+
+        hi = next(
+            i
+            for i, r in enumerate(rows)
+            if {"classticker", "classtickersymbol"} & {norm(h) for h in r}
+        )
+        hdr = [norm(h) for h in rows[hi]]
+        t = (
+            hdr.index("classtickersymbol")
+            if "classtickersymbol" in hdr
+            else hdr.index("classticker")
+        )
+        sname, cname = hdr.index("seriesname"), hdr.index("classname")
+        for n, r in enumerate(rows[hi + 1 :], start=hi + 2):
+            if len(r) > t and r[t]:
+                out.setdefault(r[t], []).append({"name": r[sname], "class_name": r[cname],
+                                                 "source": f"x4:{rel} row {n}"})  # fmt: skip
+    return out
+
+
+def build() -> dict[str, Any]:
+    xd.verify_pins()
+    docs = xd.load_documents()
+    store = x4.Store()
+    sec = _sec_names(store)
+    funds: dict[str, Any] = {}
+    for f in docs[xd.UNIVERSE]["formations"].values():
+        if f["pool"] != "FUND":
+            continue
+        for r in f["records"]:
+            if not r["decision"].startswith("MEMBER"):
+                continue
+            slot = f"FUND|{f['formation']}|{r['ticker']}"
+            names = [
+                {"name": n, "source": f"X4.4 universe V2 listed_names ({slot})"}
+                for n in (r.get("listed_names") or [])
+            ]
+            names += [{"name": s["name"], "source": s["source"]} for s in sec.get(r["ticker"], [])]
+            lev, inverse, vix = 1, False, False
+            hits = []
+            for n in names:
+                c = classify_name(n["name"])
+                if c["leverage"] > 1 or c["inverse"] or c["vix_futures"]:
+                    hits.append({**n, **c})
+                lev = max(lev, c["leverage"])
+                inverse = inverse or c["inverse"]
+                vix = vix or c["vix_futures"]
+            if r["ticker"] in REVIEWED_PLAIN and (lev > 1 or inverse or vix):
+                raise ValueError(
+                    f"{r['ticker']}: the rule classifies a reviewed plain fund as non-plain"
+                )
+            funds[slot] = {
+                "ticker": r["ticker"], "leverage": lev, "direction": "INVERSE" if inverse else "LONG",
+                "vix_futures": vix, "plain": lev == 1 and not inverse and not vix,
+                "classification_basis": hits or names[:2], "names_checked": len(names),
+                "reviewed_plain": REVIEWED_PLAIN.get(r["ticker"]),
+            }  # fmt: skip
+    doc: dict[str, Any] = {
+        "kind": "x7v2_fund_classification", "decision": "D-257", "rule_version": RULE_VERSION,
+        "rule": RULE, "reviewed_plain": REVIEWED_PLAIN,
+        "inputs": {"universe_v2_sha256": xd.PINNED[xd.UNIVERSE],
+                   "sec_files": {rel: store.entries[rel]["sha256"] for rel in SEC_FILES}},
+        "funds": dict(sorted(funds.items())),
+        "summary": {"funds": len(funds), "plain": sum(1 for v in funds.values() if v["plain"]),
+                    "not_plain": sorted(v["ticker"] for v in funds.values() if not v["plain"])},
+    }  # fmt: skip
+    return doc
+
+
+def write(doc: dict[str, Any]) -> str:
+    if PATH.exists():
+        raise FileExistsError(f"{PATH} exists: written once")
+    data = (json.dumps(doc, indent=1, sort_keys=True) + "\n").encode()
+    PATH.write_bytes(data)
+    return hashlib.sha256(data).hexdigest()
+
+
+def load() -> dict[str, dict[str, Any]]:
+    raw = PATH.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != SHA256:
+        raise xd.PinError(f"{PATH}: not the pinned fund classification")
+    funds: dict[str, dict[str, Any]] = json.loads(raw)["funds"]
+    return funds

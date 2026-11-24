@@ -30,7 +30,11 @@ Assumption summary (per asset class, see :class:`AssetClassModel`):
 * commissions per unit with an order minimum and a cap, or a rate of notional; sell-side
   regulatory fees; a short borrow rate. Rounded up to the currency's minor unit;
 * version 2 (Phase 10B) adds the gap rule: a stop triggered by an observation that was
-  already beyond it fills no better than that observation (adjusted by the slippage).
+  already beyond it fills no better than that observation (adjusted by the slippage);
+* version 3 (D-237) adds limit-on-arrival: with no fresh quote, a limit whose first
+  observation after arrival is already through it fills at that observation (adjusted
+  adversely by the assumed half spread, slippage and impact), never worse than the limit,
+  not at the limit itself.
 
 IEX limitation: Atlas's configured equity feed (IEX) carries only IEX's own quotes and
 trades, a small share of consolidated volume. Displayed sizes and volumes are therefore
@@ -103,9 +107,16 @@ class AssetClassModel(BaseModel):
     # from the definition when False, so the content hashes of earlier versions and of the
     # 8A backtest model do not change.
     gap_fill_at_observed: bool = False
+    # Version 3 (D-237): a limit whose first observation after arrival (a trade, or a bar's
+    # open) is already through the limit, with no fresh quote to execute against, was
+    # marketable when it arrived: it fills at that observation adjusted adversely by the
+    # assumed half spread, slippage and impact, never worse than the limit (versions 1-2:
+    # at the limit, even when nothing traded there). Omitted from the definition when False.
+    limit_marketable_on_arrival: bool = False
 
 
 GAP_FIELD = "gap_fill_at_observed"
+LIMIT_FIELD = "limit_marketable_on_arrival"
 EQUITY = AssetClassModel()
 CRYPTO = AssetClassModel(
     regular_session_only=False,
@@ -168,8 +179,9 @@ class ExecutionModel(BaseModel):
     def definition(self) -> dict[str, Any]:
         out: dict[str, Any] = json.loads(self.model_dump_json())
         for rules in out.get("classes", {}).values():
-            if rules.get(GAP_FIELD) is False:
-                rules.pop(GAP_FIELD)
+            for flag in (GAP_FIELD, LIMIT_FIELD):  # later fields: earlier hashes unchanged
+                if rules.get(flag) is False:
+                    rules.pop(flag)
         return out
 
     def definition_sha256(self) -> str:
@@ -210,8 +222,9 @@ GAP_RULE = (
     "adversely by the slippage (for a bar: its open, within the bar's range), now and in "
     "every later evaluation; fills at the stop price are never assumed"
 )
-# Version 2 (Phase 10B, D-217): version 1 plus the gap rule. New orders are worked under it.
-DEFAULT_MODEL = ExecutionModel(
+# Version 2 (Phase 10B, D-217): version 1 plus the gap rule. Orders first evaluated under
+# it keep it (every order records its model version).
+MODEL_V2 = ExecutionModel(
     version=2,
     description=(
         "Conservative simulated execution: touch-of-quote fills with slippage and linear "
@@ -225,13 +238,40 @@ DEFAULT_MODEL = ExecutionModel(
     rules=(*MODEL_V1.rules, GAP_RULE),
 )
 
+LIMIT_ON_ARRIVAL_RULE = (
+    "limit marketable on arrival: with no fresh quote, a limit whose first observation after "
+    "it reached the simulator (a trade, or a bar's open) is already through the limit fills "
+    "at that observation adjusted adversely by the assumed half spread, slippage and impact, "
+    "never worse than the limit (as the backtest's daily-v2 conventions, D-237); a limit "
+    "reached later fills at the limit"
+)
+# Version 3 (D-237): version 2 plus the limit-on-arrival rule. New orders are worked under it.
+DEFAULT_MODEL = ExecutionModel(
+    version=3,
+    description=(
+        "Conservative simulated execution: touch-of-quote fills with slippage and linear "
+        "impact, strictly-through limit fills (a limit already through on arrival fills at "
+        "that observation), participation caps, stop-first on ambiguous bars, "
+        "gap-through-stop fills no better than the first observed price beyond the stop. "
+        "Simulated; not a replica of any venue."
+    ),
+    classes={
+        name: rules.model_copy(update={LIMIT_FIELD: True})
+        for name, rules in MODEL_V2.classes.items()
+    },
+    rules=(*MODEL_V2.rules, LIMIT_ON_ARRIVAL_RULE),
+)
+
 __all__ = [
     "CRYPTO",
     "DEFAULT_MODEL",
     "EQUITY",
     "GAP_FIELD",
     "GAP_RULE",
+    "LIMIT_FIELD",
+    "LIMIT_ON_ARRIVAL_RULE",
     "MODEL_V1",
+    "MODEL_V2",
     "AssetClassModel",
     "ExecutionModel",
 ]

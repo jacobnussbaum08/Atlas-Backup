@@ -2859,3 +2859,1283 @@ current. The orchestrator's worker-health check (every 300 s) also raises a HIGH
 `LIQUIDITY_DATA_STALE` system-health event, at most once an hour, when the newest OK
 `median_dollar_volume` is older than 48 hours or absent.
 [REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+### D-234 Optional live-pipeline stages and measured spreads in the backtest
+
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+### D-235 Opening-entry research option and opening-spread samples in the backtest
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+### D-236 Execution-fidelity research option in the backtest (E7 audit)
+**Decision:** `PipelineSpec.execution_fidelity` (backtest only, absent by default) applies
+corrected daily-bar execution conventions. Each one can be switched off separately:
+
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* `stop_fill_at_trigger`: a stop triggered inside the session fills at its level, moved
+  against the trade by the session's half spread, slippage and impact. A stop the session
+  opened beyond fills at the open, with the same adjustments.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+
+The implementation stays out of the paper broker's code:
+* it lives in `app.backtesting.broker._corrected` and the engine;
+* `app.paper_broker.fill_model` and the execution models are unchanged;
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+* a limit order the session opened through filled at the limit, often at a price outside
+  the session's range;
+* a stop filled at the worse of the stop (at no cost) and the close;
+* horizon exits filled at the next session's close.
+
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+### D-237 Backtest engine 8A.2 (corrected conventions by default, cash dividends) and paper execution model v3
+**Decision:** The changes below were approved after E7. Earlier runs and orders are
+unaffected throughout.
+
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* `daily-v1` remains selectable. It reproduces the Phase 8A conventions and serves as a
+  pessimistic comparison.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* `pipeline.execution_fidelity` stays available. When given, its flags take precedence.
+* An 8A.2 run records its conventions, and its dividend coverage and postings, in the
+  run summary event.
+
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* `cash_dividends` and `cash_dividend_retrievals` (migration 0023) are append-only. A
+  changed provider value becomes a new revision.
+* Retrieval: `python -m app.backtesting.dividends`, GET-only to Alpaca's
+  `/v1/corporate-actions`.
+* A run reads the dividends *retrieved* by its knowledge time, newest revision first, and
+  only for symbols whose retrieval covers the run. A symbol with no such retrieval is
+  reported `NOT_RETRIEVED` and credited nothing (unknown, not zero).
+* At each ex-date, before that session's orders execute, a position held over the
+  previous close receives (long) or pays (short) rate × quantity. Received amounts are
+  rounded down and paid amounts up.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+  * The live posting service cannot post it.
+* Each trade records its `dividends`, and they are included in its net P&L.
+* The provider gives no declaration date, so dividends are never a decision input.
+* No double counting: valuation uses RAW closes, and features use the split-adjusted, not
+  dividend-adjusted, series.
+* Not modelled: withholding taxes and ADR fees. Foreign rates are the provider's gross
+  rates and are counted as such.
+
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* Orders keep the model version they were first evaluated under. Quote fills, stops,
+  market orders and costs are unchanged.
+
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+**Not applied:** migration 0023 is not applied to the live `atlas` database (at 0022). Code
+that checks migration heads will report the difference until an operator upgrades it.
+
+### D-238 Historical lot-size repair for 2019–2020 (E2/E3 stage-A declared deviation)
+**Decision:** The simulation database receives one instrument specification per traded
+evidence-universe symbol, with these properties:
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* created by `operator:e2e3-stage-a-deviation`;
+* provenance citing `config/simulation/runs/lot_size_evidence.json` and its SHA-256.
+
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* no print has a fractional size;
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+
+
+
+### D-239 Independent research data foundation (security master, reconstructed universes, reservations)
+**Decision:** research data lives in the new package `app.research` and five append-only
+tables (migration 0024):
+* `research_securities` (security master, revisioned);
+* `research_universes` (a rule and its SHA-256);
+* `research_universe_candidates` (every candidate's formation metrics, eligibility, rank,
+  membership and span);
+* `research_data_reservations`;
+* `research_preregistrations`.
+
+**Universes.** Each is a fixed rule applied at each formation session to data available by
+then, with members effective from the next session. Candidates are the provider's active
+and inactive listings on NYSE, NASDAQ, NYSE American, NYSE Arca and Cboe BZX, typed by the
+SEC's operating-company and fund ticker lists. The universes are:
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+**Backtest (engine 8A.2; every key omitted when absent, so stored configurations are
+unchanged):**
+* universe mode `RESEARCH` (`universe.research_universe`);
+* `delisting_policy` `exit-at-last-trade-v1` for research universes: a held security closes
+  at its last session's close, after costs, when it stops trading. Merger or liquidation
+  proceeds are unknown and not invented;
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* `preregistration`: required by `store.check_reservations` whenever a run overlaps a
+  reserved period or trades a member of a reserved universe.
+
+All research reads filter on `created_at <= known_at`. Risk limits, the sizing and
+short-selling policies, and the unclassified-sector policy are unchanged.
+
+**Sectors.** Point-in-time sector classifications are written to
+`risk_asset_classifications`:
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+With them, classified assets are no longer pooled. Unclassified ones (mostly delistings,
+which have no current SEC ticker) are still pooled under the unchanged policy, and this is
+reported.
+
+**Market data.** 2016–2019 SIP daily bars (RAW and SPLIT) for members are loaded by a
+research loader, because the data engine serves only active, mapped assets:
+* GET-only; each page's SHA-256 is written to a manifest;
+* insert-only, so existing rows are never touched;
+* inconsistent bars are quarantined.
+
+Delisting dates are inferred from the last bar. Dividends and verified lot sizes use the
+D-237 and D-238 methods.
+
+**Reservations:**
+* `V1_2016_2019` (period);
+* `V2_RESEARCH_US_EQUITY_V1` and `V2_RESEARCH_ETF_CANDIDATES_V2` (universes);
+* `EXPLORATION_21_2020_2026` (exploration only).
+
+Each carries the dataset SHA-256 at reservation time.
+
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+**Corrections made during the phase** (every superseded universe stays stored, reserved
+and documented; the current pair is `universe.CURRENT_UNIVERSES`):
+
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+   * each ticker *as of the formation*;
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+   * members' full histories, fetched with the same mapping, resolve entities: one asset row
+     per entity across renames, an `alpaca-asof` security record, and the delisting from the
+     entity's last traded bar. Renames are therefore no longer delistings.
+
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+   Two further fixes came with it:
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+
+
+
+The spread coverage sample requests each member by its ticker. The data adapter cannot
+pin the symbol mapping, so formation-era securities whose ticker now belongs to another
+company are not sampled and are listed instead.
+
+**Market data additions:** placeholder bars stay stored as received (VALID; a single
+zero-volume session is a halt), and research steps ignore them. Spread sampling (D-234) takes
+an explicit symbol-to-asset map for research members. A monthly coverage sample measures the
+spread distribution; the replay still needs measurements no older than `max_age_hours`, so a
+pre-registered symbol set must be sampled daily before its run. Artifacts are never replaced
+(`name.N.json`). A reservation's dataset hash is recomputable as of its creation
+(`validation.dataset_sha256(as_of=...)`).
+
+**Known limits:**
+* The provider's inactive list misses older delistings. Validation measures that gap
+  against a reference list.
+* Renamed companies appear under today's ticker, so dividends paid under a former ticker
+  are not matched: dividends join by symbol. Spin-offs are not credited (only cash
+  dividends are).
+* Securities whose formation-era ticker is no longer listed and has no current holder are
+  missing.
+* Classifications are unavailable for formation-era securities whose ticker now belongs to
+  another company.
+* No data exists before 2016.
+
+### D-240 Research exclusions: phantom-split assets removed from research use (X1)
+
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+**Decision.**
+* New append-only table `research_exclusions` (migration 0025, simulation database only;
+  UPDATE, DELETE and TRUNCATE refused). Each row excludes one whole asset (scope `ASSET`).
+  It carries the pre-registration code, the document's sha256 and the per-asset evidence.
+* `research.store.universe_members` leaves out every asset excluded by the run's knowledge
+  time. `BacktestService.resolve` and the engine both use this lookup, so an excluded asset
+  is never in a research run's asset list: no bars are loaded, no decision is made on it and
+  no position holds it. `apply_exclusions=False` returns the universe as formed; only
+  evidence collection uses it (the spread sampler).
+* `research.store.check_exclusions`: an explicit or layer run on reserved data that names
+  an excluded asset is refused, not narrowed.
+* Runs known before an exclusion are unchanged, so stored runs reproduce. Exclusions are
+  never lifted: a later registration can only add assets.
+* Validation keeps `split_consistency` unchanged (still FAIL: the data is not corrected).
+  The new check `phantom_split_coverage` passes only when every phantom split is excluded,
+  or is unreachable (the delisting precedes the event and every span ends before it).
+* `research.exclusions` builds the evidence artifact and registers X1 once
+  (CLI `exclusion-evidence`, `register-exclusions`). The pre-registration row names no
+  reservation, so it can never authorize a backtest.
+
+**X1** (`X1_PHANTOM_SPLIT_EXCLUSIONS_V1`; document
+`docs/phase-reports/x1-phantom-split-exclusions-preregistration.md`, sha256 `9b6796c9…aee4`;
+evidence `config/simulation/runs/research_exclusions_x1_evidence.json`, sha256
+`1a1f7413…25da4`):
+* the five decided assets;
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+
+
+### D-241 Corporate-action integrity audit (read only); correction architecture proposed, not adopted
+
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+**Decision.**
+* New read-only module `research.ca_audit`. It scans every V4/V5 member over 2016–2019
+  (lookback included) and grades each inferred split against the RAW move. It flags:
+  * excess and normal-volume jumps;
+  * ratio-shaped moves;
+  * gaps matched to dividends recorded under any ticker;
+  * dividends paid under former tickers.
+
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* All provider look-ups are GET only and saved as evidence files with their sha256, so every
+  pass reruns offline. Output files are never overwritten.
+* Nothing is corrected, excluded or registered. The D-239 validation, X1, the reservations,
+  the engine and the execution code are unchanged.
+* The findings and the proposed corporate-action ledger (versioned, reconciled overrides
+  consumed by the replay, with provider data untouched) are in
+  `docs/phase-reports/corporate-action-integrity-audit.md` and
+  `docs/phase-reports/corporate-action-integrity-audit-architecture.md`. The proposal is
+  **not adopted**. Implementing it, or an interim X2 exclusion, needs its own decision.
+
+### D-242 X2: date-bounded corporate-action exclusions
+
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* follow X1's architecture;
+* bound each exclusion by date where that is sufficient;
+* keep ETF V5 unaffected;
+* do not build the correction system yet.
+
+**Decision.**
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* **Replay policy `exit-before-contamination-block-read-window-v1`**
+  (`backtesting.exclusion_windows`):
+  * From `blocked_from` (the session before the contaminated one), entries are cancelled. A
+    position still open is closed at that session's close with the model's costs, labelled
+    `CA_EXCLUSION`, in the same way as the D-239 delisting exit.
+  * The asset is out of the decision universe, which is also the coordinator's member set,
+    until no decision's read window contains the contaminated session. The read window is
+    `BacktestService.read_sessions`, the history loaded before a decision. A splice inside a
+    membership span stays blocked through the span's end, because that membership was formed
+    on the predecessor's data.
+  * Outside these ranges the asset is used as before.
+* **Where it applies.**
+  * Research runs, and runs on reserved data, record `ResolvedConfig.exclusions`: the policy,
+    the read window, every exclusion set known by the run with its content hash
+    (`research.store.exclusion_sets`), and the windows touching the run.
+  * The engine refuses a replay whose registered sets differ from the recorded ones.
+  * Explicit and layer runs on reserved data that overlap a blocked range are refused, as in
+    X1.
+  * A configuration without exclusions keeps its earlier JSON and hash.
+* **X2 itself** (`research.exclusions_x2`):
+  * Twelve rows, code `X2_CORPORATE_ACTIONS`, pre-registration
+    `X2_CORPORATE_ACTION_EXCLUSIONS_V1`, set sha256 `0edee5fc…5206e`.
+  * Each asset is resolved from V4 by label and must equal the audit's asset id. It must still
+    carry the audited RAW closes.
+  * Evidence: `research_exclusions_x2_evidence.json` (sha256 `b5833343…e023a`). Document:
+    `docs/phase-reports/x2-corporate-action-exclusions-preregistration.md`.
+  * Registered in the simulation database only. V5 has no row.
+
+**Alternatives rejected.**
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* Block entries only: leaving the universe closes nothing, so a held position would still be
+  valued across the event.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+
+### D-243 X3: corporate-action correction ledger, first scope dividend identity
+
+**Context.** The audit (D-241) found:
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* a lookup by the asset's own symbol only.
+
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+**Decision.**
+* **Schema (migration 0027, additive).**
+  * `corporate_action_events`: append-only, revisioned by `(code, revision)`. Event types are
+    `TICKER_SUCCESSION`, `CASH_DIVIDEND` and `CASH_DIVIDEND_VOID`. Each record pins the asset id
+    and identity hash, refers to the provider record (ticker, action id, raw row), and carries
+    `verification_status` (VERIFIED, UNRESOLVED or REJECTED), the verification and the
+    evidence hash.
+  * `corporate_action_sets`: append-only. A set's members are VERIFIED records, with a content
+    hash over their canonical content. A new version needs a new code.
+  * Other event types (spin-offs, splits, splices) need a later migration and decision.
+* **Identity.**
+  * Candidate (asset, ticker) links are an explicit list citing audit evidence.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+  * There is no ticker-similarity or automatic matching.
+* **Replay (policy `ledger-dividend-identity-v1`).**
+  * A run applies a set only when it names it (`BacktestRequest.corporate_actions`), and only
+    with dividends modelled.
+  * The configuration records the set code, content hash, policy and pre-registration. The
+    service and the engine both recompute the hash and refuse a mismatch.
+  * `PointInTimeDividends.load` applies voids, then credits (skipping duplicates). It books
+    them as cash at the ex-date, exactly like provider dividends, and never as decision inputs.
+  * Runs that name no set are unchanged, so stored runs reproduce.
+* **Compatibility.** X1 and X2 are unchanged and stay in force. A correction never releases an
+  exclusion; a release needs its own registered decision, which is not built. ETF V5 has no
+  record.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+**Alternatives rejected.**
+* Storing former-ticker dividends in `cash_dividends`: the loader would credit them by symbol
+  to any asset with that ticker.
+* Applying corrections automatically to every run: stored runs would no longer reproduce.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+**Found on the way, not fixed here.**
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+### D-244 X3.1: historical dividend completeness, trading calendar and identity validation
+
+**Context.** X3 (D-243) turned up three problems:
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+The operator asked for these to be resolved before survivorship work (X4).
+
+**Decision.**
+* **Retrieval in ex-date terms** (`backtesting.dividends`).
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+  * The retrieval row records `details.basis = "ex_date"` and the window. Responses can be
+    captured (`pages`).
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* **Dividend policy `cash-at-ex-date-v2`** (new runs; v1 kept for stored runs, which
+  replay unchanged):
+  * only ex-date-basis retrievals count as coverage;
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+  * The run summary gains `dividends.provider_rows`.
+* **Calendar** (`data_engine.calendar.SPECIAL_CLOSURES`).
+  * Added the unscheduled NYSE closures:
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+  * `VERIFIED_YEARS` (NYSE's published calendar) is unchanged.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* **Replay guard.** `HistoricalDataset.calendar_conflicts` makes a run stop (`BacktestError`
+  stage `data`) in either case:
+  * a calendar session inside the loaded data has no bar for any loaded asset;
+  * a bar is dated on a closed day.
+
+  A single asset's gap is not a conflict.
+* **Completeness and identity** (`research.dividend_completeness`).
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+  * Membership-span dividend-stream gaps are flagged for review, never filled.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+* **Compatibility.**
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+  * No new migration: the records use 0027's tables.
+
+**Alternatives rejected.**
+* Re-reading the legacy coverage rows as ex-date coverage: they promise ex-dates the
+  provider never returned.
+* Changing v1 in place: stored runs would replay differently.
+* Inferring missing dividends from a regular schedule: that invents data. Gaps stay flagged.
+
+**Found, not fixed.**
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+### D-245 X4.1: historical universe evidence capture
+
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* fund/company typing based on today's SEC lists.
+
+Rebuilding the universes needs evidence of what was listed and traded *then*, kept so that
+later milestones run offline.
+
+**Decision.**
+* **What X4.1 captures.** Evidence only (`research.x4_evidence`, evidence directory
+  `config/simulation/evidence/x4`, `manifest.json`):
+  * no universe is formed;
+  * no database row or schema changes;
+  * V4/V5, X1/X2 and X3/X3.1 are unchanged;
+  * the database is read once for a snapshot.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+  * raw response pages, failures included.
+
+  Also captured:
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+  * dividend responses for discovered tickers;
+  * today's asset list (labelled as not point in time).
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* **SEC evidence.**
+  * EDGAR quarterly form indexes for 2015–2020, as published.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+  * Company submissions for issuers of equity removal notices, plus the known cases.
+  * Fund series/class files for 2010–2026. The SEC's unlabelled file is 2016, per its own
+    listing page.
+  * Current ticker files, labelled current.
+* **Integrity.**
+  * Artifacts are write-once and compressed deterministically.
+  * Each manifest entry has a SHA-256, source, parameters and retrieval time.
+  * Parallel captures merge the manifest under a lock.
+  * Derived reports are computed from raw evidence only.
+  * `x4-verify` recomputes every hash and re-derives every report.
+* **Typing is provisional and point in time.** Evidence comes from the formation year's SEC
+  fund file (both adjacent years when that file is missing) and the bracketing lists' ETF
+  flags and company lists. With no evidence the type is UNRESOLVED, never guessed.
+
+**Not done here.** Universe formation (X4.4), lifecycle records (X4.2), CIK links (X4.3).
+The class-ticker sweep is not exhaustive; the coverage report says what is not.
+
+### D-246 X4.2: security lifecycle ledger
+
+**Context.** The X4 audit and the X4.1 evidence showed that the research master treats a
+ticker as an identity. It reads an exchange transfer as a delisting, misses ticker splices,
+and types securities from today's lists. Rebuilding the universes needs a record of when each
+security was listed, moved, renamed or ended, taken from the evidence alone.
+
+**Decision.**
+* **Schema (migration 0028, additive, append-only).**
+  * `security_entities`: issuers by SEC CIK.
+  * `security_identities`: securities. A fund share class is its SEC class id; an operating
+    company's security is `CIK|class label`. A ticker is never an identity.
+  * `security_lifecycle_events`: ticker, venue and classification are event attributes, so a
+    security's state is reconstructed from its events.
+  * `security_lifecycle_sets`: registered, hashed ledgers.
+* **Database-enforced rules.**
+  * An effective date exists only with precision EXACT. BOUNDED needs a bound; UNKNOWN has
+    none. Bounds are ordered.
+  * A transfer has two different venues; a ticker change has two different tickers.
+  * Every event belongs to a known security, with an enumerated type, status and confidence.
+  * The downgrade refuses when the ledger holds rows.
+* **Event rules** (`research.lifecycle`):
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+  * **Transfers.** An `EXCHANGE_TRANSFER` needs the same security listed on the new venue
+    after the old one. It is CONFIRMED HIGH with a matching voluntary removal, MEDIUM when the
+    issuer's removal cannot be matched to the security exactly.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+  * **Dates.** Effective dates only when stated, which no source here does. Otherwise bounds
+    from point-in-time listings and the filing date.
+  * **Source precedence.** SEC filings, then the Nasdaq Trader symbol directories, then the
+    Nasdaq.com company lists. A contradicted lower source is marked CONFLICTING.
+  * **Fund matching.** Fund names are matched to SEC classes on letters and digits only (the
+    exchanges' files misspell punctuation), never by similarity.
+* **Ledger `SECURITY_LIFECYCLE_V1`** (`config/simulation/lifecycle/x42_ledger_v1.json`,
+  sha256 `a6b93d37…10fe`, content sha256 `e85d773f…69a8`, from X4.1 manifest
+  `8b375e67…e5ba`):
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+  * Registered only in the disposable copy `atlas_sim_x42_rehearsal`. The simulation database
+    stays at 0027 and the main database at 0022.
+
+**Alternatives rejected.**
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+### D-247 X4.3: historical entity resolution (point-in-time identity graph)
+
+**Context.** The X4.2 ledger keys removal notices to issuers and classes, but not to tickers
+or to the provider's price histories. Rebuilding the universes (X4.4) needs to know which
+listed security each notice removed, which security each provider history carries, and when a
+ticker passed from one issuer to another, without inheriting prices across them.
+
+**Decision.**
+* **Evidence.** What X4.3 needs beyond X4.1 is kept in a separate write-once store,
+  `config/simulation/evidence/x43` (`research.x43_evidence`, its own manifest, decision
+  D-247). It holds:
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+  X4.1 is never written to. `Store` takes its manifest kind and decision from the class; the
+  X4.1 defaults are unchanged.
+* **Graph** (`research.resolution`, `config/simulation/lifecycle/x43_identity_graph_v1.json.gz`,
+  write-once, deterministic). It reads X4.1, the X4.2 ledger (verified by its SHA-256) and
+  X4.3, and never changes them. Every relationship carries a status (CONFIRMED, UNRESOLVED,
+  CONFLICTING), a confidence, the method, evidence (artifact, SHA-256, locator), an
+  explanation and its conflicts. A LOW match is never CONFIRMED.
+* **Issuers of listed securities.**
+  * A listing row is linked to a CIK by its listed name *at that time*. It must equal a name
+    the CIK filed under in the 2015–2020 EDGAR indexes, after normalising case, punctuation,
+    legal abbreviations and trailing corporate suffixes.
+  * A name shared by several CIKs is narrowed, in order, to:
+    1. names in use at the capture date;
+    2. the exact legal name;
+    3. periodic filers.
+
+    If it is still shared, it stays unresolved.
+  * A fund row is linked to its SEC share class by ticker *and* listed name (trademarks and
+    the trust prefix removed).
+  * A ticker never identifies an issuer.
+* **Notices.**
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+  * A notice is linked to a ticker through listing rows of the same issuer, venue and
+    compatible class (category; series, coupon and maturity tokens) captured before the
+    filing. It is corroborated by the next capture of that directory.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* **Holder of a ticker on a date.**
+  * The issuer listed under it in the nearest capture before and the nearest after, when they
+    are the same issuer.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* **Provider identities.**
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+  * A series joining two issuers across formations is CONFLICTING.
+  * So are bars after the linked security's SEC end. That end is applied only through a
+    notice linked to the same ticker.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* **Ledger proposals.** Exchange transfers and ticker changes shown by one security's
+  consecutive symbol-directory edges are listed as proposals with bounds. The X4.2 ledger is
+  not changed.
+
+**Found.**
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+**Alternatives rejected.**
+* Matching notices to tickers by name similarity or by the current SEC ticker list: today's
+  holder would decide the historical one.
+* Fuzzy names: false links (Inc. vs L.P., predecessor vs successor of the same name).
+* Writing the corrections into the X4.2 ledger: it is immutable evidence. A ledger V2 is an
+  X4.4 decision.
+* A new migration for the graph: not needed to resolve. Storage is decided with the ledger V2.
+
+### D-248 X4.3.1: lifecycle ledger V2 (reconciliation)
+
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* it counts the exchange-index copies of notices twice;
+* it labels some non-equity classes as plain equity;
+* it lacks the transfers and ticker changes the identity graph shows.
+
+It also found provider price histories that join several securities. X4.4 needs one corrected
+ledger and explicit rules for using provider histories, with V1 kept as recorded.
+
+**Decision.**
+* **Ledger `SECURITY_LIFECYCLE_V2`** (`research.ledger_v2`,
+  `config/simulation/lifecycle/x431_ledger_v2.json.gz`).
+  * It is written once and deterministic. It records content and document hashes and is
+    verified offline by `x431-verify`, which rebuilds it.
+  * It has the same event schema as V1 (migration 0028) and registers beside V1
+    (`x431-register`), naming V1 as superseded.
+  * V1, the X4.1 evidence and the X4.3 graph are inputs verified by their SHA-256 and never
+    changed.
+* **No silent deletion.**
+  * Every V1 event has a disposition: CARRIED, REVISED (with the changed fields),
+    RECLASSIFIED, DUPLICATE_OF, or SUPERSEDED_NO_END.
+  * Every V1 security has one: CARRIED, CARRIED_SPLIT, RELABELLED, RELABELLED_KEY_REUSED, or
+    EXCHANGE_ALIAS.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* **Corrections.**
+  * One notice per accession number. The exchange-index copies are `DUPLICATE_OF` the issuer's
+    event, and so are the ends derived from them.
+  * A notice naming no issuer CIK gets its own key with no issuer, and stays unresolved.
+  * A class labelled as plain equity in V1 gets `CIK|<category>-<hash>` when its description is
+    one of these: rights, preferred (including preferred ADSs), LP units, warrants, units or
+    debt. It gets `CIK|NAMED_CLASS-<hash>` when the description names another entity or a
+    tracking series. Ends follow the class.
+  * Glyph-read rules replace `UNPARSED_RULE` only when exactly one provision is checked.
+  * An end takes bounds from its notice's X4.3 listing link; there are still no effective dates.
+* **Proposals.** Each is accepted only if its rule holds:
+  * **Transfer:** a confirmed voluntary removal from the old venue inside the seam, no end in
+    the seam, and the security not listed on the old venue again.
+  * **Ticker change:**
+    * consecutive captures;
+    * the tickers observed in order;
+    * no end in the seam;
+    * a non-relabelled class.
+
+    It is HIGH where the SEC series/class files show the class under both tickers in order,
+    MEDIUM for a company matched by listed name.
+* **Joining provider histories (rules J1–J5).**
+  * **J1:** the same ledger security by listing or notice evidence, never by prices.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+  * **J3:** the seam is a confirmed transfer or ticker change, or a provider mapping change
+    with the security listed on both sides.
+  * **J4:** no end, merger or successor in the seam.
+  * **J5, outcomes:**
+    * all four rules hold: JOIN_PERMITTED;
+    * J1, J3 and J4 hold but there is no overlap: JOIN_UNVERIFIED (not usable without an X4.4
+      decision);
+    * otherwise: JOIN_FORBIDDEN.
+* **Segments.** A provider history is cut where its ticker changes issuer or its security
+  ends:
+  * at a price jump if exactly one jump lies in the window;
+  * otherwise the window between the two holders' listings is attributed to neither.
+
+  Bars after a security's end are never its own. They are attributed to the next holder only
+  by that holder's listing.
+* **Successors.** Conversions whose ticker continues are listed apart from identity:
+  * `SUCCESSOR_CLASS` when another listed class of the issuer is identified;
+  * otherwise `SUCCESSOR_UNIDENTIFIED`.
+
+  Price inheritance is FORBIDDEN in both cases.
+
+**Alternatives rejected.**
+* Editing V1 in place: it is recorded evidence.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+### D-249 X4.3.2: identity graph V2 (revision and unresolved-history reconciliation)
+
+**Context.** X4.3.1 left several things unresolved:
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+
+**Decision.**
+* **Graph `SECURITY_IDENTITY_GRAPH_V2`** (`research.graph_v2`,
+  `config/simulation/lifecycle/x432_identity_graph_v2.json.gz`):
+  * written once, with deterministic hashes and offline verification by `x432-verify`;
+  * it supersedes the X4.3 graph and keeps it, Ledger V1, Ledger V2 and the evidence
+    byte-for-byte;
+  * it is rebuilt with the X4.3 functions on Ledger V2;
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* **Evidence.** `config/simulation/evidence/x432` (`research.x432_evidence`) is a third
+  write-once store holding the provider's corporate-action records (splits, spin-offs, mergers,
+  name changes) for the investigated tickers.
+* **Revision rules.** They apply only to rows X4.3 left unresolved, and each needs independent
+  support. The SEC's current ticker list is support, never decisive.
+  * **R1:** the name equal apart from form, used then, by one filer.
+  * **R2:** word order changed, plus ticker-list support.
+  * **R3:** a shared name resolved only when the ticker list names exactly one of the filers.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+  * **R5:** a unit-trust name prefix, plus ticker-list support.
+
+  Every decision, applied or rejected, is recorded.
+* **Successor rules.**
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+  * **S3:** a new SEC fund class in the next year's file.
+
+  Identified successors take the later listing rows under their own key. The start is bounded
+  by the predecessor's last listing and by the registration or first successor listing. Prices
+  never pass to a successor.
+* **Successor-registration check.** A provider history whose linked issuer registered as a
+  successor inside its bars is attributed only from that registration.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* **Price jumps** are reassessed only from evidence:
+  * a provider split record whose ratio the raw prices do not show is a provider artifact; the
+    underlying action stays unresolved;
+  * a captured cash distribution;
+  * a change of security;
+  * otherwise unexplained.
+
+**Alternatives rejected.**
+* Fuzzy or similarity name matching: false links.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* Folding graph V2 into a ledger V3 now: X4.4 can read both; a ledger revision follows the
+  X4.4 decisions.
+
+### D-250 X4.4: historical point-in-time universe reconstruction
+
+**Context.** V4 and V5 take their candidates from the provider's 2026 asset list, so their
+2016–2019 universes miss securities that list no longer carries. They also type funds from
+today's SEC lists. X4.1–X4.3.2 built the point-in-time evidence: listings, notices, identities,
+lifecycle and provider histories.
+
+**Decision.**
+* **Universe `HISTORICAL_UNIVERSE_V1`** (`research.universe_x44`,
+  `config/simulation/lifecycle/x44_historical_universe_v1.json.gz`).
+  * It is written once and deterministic. `x44-verify` rebuilds it offline and compares the
+    hashes.
+  * Before using its listing rows, it checks that the rows rebuilt through graph V2's
+    observation stage reproduce graph V2's edges exactly.
+* **Rules.** V4's equity rule and V5's ETF rule are unchanged:
+
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+|---|---|---|
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+* **Inputs replaced.**
+  * **Discovery** is every ticker the provider traded in the window as of the formation (the
+    X4.1 sweeps), never today's list.
+  * **Identity** is graph V2's holder of the ticker on the formation session.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+  * **Lifecycle** comes from Ledger V2 and graph V2's successors.
+* **No look-ahead.**
+  * Eligibility, rank and membership use only bars up to the formation; a bar dated after it
+    disqualifies the ticker.
+  * A capture after the formation is used only to bracket who held the ticker on that day.
+  * Lifecycle after the formation only ends or continues membership.
+* **Uncertainty is classified, never confirmed.**
+  * An unresolved or conflicting identity inside the top N keeps its slot as
+    `MEMBER_IDENTITY_UNRESOLVED`; no slot is backfilled. Its type is provisional and comes from
+    evidence only.
+  * A ticker with no type is ranked in neither pool; its shadow rank is reported.
+  * A member whose class has an end before the formation is `MEMBER_ELIGIBILITY_UNCERTAIN`.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* **Baselines.** V4/V5 are compared through the X4.1 read-only snapshot, matched by each
+  identity's ticker at the formation; nothing is changed.
+
+**Alternatives rejected.**
+* Backfilling the slots of unresolved members: the universe would then depend on what the
+  evidence lacks.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* Ranking by market capitalisation: no point-in-time capitalisation data exists in the evidence.
+
+### D-251 X4.5: historical market data for confirmed universe members
+
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+**Decision.**
+* **Member data `X45_MEMBER_DATA_V1`** (`research.x45_data`,
+  `config/simulation/lifecycle/x45_member_data_v1.json.gz`).
+  * It is a file, written once and deterministic, and nothing goes to a database.
+  * Its inputs are pinned by SHA-256: universe, Ledger V2, graph V2 and the X4.5 evidence
+    manifest.
+  * `x45-verify` checks every evidence hash, then rebuilds the file offline and compares
+    content hashes.
+* **Evidence** (`config/simulation/evidence/x45`, a write-once store with a manifest).
+  * Daily SIP bars, adjustment `raw` and `split`, captured per formation run as of each run's
+    end.
+  * Provider corporate actions (splits, reverse splits, cash dividends and the other types)
+    for every member ticker.
+  * Recovery captures: other tickers or mappings, each named by a recorded need.
+* **Only confirmed members receive data.** Unresolved slots are listed apart with no bars, and
+  no slot is backfilled.
+* **Attribution.**
+  * A member's bars run from its window's first session to its window's end, or to its exit
+    if earlier.
+  * The exit is, in order:
+    1. its own recorded end or its conversion to a successor;
+    2. an issuer-level end: the single confirmed end, inside the window, of a plain class of
+       the same issuer and the same share family (shares, depositary shares or LP units).
+       MEDIUM, because X4.4's class keys can word one class differently;
+    3. an X4.4 priority notice recorded as `MEMBER_END_EVIDENCE`.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+  * Bars after the exit belong to the ticker's next holder or to a successor, and are
+    dropped and counted.
+* **Raw and normalised data stay apart.**
+  * Raw OHLCV (volume, VWAP and trade count included) is stored as delivered and never
+    altered.
+  * The provider's split-adjusted close is stored beside it and never fills a raw value.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+  * A record the prices do not show is a `PROVIDER_ADJUSTMENT_ARTIFACT`. It is not applied,
+    and the return across it is marked unusable.
+  * A change in the provider's adjustment factor with no record is labelled
+    `MAPPING_SEAM_ADJUSTMENT_BASE` when it falls on a joined mapping seam, and `UNEXPLAINED`
+    otherwise.
+* **Dividends** are dated cash flows (ex-date and rate) of the security that held the ticker on
+  the ex-date. No total-return series is computed here.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+  * Neither kind is a usable price return.
+* **Recovery.** A slot with truncated primary data, a ticker change in its window, or no data
+  is retried under the other ticker, or as of a later mapping. The recovered series is accepted
+  only by a join rule:
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+  * **J6:** the documented seam.
+  * **Divergent tail:** the new ticker's series matches the primary before a confirmed ticker
+    change and differs after it. The primary's tail belonged to the ticker's next holder, so
+    it is replaced.
+
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* **Data status**:
+  * `COMPLETE`: every expected session has a bar.
+  * `COMPLETE_TO_EXIT`: every missing session follows the last bar and precedes a recorded exit.
+  * `STOPPED_TRADING` and `STOPPED_TRADING_NO_RECORDED_EXIT`: the series ends in a run of
+    zero-volume placeholder bars.
+  * `STOPS_EARLY_NO_RECORDED_EXIT`: the series ends early, with no exit and nothing recovered.
+  * `EXITED_AT_WINDOW_START`: no bars, and the recorded exit is at the window's start.
+  * `INCOMPLETE`: sessions are missing inside the series.
+  * `NO_DATA`: no bars and no exit.
+
+**Alternatives rejected.**
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* Filling gaps or ends by interpolation or from another ticker without a join rule: that is
+  fabrication.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+### D-252 X4.6: final validation of the historical research data
+
+**Context.** X4.1–X4.5 produced the evidence, identities, lifecycle, the point-in-time universe
+(D-250) and the member data (D-251). Before X5 builds anything on them, every membership slot
+needs a verified status, and every use of the data needs a stated rule.
+
+**Decision.**
+* **Validation `X46_VALIDATION_V1`** (`research.x46_validation`,
+  `config/simulation/lifecycle/x46_validation_v1.json.gz`).
+  * It is offline and read-only, written once and deterministic. `x46-verify` rebuilds it and
+    compares content hashes.
+  * Inputs: every earlier X4 artifact, pinned by its reported SHA-256, and every evidence
+    artifact it reads, checked against its store manifest.
+  * A per-slot status table (`docs/phase-reports/x46-slot-status.csv`) is derived from it.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+  * `PASS`: every check passed and nothing is restricted.
+  * `RESTRICTED`: every check passed; named sessions, dates or uses are excluded.
+  * `EXCLUDED`, with a reason:
+    * an unresolved identity;
+    * a member removed before its formation;
+    * an X1 asset;
+    * a membership that rests on an X2-contaminated formation input.
+  * `FAIL`: a check failed.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* **Identity on every bar.** A bar is the member's only where graph V2's listing observations
+  show the member held that bar's ticker on that session. A different holder, or disagreeing
+  observations on either side, leaves the bar unattributed. The member's own removal notice
+  counts as listing evidence up to the notice, for its formation ticker only. The same rule
+  applies to dividends at the ex-date.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+  * Missing sessions after that are not data gaps. Sessions before it without a trade restrict
+    marking and exiting.
+  * The notice's own sentences on consideration are quoted. No terminal value is computed.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+  * **X1:** the slot is excluded.
+  * **X2:** the session, or the splice span through the slot's end, is closed.
+  * **X2 session in a member's formation window:** the member's eligibility and rank are
+    recomputed without it (for a splice, without every session before it).
+* **Formations** are checked for look-ahead:
+  * no input after the formation;
+  * metrics equal to X4.1's stored derivation;
+  * contiguous ranks and a consistent cut-off;
+  * holding windows starting after the formation;
+  * no member whose removal was filed before the formation.
+* **Return uses** are stated in the artifact:
+  * price strategies are safe with the listed restrictions;
+  * total return and portfolio accounting are not ready (X5).
+
+**Alternatives rejected.**
+* Correcting X4.4 or X4.5 in place: earlier artifacts stay byte-for-byte. Their defects are
+  contained by status and restriction here, and listed for a revision.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* Inferring identity or exits from prices: listing observations and notices only. Prices only
+  map a slot to the provider asset series that X1/X2 were registered on.
+* Treating every bar after the last listing observation as uncertain: the member's own removal
+  notice is listing evidence up to the notice.
+
+### D-253 X4.6.1: historical universe and data corrections
+
+**Context.** X4.6 (D-252) found defects in X4.4 and X4.5:
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+Earlier artifacts stay byte-for-byte; the corrections are separately versioned revisions.
+
+**Decision.**
+* **Revisions** (`research.x461_revisions`). Each is written once and pinned by SHA-256.
+  `x461-verify` rebuilds each from the stores and compares content hashes.
+  * **`HISTORICAL_UNIVERSE_V2`**: `x44_historical_universe_v2.json.gz`.
+  * **`HISTORICAL_MEMBER_DATA_V2`**: `x45_member_data_v2.json.gz`.
+  * **`X46_VALIDATION_V2`**: `x46_validation_v2.json.gz`, plus `x461-slot-status.csv`.
+  * Each revision names what it supersedes. Every changed record carries `x461` provenance
+    (previous decision and rank, rule, evidence).
+* **Eligibility**, applied to every candidate in every formation:
+  * **Removed before formation.** A confirmed delisting of the candidate's security, filed on
+    or before the formation (in the year before it), with its last traded bar before the
+    formation, makes the candidate ineligible: not listed, so not investable.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+  * **Top N** is then recomputed with X4.4's unchanged `rank_and_decide`. It reproduces every
+    V1 decision and rank before any correction. A member it admits is labelled
+    `ADMITTED_BY_RECOMPUTED_TOP_N`; this is the rule applied as written, not a backfill.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+* **Terminal values**: the terms the issuers', exchanges' or offerors' filings state.
+  * Stored with the accession and an ASCII quote. The build checks every quote against the
+    stored filing and every number against its quote.
+  * Classified as cash, cash and stock, stock, a one-for-one continuation, cash and stock with
+    a contingent value right, an election or tender (ambiguous), or unknown.
+  * Values that need another security's price, an election or a proration are not computed,
+    and the last trade is never used as the exit value.
+  * The validation lifts the terminal restriction only for a documented cash value.
+* **Evidence**: `config/simulation/evidence/x461`, GET only.
+  * The SEC filings named by the stored X4.1 indexes around each exit.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+  * The admitted members' provider bars and corporate actions.
+
+**Alternatives rejected.**
+* Editing X4.4/X4.5 in place: earlier artifacts and their reported hashes must stay
+  verifiable.
+* Leaving the removed members in place and shrinking the formation: the methodology is top N
+  of the eligible.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* Using the last close, or a computed value, as an exit's terminal value.
+
+### D-254 X5: corporate actions, total returns and exit accounting
+
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+**Decision.**
+* **Artifacts** (`research.x5_accounting`), each written once. `x5-verify` rebuilds both from
+  the stores and compares content hashes.
+  * `x5_corporate_actions_v1.json.gz`: a normalised per-slot ledger, terminal values and the
+    spin-off review.
+  * `x5_total_returns_v1.json.gz`: daily total-return factors, terminal steps and the
+    independent verification.
+* **Evidence**: `config/simulation/evidence/x5` (`research.x5_capture`), GET only.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* **Scope.** Only V2 slots with status PASS or RESTRICTED, inside their usable range, never on
+  an excluded session. X1-excluded slots have no series, and X2 sessions are never explained
+  away.
+* **Dividends.**
+  * Entitlement is fixed at the ex-date, at the provider's rate.
+  * Each dividend is counted once, by provider id and once per symbol, ex-date and rate.
+  * Reinvested at the ex-date close in the total-return index.
+* **Pay dates.** The evidence has no record or pay dates, and none is invented. In portfolio
+  accounting, dividends and the cash part of an exit are **receivables**: counted in value,
+  never spendable. Only proceeds of a market sale (distributed or received shares, sold at
+  their valuation close) are spendable.
+* **Splits.** A record confirmed by the raw prices (D-251) changes the share count; a
+  contradicted one is rejected.
+* **Spin-offs.**
+  * Value per parent share = the documented ratio × the distributed security's close on its
+    first regular-way session on or after the ex-date. Each ratio is quoted and checked
+    against the stored 8-K.
+  * The provider's fractional record is never applied as a split.
+  * The ex-date return enters the total return only when the ratio is exact **and** the
+    provider's factor is reproducible from the distributed security's ex-date range (low to
+    high), under either reading of the factor ((ex + D)/ex or prev/(prev − D)).
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* **Exits.**
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+  * Valuation: the received security's close on its first traded session that is on or after
+    the effective date and after the member's last usable session. The last trade is never
+    used as an exit value.
+  * Elections: a passive holder taking the documented default.
+  * The total-return series takes the terminal step only for `VALUED` and
+    `VALUED_DEFAULT_NO_ELECTION`.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* **Verification** (stored in the artifact):
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+**Consequences.**
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+* **Total returns:**
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* **Agreement with independent sources:**
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* Main database 0022, simulation database 0027; migration 0028 not applied.
+
+**Alternatives rejected.**
+* Applying the provider's fractional record as a split: it double-counts the distribution and
+  carries the provider's valuation point.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* Treating dividends as cash on the ex-date: the pay date is unknown, so cash would appear
+  before it existed.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+### D-255 X6: historical execution realism and portfolio accounting
+
+**Context.** X5 (D-254) made corporate actions, total returns and exit values usable. It set
+five conditions for X6: never bridge a break; credit an exit only through its terminal step;
+dividends and exit cash are receivables, never spendable; handle the formation-day step
+explicitly; keep the X4.6.1 statuses and the X1/X2 exclusions. X6 adds the execution and
+accounting layer a later backtest needs. It runs no backtest itself.
+
+**Decision.**
+* **Modules** (`research.x6_data`, `x6_execution`, `x6_portfolio`, `x6_build`). They make no
+  database writes, no network calls and no broker calls.
+* **Inputs.** The final X5 artifacts and the X4.6.1 V2 files, each pinned by file SHA-256.
+  * The X5 content hashes are recomputed and cross-linked to the member data and validation.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* **Timing.**
+  * Decisions are taken at the close of session *t* with data up to *t*.
+  * Execution is in the next XNYS session, at its open (default), VWAP or close.
+  * Times are recorded in UTC, aware of holidays and early closes.
+  * The execution session's bar only prices the fill and caps its size.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+  * half the estimated spread;
+  * the slippage assumption (risk `Preferences`);
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+* **Liquidity** uses bars up to *t* only:
+  * ADV (split-adjusted);
+  * the Abdi–Ranaldo close-high-low spread estimate;
+  * close-to-close volatility.
+
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* **Liquidity limits:**
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* **Risk limits.** The existing `HardLimits` are checked in a fixed order against positions
+  plus earlier reservations, and each intent is reserved or rejected whole. That is the
+  in-memory form of spec 14.3. The limits are:
+  * open positions;
+  * single asset, gross, net, asset-class and short exposure;
+  * cash;
+  * margin usage;
+  * per-trade risk, with a stop required;
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+  Intent ids are idempotent. A fill is shrunk to the cash available, so cash never goes
+  negative from a purchase.
+* **Shorts.**
+  * A short needs an explicit, sourced `BorrowAssumption` covering both the decision and the
+    execution session. The default book is empty, so every short is rejected: there is no
+    historical borrow evidence.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+  * Borrow fees are charged per night at the configured rate.
+  * Dividends, distributions and exit consideration owed by a short are paid from cash at once.
+  * When the borrow ends, the position is covered automatically.
+* **Ledger.** An append-only double-entry journal in Decimal, with these invariants checked
+  after every session:
+  * the journal balances;
+  * position cost equals the position accounts;
+  * restricted short proceeds equal the short liability at cost;
+  * listed receivables equal the receivable accounts;
+  * equity equals capital plus P&L plus unrealized P&L.
+* **Cash rules (X5).**
+  * Spendable cash is cash less reservations and margin.
+  * Only market sales create spendable cash: sales of positions, distributed shares and
+    received shares. Proceeds valued at a close are credited at that close, never at the same
+    session's open.
+  * Dividends, exit cash and cash in lieu of fractions are receivables with no pay date, and
+    are never spendable.
+  * Entitlement goes to holders at the previous close.
+* **Corporate actions** come from the X5 ledger:
+  * Splits scale the quantity, the mark and the stop; a fraction becomes cash in lieu.
+  * Applied spin-offs sell the distribution at its close.
+  * Restricted spin-offs and in-range breaks freeze a held position at its last valid mark,
+    never bridged.
+  * After X5's last usable session, `VALUED` and `VALUED_DEFAULT_NO_ELECTION` exits convert at
+    the valuation session. Every other exit status freezes the position.
+* **Formation step.** Gross = split × (first close + first-session dividends) / formation close.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+  * Only positions held at the formation close are entitled. That means a rolled-over
+    position (`ROLL_OVER_IF_MEMBER`, same ledger key and ticker); a buy at the first open is
+    not entitled.
+  * Under the default `EXIT_BEFORE_WINDOW_END`, positions are exited at the window's last
+    session by an order decided the session before, so nothing is held over the formation.
+* **Fees not modelled unless configured:**
+  * regulatory (SEC section 31) fees, which need a dated, sourced schedule;
+  * dividend withholding;
+  * taxes;
+  * interest on cash.
+
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* **Artifact.** `x6_execution_inputs_v1.json.gz`, written once. `x6-verify` rebuilds it and
+  compares content hashes. It records:
+  * the pins and the configuration hash with its labelled assumptions;
+  * the validity check;
+  * every formation step;
+  * the exit and spin-off treatments;
+  * the ledger's reconciliation with X5;
+  * three worked executions.
+
+**Consequences.**
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* **Formation-day steps:**
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* Main database 0022, simulation database 0027; migration 0028 not applied.
+
+**Alternatives rejected.**
+* Assuming every security is shortable, or using today's easy-to-borrow lists: that is
+  look-ahead and survivorship.
+* Applying today's SEC fee rate to 2017–2019: it would invent historical values.
+* Using the next formation's membership to avoid exiting at a window end: it is not known
+  before the formation close.
+* Valuing a frozen position from a later price across the gap: that bridges a break.
+* Crediting dividends as cash on the ex-date.
+
+### D-256 X7: historical backtest pipeline on X4/X5 data with the X6 engine
+
+**Context.** X4 to X6 built a survivorship-free 2017–2019 universe, total returns and exit
+values (X5), and an execution and accounting engine (X6). X7 joins them into a reproducible
+backtest of the registered strategies. It must not tune parameters on the evaluation period,
+introduce future information, or count incomplete equity.
+
+**Decision.**
+* **Modules:**
+  * `research.x7_signals`: point-in-time signals;
+  * `research.x7_spreads`: measured spreads;
+  * `research.x7_pipeline`: runs, metrics, artifacts.
+* **CLI:** `x7-capture-spreads`, `x7-signals`, `x7-backtest`, `x7-verify`.
+* **Strategies.** The registered v2 strategy versions are captured once, read-only, from
+  `strategy_versions` in the main database into `config/simulation/x7/registered_strategies_v2.json`,
+  pinned by SHA-256.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+  * The logic version, parameter hash and schema hash are checked against the code.
+  * They are evaluated through the same feature registry and the same pure
+    `strategies.engine.decide` as the live engine and the 8A backtester.
+  * `event_driven` is not evaluated: it requires news, and none is stored for 2017–2019.
+* **Point in time.** A signal at session *s* uses:
+  * the slot's executable bars up to *s* (its own, and an earlier formation's slot of the
+    same security before its window);
+  * restatement only for splits and share factors with an ex-date on or before *s*;
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+  Phase 3B regimes and Phase 3C news are UNAVAILABLE, which every evaluated strategy declares
+  optional. Tests confirm that removing or corrupting every later bar changes no evaluation.
+* **Long only.** No asset is shortable: there is no borrow evidence. Every signal is LONG and
+  no short is evaluated.
+* **Membership.** Evaluations happen only where an entry could execute: the slot is
+  executable at *s* and a member at the next session. No entry executes on a window's last
+  session, except at the end of the data.
+* **Execution.** X6 is used unchanged in its rules:
+  * the next session's open, with costs, held inside the session's range;
+  * ADV and session participation;
+  * every hard limit, reserved atomically;
+  * the stop as the signal's invalidation, checked first;
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+  * the horizon exit at the next open after *H* sessions;
+  * the window-end exit;
+  * corporate actions, receivables and freezes.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+  * X6's estimate is kept as a scenario.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+  * The artifact is rebuilt as `x6_execution_inputs_v2.json.gz`; V1 is kept.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+  * **Scenarios:**
+    * baseline;
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+    * all three together;
+    * X6's estimated spread;
+    * costs off (a diagnostic only).
+* **Incomplete equity.** Headline metrics come only from snapshots with
+  `equity_complete: true`. A run with a frozen position reports its complete prefix,
+  labelled, and the incomplete period separately. Nothing frozen is liquidated or valued at a
+  later price.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* **Artifacts,** each written once, with `x7-verify` rebuilding both from scratch:
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+  * `x7_backtest_results_v1.json.gz`: every run, its equity curve, trades, costs,
+    rejections, incomplete periods and reconciliation.
+
+**Consequences.**
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* Main database 0022, simulation database 0027; migration 0028 not applied. No paper trade,
+  live trade or broker order.
+
+**Alternatives rejected.**
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* Using code-default or re-chosen parameters, or selecting the best strategy or scenario
+  after the fact: that is tuning on the evaluation period.
+* Valuing frozen positions at their last mark for a headline: those are incomplete equity.
+* Liquidating frozen positions at the last price before the gap: that is a trade that did
+  not happen.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* Long-short evaluation with assumed borrow.
+
+### D-257 X7 V2: the frozen correction specification, implemented (not run)
+
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+**Decision.**
+* **Placement.** V2 lives in new modules; V1 is untouched.
+  * **Modules:**
+    * `research.x7v2_pipeline` (C1, C3, C4, C5, C7–C12);
+    * `research.x7v2_spreads` (C6);
+    * `research.x7v2_classification` (C2);
+    * `research.x7v2_evaluator` (the rule).
+  * **CLI:** `x7v2-classify-funds`, `x7v2-capture-spreads`, `x7v2-backtest`, `x7v2-verify`,
+    `x7v2-evaluate`.
+  * **Why new modules:** V1's artifacts embed the SHA-256 of V1's sources, so editing
+    `x7_pipeline.py` (as the specification's file list suggested) would break V1's
+    byte-identical rebuild. V2 reuses V1's functions read-only and subclasses its portfolio.
+    The method is unchanged; only the file placement differs.
+* **New pinned evidence:**
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* **Corrections, as specified:**
+  * **C4:** the horizon counts from the fill.
+  * **C11:** split and share-factor restatement of held targets and pending intents (quantity,
+    stop, target, limit), with payout-only stop exits reported as a diagnostic.
+  * **C3:** one position per stock issuer; funds are keyed per fund.
+  * **C2:** leveraged, inverse and VIX funds are never entered.
+  * **C8:** two combined allocations; raw strength is never compared across families.
+  * **C1, C5, C9:** exposure-matched excess, one basis per run record, breaker fields.
+  * **C10:** coverage per strategy and formation.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+  * **C12:** trend following's static stop, labelled.
+* **Evaluator:** a separate component that reads only stored results and implements section
+  2 exactly. Its SHA-256 (`a7a3b339…`) was recorded in `v2_freeze.json` after verification.
+  Building results refuses to run unless the spec, the pre-registration and the evaluator
+  match the freeze.
+
+**Deviations and open items.**
+* **C2.3 `include_leveraged` is not built.** The specification allows only an `_exposures`
+  override, which cannot size the new intent economically. An X6 hook would be needed; the
+  specification says to propose that separately.
+* **C7.2:** the optional SEC primary-source capture was not approved, so the gap stays
+  documented.
+* **C10:** coverage per year is reported per formation, from the V1 signals artifact (which
+  holds per-slot states, not per-session ones). Stock formations are calendar years; the fund
+  formation spans 2017–2019.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+**Consequences.**
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* **Independent verification** (`config/simulation/x7_v2_verification/`): regimes,
+  classification, spread identity, synthetic-run equity, the excess computation and the
+  bootstrap all reproduced by separate code.
+* **V1** remains reproducible (`x7-verify`).
+* Main database 0022, simulation database 0027; migration 0028 not applied; nothing
+  committed.
+
+### D-258 X7 V2: classification and spread evidence recorded in the freeze manifest
+
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+**Decision.**
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+  | File | SHA-256 |
+  |---|---|
+  | `config/simulation/x7/fund_classification_v1.json` (artifact) | `94fed7b977bb537ddc7a85bb86967fcd5334e0160904d42e1aae1f60964717ac` |
+  | `backend/app/research/x7v2_classification.py` (builder) | `2ce51bfa94f55ca97a2ed577140efaaf1f14052600fcca4235c723e72a1e5773` |
+  | `config/simulation/evidence/x7/sip_quoted_spreads_2017_2019_v2.json.gz` (artifact) | `79f68b802d432c8fb79b8f45099edc58b9979b3ccf7f8df74c2ebb3e329ac2f2` |
+  | `backend/app/research/x7v2_spreads.py` (builder and loader) | `839caa4ffa871c68bf2040ea7ea1949ba56e9fdd974d2497d5db6d875161adcb` |
+
+  The two source hashes equal those in the D-257 implementation report: neither builder changed.
+* **The gate:** `x7v2_pipeline.check_pre_run_inputs`, called by `verify_inputs` before anything
+  is loaded or built. It refuses (`PinError`) when:
+  * a required entry is missing;
+  * any file listed in the manifest differs from its entry;
+  * a module's embedded pin (`cls.SHA256`, `sp2.SHA256`) differs from the manifest.
+  The embedded pins stay as a second, independent check, so neither the manifest nor a module
+  can be changed alone.
+* **The evaluator is not changed.** Its `check_freeze` ignores the new section, and its frozen
+  hash (`a7a3b339…`) still matches. The gate is in the pipeline instead.
+
+**Consequences.**
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+  * the real manifest passes;
+  * a changed classification fails;
+  * a one-byte change to any of the four inputs fails;
+  * a missing entry fails;
+  * a file and its manifest entry changed together fail on the embedded pin;
+  * `verify_inputs` and `build_results` refuse before any data is loaded.
+* **Not covered:** the pipeline source itself (`x7v2_pipeline.py`) is not in the manifest. Its
+  hash is recorded in the V2 results' `sources_sha256`.
+* **Unchanged:** the specification, pre-registration, classification, spread evidence,
+  strategy parameters and databases. No backtest was run and nothing was committed.
+
+### D-259 X7 V2: the pipeline's hash anchored outside the pipeline
+
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+**Decision.**
+* **The anchor:** a new module, `backend/app/research/x7v2_gate.py`.
+  * It holds the pipeline's expected SHA-256 as a constant (`PIPELINE_SHA256`).
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+  * It also refuses unless its own file matches its manifest entry.
+  * It never imports the pipeline.
+* **The manifest:** `v2_freeze.json` `pre_run_inputs` gains two entries. The four D-258
+  entries, `files`, `evaluator` and every other field are unchanged.
+
+  | File | SHA-256 |
+  |---|---|
+  | `backend/app/research/x7v2_pipeline.py` | `037318f93b9abf95f4ccbacca57edc4e0ac79cc49a45ace734dab4c36ea9fe9e` |
+  | `backend/app/research/x7v2_gate.py` | `3b73dace8f9697b6ed91a0d7e21104c3175744a7bbe53b6885e47399d1c68163` |
+
+  The manifest's own hash goes from `ab20b4ff…` to
+  `8a5f648b7923653329356db6a001c6ec101225dc6d26b9abaab6ead43f0bddf6`.
+* **Where the gate runs:**
+  * **The CLI** runs it for `x7v2-backtest`, `x7v2-verify` and `x7v2-evaluate`, and imports
+    the pipeline only after it passes. A changed pipeline therefore never executes, not even
+    at import.
+  * **Inside the pipeline,** `verify_inputs` runs it first, then the D-258 manifest check (in
+    which the pipeline's entry is cross-checked against the gate's constant), then the V1
+    pins and the freeze. `build_results` calls `verify_inputs` before loading any data.
+* **What changing the pipeline now takes:** the pipeline, the gate's constant and two manifest
+  entries must all change together; changing any of them alone, or the pipeline and its
+  manifest entry together, is refused.
+* **Pipeline edits made for this decision:** it calls the gate and adds the gate to its
+  `SOURCES` (provenance). There are no strategy or methodology changes. The evaluator is
+  unchanged (`a7a3b339…`), and so are the spec, the pre-registration, the classification and
+  the spread evidence.
+
+**Consequences.**
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+  * the real pipeline equals its anchor and its entry;
+  * a changed constant in the pipeline (`SLEEVE_SHARE`) is refused;
+  * the pipeline and its entry changed together are refused on the anchor;
+  * a changed or unrecorded gate is refused;
+  * `verify_inputs` and `build_results` refuse before reading pins or loading data;
+  * the CLI refuses all three commands before calling the pipeline (no database touched).
+
+  The D-258 one-byte test also covers the pipeline and the gate.
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+* **Line endings:** the hashes are of the working-copy bytes on this Windows checkout
+  (`core.autocrlf=true`). `x7v2_pipeline.py` and `x7v2_evaluator.py` are CRLF there;
+  `x7v2_classification.py`, `x7v2_spreads.py` and `x7v2_gate.py` are LF. A checkout with other line-ending settings would
+  produce different hashes and the gate would refuse. The same already applied to the
+  evaluator's D-257 hash. A `.gitattributes` rule fixing these files' line endings would make
+  the hashes portable; it is not part of this change.
+* No backtest, no database or migration change, nothing committed.
+
+### D-260 X7 V2: the first backtest and its pre-registered classification
+
+[REDACTED FOR GITHUB: provider-derived or research-result text; kept in the offline backup]
+
+
+
+
+

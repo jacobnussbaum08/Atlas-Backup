@@ -101,11 +101,7 @@ def daily_curve(rows: Iterable[tuple[datetime, Decimal, str]]) -> tuple[list[Poi
 
 
 def daily_returns(points: Sequence[Point]) -> list[float]:
-    return [
-        float(b.equity / a.equity - 1)
-        for a, b in itertools.pairwise(points)
-        if a.equity > 0
-    ]
+    return [float(b.equity / a.equity - 1) for a, b in itertools.pairwise(points) if a.equity > 0]
 
 
 def drawdowns(points: Sequence[Point]) -> list[tuple[date, Decimal]]:

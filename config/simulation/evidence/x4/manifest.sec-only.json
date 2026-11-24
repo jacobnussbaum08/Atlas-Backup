@@ -1,0 +1,320 @@
+{
+ "artifacts": {
+  "sec/current/company_tickers.json.gz": {
+   "bytes": 215205,
+   "sha256": "14f13e32c00b17573da66c53651400f7f7e414ecdee4dcb3b8dc405b9b86877d",
+   "url": "https://www.sec.gov/files/company_tickers.json"
+  },
+  "sec/current/company_tickers_exchange.json.gz": {
+   "bytes": 178436,
+   "sha256": "3826872c20fc1b2317466d41aa73a1d147d48f4f7b9381e157d6cb0740ec2543",
+   "url": "https://www.sec.gov/files/company_tickers_exchange.json"
+  },
+  "sec/current/company_tickers_mf.json.gz": {
+   "bytes": 233076,
+   "sha256": "8aced245468aea9f9bd5bea77afbee955bedd63525b4d6caf3d65e56a88374a0",
+   "url": "https://www.sec.gov/files/company_tickers_mf.json"
+  },
+  "sec/form25/2016Q1.jsonl.gz": {
+   "bytes": 165925,
+   "sha256": "3aaafca81ffe415903a93d96e963a127f784fbdac16fb66d5d2c0f18e943bf43"
+  },
+  "sec/form25/2016Q2.jsonl.gz": {
+   "bytes": 153914,
+   "sha256": "ef87d99b134b998fe8085750250dd5ef105f6f5006d430668b6877b381c64a46"
+  },
+  "sec/form25/2016Q3.jsonl.gz": {
+   "bytes": 189291,
+   "sha256": "2c2f6a546a49994da90431e9a9be3e5d64e1b167a72d5e3399f30230fad4a388"
+  },
+  "sec/form25/2016Q4.jsonl.gz": {
+   "bytes": 159119,
+   "sha256": "78f560c2abbe6256712ef6289c4ffb21b5c74beb796de3d6a597094e806b3f60"
+  },
+  "sec/form25/2017Q1.jsonl.gz": {
+   "bytes": 324032,
+   "sha256": "b33818bec8584f0dd20178e58471a11c0333d6d165cf0cdf662a5dd43603df48"
+  },
+  "sec/form25/2017Q2.jsonl.gz": {
+   "bytes": 149802,
+   "sha256": "edf5700c05060db98c2f8f11f9a2c9ebeeb7359da7787a05ad465ebd716c1c19"
+  },
+  "sec/form25/2017Q3.jsonl.gz": {
+   "bytes": 152473,
+   "sha256": "6a4169cbf0d6244f7b28a846d6e2b06b195c2dfe610f44cca778cc17fa4175ad"
+  },
+  "sec/form25/2017Q4.jsonl.gz": {
+   "bytes": 220973,
+   "sha256": "8dce3db96c8af20376dfcfd3f833318aa6a6f06efbbed8b380a2676ee98dbf3a"
+  },
+  "sec/form25/2018Q1.jsonl.gz": {
+   "bytes": 129390,
+   "sha256": "8a0a7a67356390421ea746fe2afea18156e0ef4b9ea58bc5691dc8c2ff29894f"
+  },
+  "sec/form25/2018Q2.jsonl.gz": {
+   "bytes": 193241,
+   "sha256": "b5d3ac3017132c6861775936f32d8f137cb68b2eebcda5026858ed3ad288c070"
+  },
+  "sec/form25/2018Q3.jsonl.gz": {
+   "bytes": 165835,
+   "sha256": "bc4be2134c77b2d371a3d146fcfc5ae0669abb173781f6dd1408f238a4b4800d"
+  },
+  "sec/form25/2018Q4.jsonl.gz": {
+   "bytes": 287992,
+   "sha256": "9a5e94709f97f299a6f65d55e534db8cdaaf14c1c67dc01848decad8e0c39158"
+  },
+  "sec/form25/2019Q1.jsonl.gz": {
+   "bytes": 171465,
+   "sha256": "d320bc01315670c6c4f32ed571c2dfb76325d7aeb73695bffe6c86ef2a90327f"
+  },
+  "sec/form25/2019Q2.jsonl.gz": {
+   "bytes": 161105,
+   "sha256": "2c85c9d9a864392cf4b632d9f2406cfe83a31928a218a0759b0b9d16623c5f90"
+  },
+  "sec/form25/2019Q3.jsonl.gz": {
+   "bytes": 163625,
+   "sha256": "4527caee63437e42551870e31e6fd46bdb4d4fc31ec7d2b684a2a01c6ba4e683"
+  },
+  "sec/form25/2019Q4.jsonl.gz": {
+   "bytes": 269649,
+   "sha256": "10cb03829f921c2916d1a4256d19221fab38742fd5a8e2dd761b59738998c9ed"
+  },
+  "sec/full-index/2015Q1_form.gz": {
+   "bytes": 5356582,
+   "sha256": "025e21d892a5dcaad16ab2d1e1cd83a6d3d3ace703cfe16884844c2e86ce22a6",
+   "url": "https://www.sec.gov/Archives/edgar/full-index/2015/QTR1/form.gz"
+  },
+  "sec/full-index/2015Q2_form.gz": {
+   "bytes": 4623570,
+   "sha256": "09028b19ff4a24ef74eff05ff04a5563cd931419711ab77aa9fb2375d849d405",
+   "url": "https://www.sec.gov/Archives/edgar/full-index/2015/QTR2/form.gz"
+  },
+  "sec/full-index/2015Q3_form.gz": {
+   "bytes": 3781554,
+   "sha256": "d88333a174608bbdd389558059ec37788d8572aa389dcfa735876ec4c6407cc9",
+   "url": "https://www.sec.gov/Archives/edgar/full-index/2015/QTR3/form.gz"
+  },
+  "sec/full-index/2015Q4_form.gz": {
+   "bytes": 3773865,
+   "sha256": "bea108cb598cfe96d28498b645b5197e6891e55127a7f81da126f267a8fa7fa0",
+   "url": "https://www.sec.gov/Archives/edgar/full-index/2015/QTR4/form.gz"
+  },
+  "sec/full-index/2016Q1_form.gz": {
+   "bytes": 5259963,
+   "sha256": "b6f88aee153d9e4fc1354f4c2781f962322642ad776bfd00ad0a0a102fd73a9b",
+   "url": "https://www.sec.gov/Archives/edgar/full-index/2016/QTR1/form.gz"
+  },
+  "sec/full-index/2016Q2_form.gz": {
+   "bytes": 4340525,
+   "sha256": "7f490942761f9e152c2e1a6225c67e4d3413f838f20547bd718a41cb841cd220",
+   "url": "https://www.sec.gov/Archives/edgar/full-index/2016/QTR2/form.gz"
+  },
+  "sec/full-index/2016Q3_form.gz": {
+   "bytes": 3668422,
+   "sha256": "69038b916e0831d603bb401fc732f24e0e96823e74bfaeadc801468edf262802",
+   "url": "https://www.sec.gov/Archives/edgar/full-index/2016/QTR3/form.gz"
+  },
+  "sec/full-index/2016Q4_form.gz": {
+   "bytes": 3560830,
+   "sha256": "18750426379b7f801b68b51b515840abbd501fca115026c9f2650d2ef9378ca3",
+   "url": "https://www.sec.gov/Archives/edgar/full-index/2016/QTR4/form.gz"
+  },
+  "sec/full-index/2017Q1_form.gz": {
+   "bytes": 5178916,
+   "sha256": "a2c1ab2540c6ec3f08772006d470c07a894e02dadd7b4ed0d33da7c53824a9ca",
+   "url": "https://www.sec.gov/Archives/edgar/full-index/2017/QTR1/form.gz"
+  },
+  "sec/full-index/2017Q2_form.gz": {
+   "bytes": 4454382,
+   "sha256": "498f3a529e289eeecfcc05ff40f7e29034d3dc65ce8cd75db599c7ee47660614",
+   "url": "https://www.sec.gov/Archives/edgar/full-index/2017/QTR2/form.gz"
+  },
+  "sec/full-index/2017Q3_form.gz": {
+   "bytes": 3595099,
+   "sha256": "047280a85b54a576a25c7df6b69a8b50e10a507d5abe4ebdca9c76070641c5a1",
+   "url": "https://www.sec.gov/Archives/edgar/full-index/2017/QTR3/form.gz"
+  },
+  "sec/full-index/2017Q4_form.gz": {
+   "bytes": 3621075,
+   "sha256": "8acf662d057e07dc4800a3d52ddef9927265431b8d680656343f1eb9ea304a21",
+   "url": "https://www.sec.gov/Archives/edgar/full-index/2017/QTR4/form.gz"
+  },
+  "sec/full-index/2018Q1_form.gz": {
+   "bytes": 5023747,
+   "sha256": "e63a85d238c59952eb49d9ccc34033c64fa5ffb03bedb9a085423d8be955d106",
+   "url": "https://www.sec.gov/Archives/edgar/full-index/2018/QTR1/form.gz"
+  },
+  "sec/full-index/2018Q2_form.gz": {
+   "bytes": 4311290,
+   "sha256": "ab7a7922a1be329bcb8c9deaa39eff96a9051f83dd6948c89987c4d9090e6369",
+   "url": "https://www.sec.gov/Archives/edgar/full-index/2018/QTR2/form.gz"
+  },
+  "sec/full-index/2018Q3_form.gz": {
+   "bytes": 3496418,
+   "sha256": "3223b387f78d5b85e55c89f6eda3bef98e60f7eed7f55b1e6fdddecd8684c1e0",
+   "url": "https://www.sec.gov/Archives/edgar/full-index/2018/QTR3/form.gz"
+  },
+  "sec/full-index/2018Q4_form.gz": {
+   "bytes": 3470598,
+   "sha256": "fc3c8a250eaa55d1873f63b62c9b860ab63c68bfcf80882887051800c0709ff8",
+   "url": "https://www.sec.gov/Archives/edgar/full-index/2018/QTR4/form.gz"
+  },
+  "sec/full-index/2019Q1_form.gz": {
+   "bytes": 4869291,
+   "sha256": "0c14c66f471abd2bc53819c5e54b0462921b69bc06cbf6180032f5fd88dbc99d",
+   "url": "https://www.sec.gov/Archives/edgar/full-index/2019/QTR1/form.gz"
+  },
+  "sec/full-index/2019Q2_form.gz": {
+   "bytes": 4263741,
+   "sha256": "548fd5c54b1ebc4556f807389e5f768d25163f50ed951c856a7d56fef7e58efb",
+   "url": "https://www.sec.gov/Archives/edgar/full-index/2019/QTR2/form.gz"
+  },
+  "sec/full-index/2019Q3_form.gz": {
+   "bytes": 3475895,
+   "sha256": "48678a247161ff09b9fae4cce2cdd9811c6b580570d70d649ffb91745de116d1",
+   "url": "https://www.sec.gov/Archives/edgar/full-index/2019/QTR3/form.gz"
+  },
+  "sec/full-index/2019Q4_form.gz": {
+   "bytes": 3492937,
+   "sha256": "3744ebeb4dee0f352d98f2045e4fb61c434acc2b5586b53b47e946e0c2b592b6",
+   "url": "https://www.sec.gov/Archives/edgar/full-index/2019/QTR4/form.gz"
+  },
+  "sec/full-index/2020Q1_form.gz": {
+   "bytes": 5079824,
+   "sha256": "c2ae462e424f3c1ccbc49d04b3ecb05857941c15629098688e643bfc6d0d6379",
+   "url": "https://www.sec.gov/Archives/edgar/full-index/2020/QTR1/form.gz"
+  },
+  "sec/full-index/2020Q2_form.gz": {
+   "bytes": 4343034,
+   "sha256": "fcc23094d6a67c118e22d9c0de0b56152731f50cd5da7b3a84b5779939102168",
+   "url": "https://www.sec.gov/Archives/edgar/full-index/2020/QTR2/form.gz"
+  },
+  "sec/full-index/2020Q3_form.gz": {
+   "bytes": 3756079,
+   "sha256": "2cd67e3a5463c190c9de0ba4599e85fb398fa4c2ae71990e1f1186d984cc1161",
+   "url": "https://www.sec.gov/Archives/edgar/full-index/2020/QTR3/form.gz"
+  },
+  "sec/full-index/2020Q4_form.gz": {
+   "bytes": 3884233,
+   "sha256": "f7b23e61cd657ed7f88e823e8dfaa99c1f11fdd48f48fa008ee08c8086dd0bea",
+   "url": "https://www.sec.gov/Archives/edgar/full-index/2020/QTR4/form.gz"
+  },
+  "sec/funds/investment-company-series-class-2024.csv.gz": {
+   "bytes": 643818,
+   "sha256": "c1a782afb2770ea6d2a013b9776c93064694f37fa5e39e188ac364be31666339",
+   "url": "https://www.sec.gov/files/investment/data/other/investment-company-series-and-class-information/investment-company-series-class-2024.csv"
+  },
+  "sec/funds/investment-company-series-class-2025.csv.gz": {
+   "bytes": 697384,
+   "sha256": "a9582d85eb51f5cd757b47ea6fb5b1916b85754e31e857dacc25031d48016987",
+   "url": "https://www.sec.gov/files/investment/data/other/investment-company-series-class-information/investment-company-series-class-2025.csv"
+  },
+  "sec/funds/investment-company-series-class-2026.csv.gz": {
+   "bytes": 739783,
+   "sha256": "38f150c271557b2f9b605ac21abb8972d8ebf8e355baaba25e52b56fd380562e",
+   "url": "https://www.sec.gov/files/investment/data/other/investment-company-series-class-information/investment-company-series-class-2026.csv"
+  },
+  "sec/funds/investment_company_series_class.csv.gz": {
+   "bytes": 655250,
+   "sha256": "574f80f74e6907a0078c2f7d03e1e88032f0de467db93fa75af377df8d98697b",
+   "url": "https://www.sec.gov/files/investment/data/other/investment-company-series-and-class-information/investment_company_series_class.csv"
+  },
+  "sec/funds/investment_company_series_class_2011.csv.gz": {
+   "bytes": 631222,
+   "sha256": "dce31d253e2318e126cbc47e957c08f66b31e4721755df25218fadfe182efee5",
+   "url": "https://www.sec.gov/files/investment/data/other/investment-company-series-and-class-information/investment_company_series_class_2011.csv"
+  },
+  "sec/funds/investment_company_series_class_2012.csv.gz": {
+   "bytes": 588946,
+   "sha256": "49f5adfbfc7ee956f0c99568bc55f4ae07efd4c27db7f0e9c972b99a6201ef3e",
+   "url": "https://www.sec.gov/files/investment/data/other/investment-company-series-and-class-information/investment_company_series_class_2012.csv"
+  },
+  "sec/funds/investment_company_series_class_2013.csv.gz": {
+   "bytes": 589512,
+   "sha256": "6ab99311f0cfc1690635ff41b6f7d0853905eeda82b45c3b5989a3ce3f35eba2",
+   "url": "https://www.sec.gov/files/investment/data/other/investment-company-series-and-class-information/investment_company_series_class_2013.csv"
+  },
+  "sec/funds/investment_company_series_class_2014.csv.gz": {
+   "bytes": 613077,
+   "sha256": "28f2cf26a6a78dea2e9ed1feef20652c9665a11aab329943216919cc3a923632",
+   "url": "https://www.sec.gov/files/investment/data/other/investment-company-series-and-class-information/investment_company_series_class_2014.csv"
+  },
+  "sec/funds/investment_company_series_class_2015.csv.gz": {
+   "bytes": 639928,
+   "sha256": "1b6722fb8dbf92b9842772b704ef0eba4a60c703d7c3830fe24b5caf655dcff8",
+   "url": "https://www.sec.gov/files/investment/data/other/investment-company-series-and-class-information/investment_company_series_class_2015.csv"
+  },
+  "sec/funds/investment_company_series_class_2017.csv.gz": {
+   "bytes": 683619,
+   "sha256": "146217289a2876f3da60b54c0cfd452819ea796faf962ad437891c3ee49e9ed0",
+   "url": "https://www.sec.gov/files/investment/data/other/investment-company-series-and-class-information/investment_company_series_class_2017.csv"
+  },
+  "sec/funds/investment_company_series_class_2018.csv.gz": {
+   "bytes": 685506,
+   "sha256": "a2966af0b00410b3b0bffe4230656cb2fbf40fe62ce8d1861524c091b805ff58",
+   "url": "https://www.sec.gov/files/investment/data/other/investment-company-series-and-class-information/investment_company_series_class_2018.csv"
+  },
+  "sec/funds/investment_company_series_class_2019.csv.gz": {
+   "bytes": 677918,
+   "sha256": "6ca713a4696bc4fe460391e7eae0f937545bf4947d23d4c3fc3e1cadfae2ba39",
+   "url": "https://www.sec.gov/files/investment/data/other/investment-company-series-and-class-information/investment_company_series_class_2019.csv"
+  },
+  "sec/funds/investment_company_series_class_2020.csv.gz": {
+   "bytes": 657414,
+   "sha256": "6b07b6dcb064bf48ec4da0483e6c71557d014490a10c9cadd3f4c14e11fc2b24",
+   "url": "https://www.sec.gov/files/investment/data/other/investment-company-series-and-class-information/investment_company_series_class_2020.csv"
+  },
+  "sec/funds/investment_company_series_class_2021.csv.gz": {
+   "bytes": 648664,
+   "sha256": "5c8b794d12dcdb8a464c5eaa26bc4b1e122de7518f584df8697769e676511d13",
+   "url": "https://www.sec.gov/files/investment/data/other/investment-company-series-and-class-information/investment_company_series_class_2021.csv"
+  },
+  "sec/funds/investment_company_series_class_2022.csv.gz": {
+   "bytes": 649704,
+   "sha256": "797dd1fb00e132e27bfe4c7990696ce258f91a6393a51cff8fc7cd0ff16206f9",
+   "url": "https://www.sec.gov/files/investment/data/other/investment-company-series-and-class-information/investment_company_series_class_2022.csv"
+  },
+  "sec/funds/investment_company_series_class_2023.csv.gz": {
+   "bytes": 642455,
+   "sha256": "7e57798fc185b3b087cc3b427c61fd061cd568ae94965fda70d15de894206aa9",
+   "url": "https://www.sec.gov/files/investment/data/other/investment-company-series-class-information/investment_company_series_class_2023.csv"
+  },
+  "sec/funds/investmentcompanyseriesclass2010.csv.gz": {
+   "bytes": 631343,
+   "sha256": "61a73fb13b1ddffdf96ef3ff40a4a2254738a7338faac322faf451228f1884d4",
+   "url": "https://www.sec.gov/files/investment/data/other/investment-company-series-and-class-information/investmentcompanyseriesclass2010.csv"
+  },
+  "sec/funds/listing_page.html": {
+   "bytes": 96355,
+   "sha256": "f66142a220f850a97decbeb243bfe3850227c84ba858afa645cc6be166eb44d6",
+   "url": "https://www.sec.gov/data-research/sec-markets-data/investment-company-series-class-information"
+  },
+  "sec/submissions/bundle_000.jsonl.gz": {
+   "bytes": 5999184,
+   "sha256": "4d526aec9dfbbe49559850ab04912dab53bf17c77cbc688de83695ce2afc8af7"
+  },
+  "sec/submissions/bundle_001.jsonl.gz": {
+   "bytes": 5775714,
+   "sha256": "bf1df0701dceaa149e46062840e2b049467d53fb6eb8bbcc3f34c7bc4cf00fb8"
+  },
+  "sec/submissions/bundle_002.jsonl.gz": {
+   "bytes": 5372350,
+   "sha256": "c600a950232d1b66ce3524cdb4a1ed882a22af0d7d341ce105f4dd79c0410e2a"
+  },
+  "sec/submissions/bundle_003.jsonl.gz": {
+   "bytes": 4277068,
+   "sha256": "7c2bc7745d9369ddbb6fde53521f817616db9da712961972e65cd54e01c45bb3"
+  },
+  "sec/submissions/bundle_004.jsonl.gz": {
+   "bytes": 2995040,
+   "sha256": "7d5598b30e3d193aad25350ff1e05293c2677743e60590bec419f3f50d4f32be"
+  },
+  "sec/submissions/bundle_005.jsonl.gz": {
+   "bytes": 1171372,
+   "sha256": "52155ba31b56425755dbff2caf63f090c44bcbf2d2b8b0acff280c19a6f75ccc"
+  }
+ },
+ "kind": "sec_only_manifest",
+ "note": "Sanitized: only public SEC/EDGAR artifacts. The original manifest is kept offline.",
+ "store": "x4"
+}

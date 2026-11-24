@@ -21,6 +21,10 @@ class UniverseMode(StrEnum):
     EXPLICIT = "EXPLICIT"
     # Members of a Phase 3A universe layer as Atlas had recorded them at each decision time.
     POINT_IN_TIME = "POINT_IN_TIME"
+    # D-239: a reconstructed research universe (``research_universe_candidates``): a rule
+    # applied at each formation date to data available then, including later-delisted
+    # securities, effective from the next session.
+    RESEARCH = "RESEARCH"
 
 
 class FeatureAdjustment(StrEnum):
@@ -71,6 +75,8 @@ class RejectionStage(StrEnum):
     STRATEGY_VALIDATION = "STRATEGY_VALIDATION"  # a draft left out (eligibility, strength)
     RISK = "RISK"  # the 6B assessment did not pass
     EXECUTION = "EXECUTION"  # the entry order expired, was cancelled or could not fill
+    # The 5B coordinator did not prioritize the opportunity (pipeline.coordinator only).
+    COORDINATOR = "COORDINATOR"
 
 
 class RunEventKind(StrEnum):
@@ -81,6 +87,7 @@ class RunEventKind(StrEnum):
     UNIVERSE_REMOVED = "UNIVERSE_REMOVED"
     DATA_MISSING = "DATA_MISSING"
     RECONCILIATION = "RECONCILIATION"
+    PIPELINE_SUMMARY = "PIPELINE_SUMMARY"  # D-234 stages: coordinator and spread coverage
 
 
 class MetricScope(StrEnum):
