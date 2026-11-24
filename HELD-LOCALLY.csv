@@ -1,0 +1,10 @@
+category_kept_offline,files
+derived from provider data,13
+derived from provider market data,15
+derived: lifecycle ledger (SEC plus archived listings),2
+"provider lookups, or results derived from provider market data",524
+raw provider market data,598
+raw third-party listing pages (archived Nasdaq data),27
+raw: database snapshot of provider data,18
+report mainly made of per-instrument provider-derived tables,7
+"private local files, settings, logs, models, credentials and databases",not listed

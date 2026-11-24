@@ -1,0 +1,207 @@
+path,action,file_versions_affected
+.env.example,default database password replaced by a placeholder,13
+README.md,default database password replaced by a placeholder,15
+README.md,source-code archive notice at the top,15
+backend/app/asset_discovery/discovery.py,lines with provider-derived or per-security statements redacted,2
+backend/app/core/config/settings.py,default database password replaced by a placeholder,3
+backend/app/data_engine/market_overview.py,lines with provider-derived or per-security statements redacted,1
+backend/app/data_engine/providers/alpaca/reference.py,lines with provider-derived or per-security statements redacted,1
+backend/app/research/bars.py,lines with provider-derived or per-security statements redacted,1
+backend/app/research/ca_audit.py,1 single-security value(s) replaced in code,1
+backend/app/research/ca_audit.py,per-security research tables or functions removed,1
+backend/app/research/ca_audit.py,lines with provider-derived or per-security statements redacted,1
+backend/app/research/ca_dividends.py,1 single-security value(s) replaced in code,1
+backend/app/research/ca_dividends.py,per-security research tables or functions removed,1
+backend/app/research/dividend_completeness.py,1 single-security value(s) replaced in code,2
+backend/app/research/dividend_completeness.py,per-security research tables or functions removed,1
+backend/app/research/exclusions.py,per-security research tables or functions removed,1
+backend/app/research/exclusions.py,lines with provider-derived or per-security statements redacted,1
+backend/app/research/exclusions_x2.py,dropped: table of single-security provider prices,1
+backend/app/research/graph_v2.py,per-security research tables or functions removed,1
+backend/app/research/graph_v2.py,lines with provider-derived or per-security statements redacted,1
+backend/app/research/identity.py,lines with provider-derived or per-security statements redacted,1
+backend/app/research/identity.py,strings naming individual securities removed,1
+backend/app/research/ledger_v2.py,per-security research tables or functions removed,1
+backend/app/research/ledger_v2.py,lines with provider-derived or per-security statements redacted,1
+backend/app/research/lifecycle.py,per-security research tables or functions removed,1
+backend/app/research/lifecycle.py,lines with provider-derived or per-security statements redacted,1
+backend/app/research/lifecycle.py,strings naming individual securities removed,1
+backend/app/research/resolution.py,per-security research tables or functions removed,1
+backend/app/research/resolution.py,lines with provider-derived or per-security statements redacted,1
+backend/app/research/symbology.py,lines with provider-derived or per-security statements redacted,1
+backend/app/research/universe.py,per-security research tables or functions removed,1
+backend/app/research/universe.py,lines with provider-derived or per-security statements redacted,1
+backend/app/research/universe_x44.py,lines with provider-derived or per-security statements redacted,1
+backend/app/research/validation.py,per-security research tables or functions removed,1
+backend/app/research/validation.py,lines with provider-derived or per-security statements redacted,1
+backend/app/research/x432_evidence.py,per-security research tables or functions removed,1
+backend/app/research/x432_evidence.py,lines with provider-derived or per-security statements redacted,1
+backend/app/research/x43_evidence.py,per-security research tables or functions removed,1
+backend/app/research/x43_evidence.py,lines with provider-derived or per-security statements redacted,1
+backend/app/research/x45_data.py,per-security research tables or functions removed,1
+backend/app/research/x461_corrections.py,per-security research tables or functions removed,1
+backend/app/research/x461_corrections.py,lines with provider-derived or per-security statements redacted,1
+backend/app/research/x461_revisions.py,1 single-security value(s) replaced in code,1
+backend/app/research/x461_revisions.py,per-security research tables or functions removed,1
+backend/app/research/x461_revisions.py,lines with provider-derived or per-security statements redacted,1
+backend/app/research/x461_revisions.py,strings naming individual securities removed,1
+backend/app/research/x46_validation.py,per-security research tables or functions removed,1
+backend/app/research/x46_validation.py,lines with provider-derived or per-security statements redacted,1
+backend/app/research/x46_validation.py,strings naming individual securities removed,1
+backend/app/research/x4_evidence.py,per-security research tables or functions removed,1
+backend/app/research/x4_evidence.py,lines with provider-derived or per-security statements redacted,1
+backend/app/research/x4_evidence.py,strings naming individual securities removed,1
+backend/app/research/x5_accounting.py,per-security research tables or functions removed,1
+backend/app/research/x5_accounting.py,strings naming individual securities removed,1
+backend/app/research/x5_capture.py,per-security research tables or functions removed,1
+backend/app/research/x5_capture.py,lines with provider-derived or per-security statements redacted,1
+backend/app/research/x6_build.py,1 single-security value(s) replaced in code,2
+backend/app/research/x6_build.py,2 single-security value(s) replaced in code,1
+backend/app/research/x6_build.py,per-security research tables or functions removed,1
+backend/app/research/x6_build.py,strings naming individual securities removed,1
+backend/app/research/x7_spreads.py,lines with provider-derived or per-security statements redacted,1
+backend/app/research/x7v2_classification.py,per-security research tables or functions removed,1
+backend/app/research/x7v2_pipeline.py,1 single-security value(s) replaced in code,1
+backend/app/research/x7v2_pipeline.py.redacted,per-security research tables or functions removed,1
+backend/app/research/x7v2_spreads.py,lines with provider-derived or per-security statements redacted,1
+backend/app/tests/conftest.py,default database password replaced by a placeholder,8
+backend/app/tests/unit/test_backtest_dividends.py,1 single-security value(s) replaced in code,3
+backend/app/tests/unit/test_ca_audit.py,dropped: test containing identifiable single-day security price moves,1
+backend/app/tests/unit/test_calendar.py,per-security research tables or functions removed,1
+backend/app/tests/unit/test_config.py,default database password replaced by a placeholder,1
+backend/app/tests/unit/test_dividend_completeness.py,lines with provider-derived or per-security statements redacted,1
+backend/app/tests/unit/test_dividend_corrections.py,2 single-security value(s) replaced in code,1
+backend/app/tests/unit/test_dividend_corrections.py,per-security research tables or functions removed,1
+backend/app/tests/unit/test_entrypoint.py,default database password replaced by a placeholder,1
+backend/app/tests/unit/test_exclusion_windows.py,dropped: test asserting bounds on real single-day security moves (added by the V2 audit),1
+backend/app/tests/unit/test_graph_v2.py,dropped: test containing uncertain provider-derived values,1
+backend/app/tests/unit/test_research_foundation.py,dropped: test with per-security research findings,1
+backend/app/tests/unit/test_x45_data.py,dropped: test containing uncertain provider-derived values,1
+backend/app/tests/unit/test_x461_revisions.py,dropped: test containing a single-security closing price,1
+backend/app/tests/unit/test_x46_validation.py,dropped: test containing uncertain provider-derived values,1
+backend/app/tests/unit/test_x4_evidence.py,dropped: test with per-security research values (permission uncertain),1
+backend/app/tests/unit/test_x5_accounting.py,dropped: test with per-security research values (permission uncertain),1
+backend/app/tests/unit/test_x5_capture.py,dropped: test of withheld per-security research tables,1
+backend/app/tests/unit/test_x6_artifacts.py,dropped: test asserting single-security provider prices,1
+backend/app/tests/unit/test_x6_execution.py,1 single-security value(s) replaced in code,2
+backend/app/tests/unit/test_x7_artifacts.py,dropped: test asserting contents of provider-derived research artifacts,1
+backend/app/tests/unit/test_x7v2_evaluator.py,per-security research tables or functions removed,1
+config/ml/dev-barrier-1d.json,provider-derived symbol selection and description removed,1
+config/ml/dev-direction-1d.json,provider-derived symbol selection and description removed,1
+config/ml/dev-voladj-return-1d.json,provider-derived symbol selection and description removed,1
+config/simulation/autopsy.py,per-security research tables or functions removed,1
+config/simulation/chart.py,derived constant removed,1
+config/simulation/e2e3_readiness.py,per-security research tables or functions removed,1
+config/simulation/evidence/x4/manifest.json,evidence manifest replaced by an SEC-only manifest without provider request metadata,1
+config/simulation/evidence/x43/manifest.json,evidence manifest replaced by an SEC-only manifest without provider request metadata,1
+config/simulation/evidence/x432/manifest.json,evidence manifest replaced by an SEC-only manifest without provider request metadata,1
+config/simulation/evidence/x45/manifest.json,evidence manifest replaced by an SEC-only manifest without provider request metadata,1
+config/simulation/evidence/x461/manifest.json,evidence manifest replaced by an SEC-only manifest without provider request metadata,1
+config/simulation/evidence/x5/manifest.json,evidence manifest replaced by an SEC-only manifest without provider request metadata,1
+config/simulation/generate.py,per-security research tables or functions removed,1
+config/simulation/generate.py,lines with provider-derived or per-security statements redacted,1
+config/simulation/lifecycle/x7_v2_evaluation_v1.json.gz,dropped: backtest evaluation output,1
+config/simulation/lot_size_evidence.py,per-security research tables or functions removed,1
+config/simulation/lot_size_evidence.py,lines with provider-derived or per-security statements redacted,1
+config/simulation/lot_size_evidence.py,strings naming individual securities removed,1
+config/simulation/mr_funnel.py,per-security research tables or functions removed,1
+config/simulation/x7/fund_classification_v1.json,dropped: fund names quoted from archived third-party listings (permission uncertain),1
+config/simulation/x7/v2_preregistration.md,dropped: research document citing earlier strategy performance,1
+config/simulation/x7_audit/audit2_signals.py,per-security research tables or functions removed,1
+config/simulation/x7_audit/audit3_portfolio.py,per-security research tables or functions removed,1
+config/simulation/x7_audit/audit4_spreads.py,default database password replaced by a placeholder,1
+config/simulation/x7_audit/audit4b_spreads.py,default database password replaced by a placeholder,1
+config/simulation/x7_audit/audit5_fills.py,lines with provider-derived or per-security statements redacted,1
+config/simulation/x7_audit/audit7_bench.py,default database password replaced by a placeholder,1
+config/simulation/x7_audit/audit7_bench.py,lines with provider-derived or per-security statements redacted,1
+config/simulation/x7_v2_verification/verify_v2_implementation.py,derived constant removed,1
+config/validation/11a-all-six-evaluation.json,provider-derived symbol selection and description removed,2
+config/validation/11a-breakout.json,provider-derived symbol selection and description removed,2
+config/validation/11a-mean-reversion.json,provider-derived symbol selection and description removed,2
+config/validation/11a-momentum.json,provider-derived symbol selection and description removed,2
+config/validation/11a-trend-following.json,provider-derived symbol selection and description removed,2
+config/validation/11a-volatility.json,provider-derived symbol selection and description removed,2
+config/validation/dev-all-six-evaluation.json,provider-derived symbol selection and description removed,1
+config/validation/dev-breakout.json,provider-derived symbol selection and description removed,1
+config/validation/dev-event-driven.json,provider-derived symbol selection and description removed,1
+config/validation/dev-mean-reversion.json,provider-derived symbol selection and description removed,1
+config/validation/dev-momentum.json,provider-derived symbol selection and description removed,1
+config/validation/dev-trend-following.json,provider-derived symbol selection and description removed,1
+config/validation/dev-volatility.json,provider-derived symbol selection and description removed,1
+docs/architecture/decisions.md,1 line(s) with single-security values redacted,11
+docs/architecture/decisions.md,2 line(s) with single-security values redacted,10
+docs/architecture/decisions.md,3 line(s) with single-security values redacted,1
+docs/architecture/decisions.md,9 line(s) with single-security values redacted,1
+docs/architecture/decisions.md,blocks with provider-derived statistics or research results redacted,27
+docs/operations.md,default database password replaced by a placeholder,20
+docs/operations.md,blocks with provider-derived statistics or research results redacted,2
+docs/operations.md,example symbols replaced,2
+docs/phase-reports/corporate-action-integrity-audit-architecture.md,"dropped: report containing, or mainly about, single-security provider values",1
+docs/phase-reports/e1-entry-order-preregistration.md,"dropped: report with strategy results, provider-derived statistics or research outputs (permission uncertain)",1
+docs/phase-reports/e1-entry-order-results.md,"dropped: report containing, or mainly about, single-security provider values",1
+docs/phase-reports/e2-e3-preregistration.md,"dropped: report with strategy results, provider-derived statistics or research outputs (permission uncertain)",1
+docs/phase-reports/e2-e3-stage-a-2020h2-addendum.md,"dropped: report containing, or mainly about, single-security provider values",1
+docs/phase-reports/e2-e3-stage-a-results.md,"dropped: report containing, or mainly about, single-security provider values",1
+docs/phase-reports/e7-implementation-and-e2e3-readiness.md,"dropped: report with strategy results, provider-derived statistics or research outputs (permission uncertain)",1
+docs/phase-reports/e7-simulation-accuracy-audit.md,"dropped: report containing, or mainly about, single-security provider values",1
+docs/phase-reports/final-system-audit-report.md,"dropped: report containing, or mainly about, single-security provider values",3
+docs/phase-reports/independent-data-foundation.md,"dropped: report containing, or mainly about, single-security provider values",1
+docs/phase-reports/phase-10b-reliability-sustained-operation-report.md,"dropped: report with strategy results, provider-derived statistics or research outputs (permission uncertain)",1
+docs/phase-reports/phase-11a-extended-paper-validation-report.md,"dropped: report containing, or mainly about, single-security provider values",1
+docs/phase-reports/phase-2b-historical-data-report.md,"dropped: report with strategy results, provider-derived statistics or research outputs (permission uncertain)",1
+docs/phase-reports/phase-2c-live-streaming-report.md,"dropped: report containing, or mainly about, single-security provider values",1
+docs/phase-reports/phase-2d-reliability-recovery-report.md,"dropped: report with strategy results, provider-derived statistics or research outputs (permission uncertain)",1
+docs/phase-reports/phase-2e-market-data-dashboard-report.md,"dropped: report containing, or mainly about, single-security provider values",1
+docs/phase-reports/phase-3a-asset-discovery-report.md,"dropped: report containing, or mainly about, single-security provider values",2
+docs/phase-reports/phase-3b-market-intelligence-report.md,"dropped: report containing, or mainly about, single-security provider values",2
+docs/phase-reports/phase-3c-news-event-intelligence-report.md,"dropped: report with strategy results, provider-derived statistics or research outputs (permission uncertain)",1
+docs/phase-reports/phase-4a-strategy-laboratory-report.md,blocks with provider-derived statistics or research results redacted,1
+docs/phase-reports/phase-4b-six-trading-strategies-report.md,"dropped: report containing, or mainly about, single-security provider values",1
+docs/phase-reports/phase-5a-ml-infrastructure-report.md,"dropped: report containing, or mainly about, single-security provider values",1
+docs/phase-reports/phase-5b-ai-decision-engine-report.md,"dropped: report with strategy results, provider-derived statistics or research outputs (permission uncertain)",1
+docs/phase-reports/phase-6b-risk-engine-report.md,"dropped: report containing, or mainly about, single-security provider values",2
+docs/phase-reports/phase-7b-simulated-execution-report.md,"dropped: report containing, or mainly about, single-security provider values",1
+docs/phase-reports/phase-8a-event-driven-backtesting-report.md,"dropped: report containing, or mainly about, single-security provider values",1
+docs/phase-reports/phase-8b-walk-forward-validation-report.md,"dropped: report containing, or mainly about, single-security provider values",1
+docs/phase-reports/phase-9-complete-dashboard-report.md,"dropped: report with strategy results, provider-derived statistics or research outputs (permission uncertain)",1
+docs/phase-reports/phase-9-screenshots/markets-regime-watchlist.jpg,dropped: dashboard screenshot containing market data,1
+docs/phase-reports/phase-9-screenshots/overview.jpg,dropped: dashboard screenshot containing market data,1
+docs/phase-reports/phase-9-screenshots/settings-configuration.jpg,dropped: dashboard screenshot containing market data,1
+docs/phase-reports/phase-9-screenshots/settings.jpg,dropped: dashboard screenshot containing market data,1
+docs/phase-reports/phase-9-screenshots/strategies-research-evidence.jpg,dropped: dashboard screenshot containing market data,1
+docs/phase-reports/phase-9-screenshots/system-health-errors-recovery.jpg,dropped: dashboard screenshot containing market data,1
+docs/phase-reports/phase-9-screenshots/system-health-mobile.jpg,dropped: dashboard screenshot containing market data,1
+docs/phase-reports/phase-9-screenshots/system-health-workers.jpg,dropped: dashboard screenshot containing market data,1
+docs/phase-reports/post-simulation-strategy-diagnosis.md,"dropped: report containing, or mainly about, single-security provider values",1
+docs/phase-reports/profitability-equity-curves.svg,dropped: chart derived from provider data (permission uncertain),1
+docs/phase-reports/profitability-simulation-report.md,"dropped: report containing, or mainly about, single-security provider values",1
+docs/phase-reports/stage-2-research-plan.md,"dropped: report with strategy results, provider-derived statistics or research outputs (permission uncertain)",1
+docs/phase-reports/strategy-autopsy-edge-discovery.md,"dropped: report containing, or mainly about, single-security provider values",1
+docs/phase-reports/x1-phantom-split-exclusions-preregistration.md,"dropped: report containing, or mainly about, single-security provider values",1
+docs/phase-reports/x1-phantom-split-exclusions-report.md,"dropped: report containing, or mainly about, single-security provider values",1
+docs/phase-reports/x2-corporate-action-exclusions-preregistration.md,"dropped: report containing, or mainly about, single-security provider values",1
+docs/phase-reports/x2-corporate-action-exclusions-report.md,"dropped: report containing, or mainly about, single-security provider values",1
+docs/phase-reports/x31-dividend-completeness-preregistration.md,"dropped: report containing, or mainly about, single-security provider values",1
+docs/phase-reports/x31-dividend-completeness-report.md,"dropped: report containing, or mainly about, single-security provider values",1
+docs/phase-reports/x41-universe-evidence-capture-report.md,"dropped: report containing, or mainly about, single-security provider values",1
+docs/phase-reports/x42-security-lifecycle-ledger-report.md,"dropped: report containing, or mainly about, single-security provider values",1
+docs/phase-reports/x43-historical-entity-resolution-report.md,"dropped: report containing, or mainly about, single-security provider values",1
+docs/phase-reports/x431-lifecycle-ledger-v2-report.md,"dropped: report containing, or mainly about, single-security provider values",1
+docs/phase-reports/x432-identity-graph-v2-report.md,"dropped: report containing, or mainly about, single-security provider values",1
+docs/phase-reports/x44-historical-universe-report.md,"dropped: report containing, or mainly about, single-security provider values",1
+docs/phase-reports/x45-member-data-report.md,"dropped: report containing, or mainly about, single-security provider values",1
+docs/phase-reports/x46-research-data-validation-report.md,"dropped: report containing, or mainly about, single-security provider values",1
+docs/phase-reports/x461-universe-and-data-corrections-report.md,"dropped: report containing, or mainly about, single-security provider values",1
+docs/phase-reports/x6-execution-realism-report.md,"dropped: report containing, or mainly about, single-security provider values",1
+docs/phase-reports/x7-backtest-integration-report.md,"dropped: report containing, or mainly about, single-security provider values",1
+docs/phase-reports/x7-independent-audit.md,3 line(s) with single-security values redacted,1
+docs/phase-reports/x7-independent-audit.md.redacted,"dropped: report with strategy results, provider-derived statistics or research outputs (permission uncertain)",1
+docs/phase-reports/x7-v2-correction-spec.md,2 line(s) with single-security values redacted,1
+docs/phase-reports/x7-v2-correction-spec.md.redacted,"dropped: report with strategy results, provider-derived statistics or research outputs (permission uncertain)",1
+docs/phase-reports/x7-v2-implementation-report.md,"dropped: report with strategy results, provider-derived statistics or research outputs (permission uncertain)",1
+docs/phase-reports/x7-v2-results-corrections-addendum.md,10 line(s) with single-security values redacted,1
+docs/phase-reports/x7-v2-results-corrections-addendum.md.redacted,"dropped: report with strategy results, provider-derived statistics or research outputs (permission uncertain)",1
+docs/phase-reports/x7-v2-results-report.md,5 line(s) with single-security values redacted,1
+docs/phase-reports/x7-v2-results-report.md.redacted,"dropped: report with strategy results, provider-derived statistics or research outputs (permission uncertain)",1
+docs/roadmap-status.md,blocks with provider-derived statistics or research results redacted,2
+scratchpad_x2_impact.py,dropped: empty scratch file,1
