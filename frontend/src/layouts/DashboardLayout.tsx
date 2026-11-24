@@ -62,7 +62,9 @@ function Sidebar({ version }: { version: string | null }) {
             <li key={path}>
               <NavLink
                 to={path}
-                end={path === "/"}
+                // Exact match when another section lives below this path (/positions vs
+                // /positions/closed), so only one entry is highlighted.
+                end={path === "/" || NAV_SECTIONS.some((s) => s.path.startsWith(`${path}/`))}
                 className={({ isActive }) =>
                   `flex items-center gap-2 rounded-sm px-2.5 py-1.5 text-xs whitespace-nowrap transition-colors ${
                     isActive
@@ -111,7 +113,7 @@ function TopBar({ status }: { status: DashboardStatus }) {
       <PaperModeBadge />
       <span className="text-ink-muted hidden items-center gap-1 text-2xs lg:inline-flex">
         <Lock aria-hidden className="size-3" />
-        No order execution
+        No real order execution · simulated paper orders only
       </span>
       <div className="ml-auto flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs">
         <span className="flex items-center gap-1.5" title="Configured market-data provider and feed">

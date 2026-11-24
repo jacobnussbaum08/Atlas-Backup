@@ -14,6 +14,7 @@ from app.api.v1 import (
     market_data_stream,
     ml,
     news,
+    paper_orders,
     portfolio,
     risk,
     strategies,
@@ -35,5 +36,9 @@ router.include_router(ai.router)
 router.include_router(portfolio.portfolio_router)
 router.include_router(portfolio.accounting_router)
 router.include_router(risk.router)
+router.include_router(paper_orders.orders_router)
+router.include_router(paper_orders.broker_router)
+router.include_router(paper_orders.positions_router)
+router.include_router(paper_orders.execution_router)
 
 __all__ = ["router"]

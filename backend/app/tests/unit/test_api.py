@@ -292,6 +292,23 @@ def test_openapi_exposes_no_order_endpoints(build_client):
         "/api/v1/risk/reservations/events",
         "/api/v1/risk/reservations/reconciliations",
         "/api/v1/risk/reservations/{reservation_id}",
+        # Phase 7A simulated paper orders and the paper broker: GET only. Submission is the
+        # execution coordinator's service interface; cancellation and controlled test
+        # events are operator CLI actions. No live brokerage control exists.
+        "/api/v1/paper-orders",
+        "/api/v1/paper-orders/open",
+        "/api/v1/paper-orders/summary",
+        "/api/v1/paper-orders/events",
+        "/api/v1/paper-orders/requests",
+        "/api/v1/paper-orders/{order_id}",
+        "/api/v1/paper-orders/{order_id}/events",
+        "/api/v1/paper-broker/status",
+        # Phase 7B simulated positions and execution analytics: GET only.
+        "/api/v1/paper-positions",
+        "/api/v1/paper-positions/summary",
+        "/api/v1/paper-positions/{position_id}",
+        "/api/v1/paper-execution/analytics",
+        "/api/v1/paper-execution/models",
     }
     # Market trades (exchange prints) are read-only market data, not trading: the one
     # allowed path containing "trade" must expose GET only.
@@ -301,7 +318,21 @@ def test_openapi_exposes_no_order_endpoints(build_client):
     accounting_reads = {p for p in paths if p.startswith("/api/v1/accounting/")} | {
         "/api/v1/portfolio/accounts"
     }
-    allowed_reads = market_data_reads | accounting_reads
+    # Phase 7A: simulated paper orders and the simulated paper broker, read-only.
+    paper_reads = {
+        p
+        for p in paths
+        if p.startswith(
+            (
+                "/api/v1/paper-orders",
+                "/api/v1/paper-broker/",
+                "/api/v1/paper-positions",
+                "/api/v1/paper-execution/",
+            )
+        )
+    }
+    assert len(paper_reads) == 13
+    allowed_reads = market_data_reads | accounting_reads | paper_reads
     forbidden = ("order", "trade", "broker", "position", "account", "execution")
     assert not [
         p for p in paths if p not in allowed_reads and any(word in p.lower() for word in forbidden)

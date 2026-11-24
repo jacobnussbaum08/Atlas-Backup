@@ -141,6 +141,23 @@ def test_expected_tables_exist():
         "risk_reservation_approvals",
         "risk_reservation_reconciliations",
         "system_health_events",
+        # Phase 7A paper execution and order management (simulated orders only)
+        "execution_requests",
+        "orders",
+        "order_events",
+        "order_fills",
+        "order_requests",
+        "paper_broker_state",
+        "paper_broker_orders",
+        "paper_broker_events",
+        "outbox_events",
+        # Phase 7B simulated execution and position management
+        "execution_models",
+        "execution_attempts",
+        "execution_fill_details",
+        "paper_positions",
+        "position_events",
+        "position_close_requests",
     }
 
 

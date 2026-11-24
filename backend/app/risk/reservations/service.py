@@ -690,7 +690,24 @@ class ReservationService:
     ) -> CommandResult:
         """Phase 7 interface: an order now depends on the reservation; from here on it can
         never expire automatically (D-152)."""
-        return self._command(
+        return self._transaction(
+            lambda s: self.attach_order_in(
+                s, reservation_id, order_ref=order_ref, idempotency_key=idempotency_key, actor=actor
+            )
+        )
+
+    def attach_order_in(
+        self,
+        session: Session,
+        reservation_id: uuid.UUID,
+        *,
+        order_ref: str,
+        idempotency_key: str,
+        actor: str,
+    ) -> CommandResult:
+        """:meth:`attach_order` within the caller's transaction (the order is created in it)."""
+        return self._command_in(
+            session,
             reservation_id,
             ReservationCommand.ATTACH_ORDER,
             idempotency_key,
@@ -803,6 +820,28 @@ class ReservationService:
     ) -> CommandResult:
         """Give back the *unconsumed* remainder once the order's fate is confirmed. Filled
         exposure is never reversed by a release: it is in the ledger."""
+        return self._transaction(
+            lambda s: self.release_in(
+                s,
+                reservation_id,
+                resolution=resolution,
+                idempotency_key=idempotency_key,
+                actor=actor,
+                reason=reason,
+            )
+        )
+
+    def release_in(
+        self,
+        session: Session,
+        reservation_id: uuid.UUID,
+        *,
+        resolution: ReleaseResolution,
+        idempotency_key: str,
+        actor: str,
+        reason: str,
+    ) -> CommandResult:
+        """:meth:`release` within the caller's transaction (the one that resolved the order)."""
         why = _reason(reason)
         if resolution is ReleaseResolution.OPERATOR and not actor.startswith("operator:"):
             raise InvalidRequestError("an OPERATOR release needs an operator: actor")
@@ -836,7 +875,8 @@ class ReservationService:
                 resolution,
             )
 
-        return self._command(
+        return self._command_in(
+            session,
             reservation_id,
             ReservationCommand.RELEASE,
             idempotency_key,
@@ -850,6 +890,22 @@ class ReservationService:
     ) -> CommandResult:
         """A *confirmed* downstream failure (nothing is or will be live for it). When the
         execution state is not known, use ``flag_uncertain``: that holds the capacity."""
+        return self._transaction(
+            lambda s: self.fail_in(
+                s, reservation_id, idempotency_key=idempotency_key, actor=actor, reason=reason
+            )
+        )
+
+    def fail_in(
+        self,
+        session: Session,
+        reservation_id: uuid.UUID,
+        *,
+        idempotency_key: str,
+        actor: str,
+        reason: str,
+    ) -> CommandResult:
+        """:meth:`fail` within the caller's transaction."""
         why = _reason(reason)
 
         def apply(
@@ -871,8 +927,14 @@ class ReservationService:
                 None,
             )
 
-        return self._command(
-            reservation_id, ReservationCommand.FAIL, idempotency_key, actor, {"reason": why}, apply
+        return self._command_in(
+            session,
+            reservation_id,
+            ReservationCommand.FAIL,
+            idempotency_key,
+            actor,
+            {"reason": why},
+            apply,
         )
 
     def flag_uncertain(
@@ -886,8 +948,31 @@ class ReservationService:
     ) -> CommandResult:
         """The execution state is unknown (a worker died mid-submission, a broker timeout):
         the reservation keeps every unit of capacity and can no longer expire on its own."""
+        return self._transaction(
+            lambda s: self.flag_uncertain_in(
+                s,
+                reservation_id,
+                idempotency_key=idempotency_key,
+                actor=actor,
+                reason=reason,
+                order_ref=order_ref,
+            )
+        )
+
+    def flag_uncertain_in(
+        self,
+        session: Session,
+        reservation_id: uuid.UUID,
+        *,
+        idempotency_key: str,
+        actor: str,
+        reason: str,
+        order_ref: str | None = None,
+    ) -> CommandResult:
+        """:meth:`flag_uncertain` within the caller's transaction."""
         why = _reason(reason)
-        return self._command(
+        return self._command_in(
+            session,
             reservation_id,
             ReservationCommand.FLAG_UNCERTAIN,
             idempotency_key,
@@ -937,23 +1022,6 @@ class ReservationService:
         )
 
     # ------------------------------------------------------------------ command plumbing
-    def _command(
-        self,
-        reservation_id: uuid.UUID,
-        command: ReservationCommand,
-        idempotency_key: str,
-        actor: str,
-        payload: dict[str, Any],
-        apply: Callable[
-            [Session, RiskReservationRecord, _Events, int, datetime], RiskReservationEventRecord
-        ],
-    ) -> CommandResult:
-        return self._transaction(
-            lambda s: self._command_in(
-                s, reservation_id, command, idempotency_key, actor, payload, apply
-            )
-        )
-
     def _command_in(
         self,
         session: Session,

@@ -88,7 +88,7 @@ describe("dashboard shell", () => {
     const label = screen.getByRole("status", { name: /paper trading mode/i });
     expect(label).toHaveTextContent(/paper trading/i);
     expect(label).toHaveTextContent(/monitoring only/i);
-    expect(screen.getByText("No order execution")).toBeInTheDocument();
+    expect(screen.getByText("No real order execution · simulated paper orders only")).toBeInTheDocument();
   });
 
   it("shows unbuilt sections explicitly as not built, without numbers", () => {

@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from app.accounting.runtime import AccountingContext
     from app.ai_engine.runtime import AIContext
     from app.asset_discovery.runtime import AssetDiscoveryContext
+    from app.execution.runtime import ExecutionContext
     from app.market_intelligence.runtime import IntelligenceContext
     from app.ml_engine.runtime import MLContext
     from app.news.runtime import NewsContext
@@ -133,6 +134,15 @@ def _build_risk_context(session_factory: sessionmaker[Session], clock: Clock) ->
     return build_risk_context(session_factory, clock)
 
 
+def _build_execution_context(
+    session_factory: sessionmaker[Session], clock: Clock
+) -> ExecutionContext:
+    from app.execution.runtime import build_execution_context
+
+    # The API only reads simulated paper orders; nothing submits, cancels or fills them.
+    return build_execution_context(session_factory, clock)
+
+
 def create_app(
     settings: Settings | None = None,
     *,
@@ -147,14 +157,15 @@ def create_app(
     ai: AIContext | None = None,
     accounting: AccountingContext | None = None,
     risk: RiskContext | None = None,
+    execution: ExecutionContext | None = None,
 ) -> FastAPI:
     """Build the application.
 
     ``health_checks`` replaces the real dependency checks; when given, no
     database engine or Redis client is created (used by unit tests).
     ``market_data``, ``asset_discovery``, ``market_intelligence``, ``news``,
-    ``strategies``, ``ml``, ``ai``, ``accounting`` and ``risk`` inject those contexts
-    (tests); otherwise they are built lazily from the environment on first use.
+    ``strategies``, ``ml``, ``ai``, ``accounting``, ``risk`` and ``execution`` inject those
+    contexts (tests); otherwise they are built lazily from the environment on first use.
     """
     settings = settings or get_settings()
     clock = clock or SystemClock()
@@ -195,6 +206,7 @@ def create_app(
             app.state.ai_factory = lambda: _build_ai_context(session_factory, clock)
             app.state.accounting_factory = lambda: _build_accounting_context(session_factory, clock)
             app.state.risk_factory = lambda: _build_risk_context(session_factory, clock)
+            app.state.execution_factory = lambda: _build_execution_context(session_factory, clock)
             _recover_interrupted_jobs(session_factory, clock)
             sweeper = asyncio.create_task(_sweep_interrupted_jobs(session_factory, clock))
         else:
@@ -241,6 +253,7 @@ def create_app(
     app.state.ai = ai
     app.state.accounting = accounting
     app.state.risk = risk
+    app.state.execution = execution
     app.state.version = app.version
     app.state.started_at = clock.now()
 

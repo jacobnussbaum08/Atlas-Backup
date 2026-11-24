@@ -281,9 +281,26 @@ def test_configuration_is_versioned_and_audited(client, env):
 
 
 def test_no_order_or_trading_routes_exist(client):
-    paths = set(client().app.openapi()["paths"])
+    schema = client().app.openapi()["paths"]
+    paths = set(schema)
     assert "/api/v1/discovery/run" in paths
-    for path in paths:
+    # Phase 7A: simulated paper orders and the simulated paper broker are read-only records
+    # (GET only); nothing anywhere submits, cancels or executes an order.
+    paper = {
+        p
+        for p in paths
+        if p.startswith(
+            (
+                "/api/v1/paper-orders",
+                "/api/v1/paper-broker/",
+                "/api/v1/paper-positions",
+                "/api/v1/paper-execution/",
+            )
+        )
+    }
+    for path in paper:
+        assert set(schema[path]) == {"get"}
+    for path in paths - paper:
         assert not any(word in path for word in ("order", "trade-execution", "position", "broker"))
 
 

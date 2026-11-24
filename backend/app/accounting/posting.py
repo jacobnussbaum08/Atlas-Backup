@@ -12,9 +12,11 @@ One posting = one database transaction:
    audit record; the deferred database trigger re-checks the balance at COMMIT.
 
 Source rules: opening funding and valuations come from SYSTEM; trades, costs and
-conversions are CONTROLLED_TEST postings, only on CONTROLLED_TEST accounts in Phase 6A
-(there is no execution source); reversals come from an OPERATOR (or CONTROLLED_TEST on a
-test account). Nothing here submits, sizes or approves an order.
+conversions are CONTROLLED_TEST postings, only on CONTROLLED_TEST accounts; reversals come
+from an OPERATOR (or CONTROLLED_TEST on a test account). Phase 7B adds SIMULATED_EXECUTION:
+the paper execution engine posts simulated fills and their costs (the trade, fee, financing
+and accrual-settlement templates only) on any paper account. Nothing here submits, sizes
+or approves an order.
 """
 
 from __future__ import annotations
@@ -83,6 +85,18 @@ from app.database.repositories.audit_log import AuditLogRepository
 from app.database.sessions import session_scope
 
 logger = get_logger(__name__)
+# Templates the paper execution engine (Phase 7B) posts as SIMULATED_EXECUTION.
+SIMULATED_EXECUTION_TEMPLATES = frozenset(
+    {
+        "long_purchase",
+        "long_sale",
+        "short_open",
+        "short_cover",
+        "fee",
+        "financing_cost",
+        "accrual_settlement",
+    }
+)
 
 
 class PostingError(AtlasError):
@@ -472,6 +486,9 @@ class PostingService:
         elif template.entry_type is EntryType.REVERSAL:
             if source not in (EntrySource.OPERATOR, EntrySource.CONTROLLED_TEST):
                 raise PostingError("reversals are operator corrections")
+        elif source is EntrySource.SIMULATED_EXECUTION:
+            if template.code not in SIMULATED_EXECUTION_TEMPLATES:
+                raise PostingError(f"{template.code} is not posted by the paper execution engine")
         elif template.controlled_test_only and source is not EntrySource.CONTROLLED_TEST:
             raise PostingError(
                 f"{template.code} has no production source yet (Phase 6A posts it only as a "

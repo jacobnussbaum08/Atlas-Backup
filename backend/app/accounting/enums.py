@@ -61,7 +61,7 @@ class EntryType(StrEnum):
 
 
 class EntrySource(StrEnum):
-    """Where a posting came from. There is no execution source yet (Phase 7 adds one)."""
+    """Where a posting came from."""
 
     # Opening funding and valuation checkpoints, posted by Atlas itself.
     SYSTEM = "SYSTEM"
@@ -70,6 +70,10 @@ class EntrySource(StrEnum):
     CONTROLLED_TEST = "CONTROLLED_TEST"
     # A correcting reversal requested by an operator.
     OPERATOR = "OPERATOR"
+    # Phase 7B: a simulated paper fill (or its execution cost: commission, fees, borrow)
+    # derived by the isolated paper broker from stored market data under a versioned
+    # execution model. Simulated execution, never a brokerage execution.
+    SIMULATED_EXECUTION = "SIMULATED_EXECUTION"
 
 
 class MovementType(StrEnum):

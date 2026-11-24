@@ -187,6 +187,36 @@ services:
     restart: on-failure
     stop_grace_period: 75s
 
+  # Isolated paper broker (Phases 7A-7B): outbox delivery, simulated fills from stored
+  # market data, expiry. Simulated only: no brokerage connection, credential or live mode.
+  paper-execution-worker:
+    image: atlas-backend:dev
+    env_file: .env
+    environment: *backend-env
+    command: ["python", "-m", "app.workers.paper_execution"]
+    healthcheck:
+      disable: true
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: on-failure
+    stop_grace_period: 30s
+
+  # Position monitor (Phase 7B): marks, protective exits, take-profits, borrow accruals of
+  # simulated paper positions. Exits are simulated paper orders through the engine above.
+  position-monitor-worker:
+    image: atlas-backend:dev
+    env_file: .env
+    environment: *backend-env
+    command: ["python", "-m", "app.workers.position_monitor"]
+    healthcheck:
+      disable: true
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: on-failure
+    stop_grace_period: 30s
+
   frontend:
     build:
       context: ./frontend

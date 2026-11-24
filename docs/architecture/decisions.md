@@ -1962,3 +1962,193 @@ later run passes. Expiry due, held past expiry and uncertain execution are warni
 operator CLI command); attach/consume/release/fail/flag are service interfaces for the
 execution engine (`consume_in` runs inside the transaction that posts the fill). In 6C they
 are exercised only by controlled test events.
+
+## Phase 7A — paper execution engine and order management
+
+### D-156 Orders are an event-sourced projection with a database-enforced state machine
+
+**Decision:** `orders` is a current-state projection that only the `order_events` insert
+trigger (`atlas_order_event_apply`) may change; events are append-only and gapless per
+order. The legal transitions live in one Python table (`state_machine.TRANSITIONS`) and are
+frozen in migration 0016 as `atlas_order_transition_allowed`; tests compare the two.
+ACCEPTED/FILL/CANCEL_CONFIRMED/CANCEL_REJECTED must reference a paper broker event; the
+engine cannot finish an order the broker is working. PROPOSED never commits.
+**Why:** the same pattern 6C uses for reservations: application bugs and direct writes
+cannot produce an illegal or silently overwritten order history.
+**Spec deviation (documented):** spec 15.1 names PENDING_RISK and APPROVED_RESERVED; the
+7A prompt names PROPOSED and APPROVED. 7A uses the prompt's names: the risk decision and
+the reservation both happen before an order exists (6C), so PROPOSED covers "pending risk"
+within the submission transaction and APPROVED means "approved, reservation attached".
+
+### D-157 One ENTRY order per reservation; exits link to their parent
+
+**Decision:** an ENTRY order executes exactly one APPROVED 6C reservation (partial unique
+index, insert guard, one `ORDER_ATTACHED`), never above the approved quantity and never
+priced beyond the approval's worst entry price (`protection_price`). EXIT orders (take
+profit, protective stops, closing orders) reduce the filled position of an ENTRY order:
+they reference the parent's reservation for traceability only and consume nothing.
+**Why:** an exit reduces risk and cannot open exposure (quantity bounded by the parent's
+fills and the ledger position); requiring a fresh reservation for it would block closing a
+position while breakers are tripped, contrary to spec 24.2. Exits are therefore accepted
+while new entries are halted.
+
+### D-158 Who may submit
+
+**Decision:** only `system:execution[-...]` (the execution coordinator) and
+`operator:<name>` may submit or cancel; any system actor naming a strategy, AI, LLM, ML,
+model or decision component is refused, as is anything else. Operator-sourced
+reservations can only be executed by an operator. Refused requests are recorded
+(`execution_requests`, REFUSED, with reasons) and touch no reservation. A static test
+checks that strategies, the AI and ML engines, intelligence and news import nothing from
+`app.execution`, `app.paper_broker` or `app.events`.
+
+### D-159 Transactional outbox in PostgreSQL; handlers run inside the delivery transaction
+
+**Decision:** `outbox_events` (spec 4.1) with `dedupe_key` UNIQUE; one dispatcher claim =
+one transaction: `FOR UPDATE SKIP LOCKED`, handler in a savepoint, DELIVERED in the same
+commit; failures recorded with exponential backoff; DEAD after 5 attempts with a
+per-topic recovery. Redis is not used.
+**Why:** the paper broker's book is in the same database, so delivering and acting can be
+one atomic step: a crash leaves the event pending and nothing half-done; retries cannot
+duplicate an order (UNIQUE `client_order_id` at the broker, state checks under the order
+lock).
+
+### D-160 Fills post as CONTROLLED_TEST in Phase 7A
+
+**Decision:** the fill -> 6A contract (`PositionLedger`) posts through the existing
+templates with source CONTROLLED_TEST, which 6A accepts only on CONTROLLED_TEST accounts.
+`AccountingPositionLedger` refuses any other source. `order_fills` and
+`paper_broker_events` CHECK constraints accept FILL only from CONTROLLED_TEST.
+**Why:** 7A has no fill model; nothing may present a fill as anything but a controlled test
+event. Phase 7B adds a simulated-execution source (6A `EntrySource`, the CHECKs and this
+class) as an explicit, migrated change.
+
+### D-161 Broker events are applied in broker order, once
+
+**Decision:** each book row numbers its events without gaps; `orders.
+applied_broker_sequence` must advance by exactly one per applied event (trigger). A
+delivery applies all earlier unapplied events first; a repeat is a no-op.
+**Why:** a cancel confirmation applied before an earlier fill would release capacity the
+fill then needs; ordering makes the outcome independent of delivery order and concurrency.
+
+### D-162 Cancellation and expiry release only confirmed, unfilled exposure
+
+**Decision:** cancellation is a request (CANCEL_PENDING); the reservation's remainder is
+released only when the broker's CANCEL_CONFIRMED is applied. An order the broker never
+received is cancelled with a broker tombstone (so a late submission is answered with the
+cancellation). Expiry of a working order is decided by the broker (EXPIRED event); of an
+order it never received, by the engine. A dead cancellation holds the capacity, flags the
+reservation uncertain and trips EXECUTION_SAFETY. Order lifetime defaults to 1 day, at
+most 7 days (constants, no environment variable).
+
+### D-163 Post-fill 6A reconciliation through the outbox
+
+**Decision:** every fill enqueues `accounting.reconcile`; its handler runs the 6A
+reconciliation (`trigger = POST_FILL`) unless a run already covers the latest entry.
+**Why:** 6B requires a current reconciliation for an assessment (the 6C report's open
+limitation); without it the first fill would make every later reservation
+INSUFFICIENT_DATA until an operator ran the reconciliation.
+
+## Phase 7B — simulated execution and automated position management
+
+### D-164 Fills are simulated by the paper broker from stored observations only
+
+**Decision:** the execution simulator (`app.execution.simulation`) evaluates each working
+order against the stored `market_quotes`, `market_trades` and `market_bars` rows that were
+*available* (`available_at`) and had *occurred* (`event_time`) at the evaluation time, with
+quality VALID, after the order reached the simulator plus an execution delay (1 s). The pure
+fill model (`app.paper_broker.fill_model`) decides; nothing is interpolated, carried forward
+or invented. Each observation's liquidity counts once per order (book-row cursors: the quote
+id used, the last trade and bar). One evaluation is one transaction: trigger and fill events,
+the 6A posting, the 6C consumption, the fill and the position.
+**Why:** spec 15.3/15.4 and the 7B prompt: actual market-data inputs, no look-ahead, no
+duplicate fills under retries, restarts and concurrent workers.
+
+### D-165 Conservative execution rules, versioned and content-addressed
+
+**Decision:** marketable orders execute at the touch of the newest fresh, unused quote (buy
+at the ask, sell at the bid) plus slippage and a linear impact proportional to participation,
+rounded adversely to the tick; resting limits fill only on volume printed strictly through
+the limit (trades; bars when there are no trades), at the limit, at a participation share;
+stops trigger on the touch or trades/bar extremes through the stop and execute as market
+orders never better than the stop; gaps fill worse; stop-limits may stay unfilled; trailing
+stops ratchet only after the observations they are checked against; a quote older than the
+newest trade or bar is not the current market; entries never fill beyond the reserved worst
+entry price and not while a new-entry breaker is tripped. All numbers live in an
+`ExecutionModel` stored once per content hash in `execution_models`; every book row and
+simulated fill records its version.
+**Why:** "do not assume a touch is a fill", "do not guarantee the stop price", "never invent
+an intrabar path"; a changed assumption must not rewrite how earlier fills were derived.
+These rules are deliberately conservative, not unbiased.
+
+### D-166 Missing data defers; the bar fallback is an explicit, labelled assumption
+
+**Decision:** without a fresh quote a market order may use the newest completed fresh bar's
+close widened by an *assumed* half spread (BAR_FALLBACK, configurable, recorded as an
+assumption); a quote without size, a bar without volume, a stale quote with no usable bar,
+a closed equity session and an unsupported asset class defer (no fill, a DEFERRED attempt).
+**Why:** the IEX feed has gaps and covers a small share of volume; a fill is never derived
+from fabricated liquidity or a fabricated quote.
+
+### D-167 SIMULATED_EXECUTION: a 6A source for the primary paper account
+
+**Decision:** 6A gains `EntrySource.SIMULATED_EXECUTION` (migration 0017), accepted on any
+paper account for the trade, fee, financing and accrual-settlement templates only. A fill's
+6A source follows its broker source (CONTROLLED_TEST -> CONTROLLED_TEST, SIMULATION ->
+SIMULATED_EXECUTION); there is no setting. `order_fills` and `paper_broker_events` accept
+SIMULATION fills, which must name their execution model.
+**Why:** D-160 deferred this to 7B: simulated fills must post to the primary paper account
+through the existing templates, auditable as simulated, never as anything else.
+
+### D-168 A position is the trade of one ENTRY order
+
+**Decision:** `paper_positions` holds one row per ENTRY order that filled: opened by its first
+fill, increased by later entry fills, reduced by its EXIT orders' fills, closed when nothing is
+open and the entry order is final. Realized P/L is the 6A ledger's realized P/L of the exit
+fills (average cost); costs are the fills' costs plus accrued borrow. Every change is a
+gapless, append-only `position_events` row; guards keep identity immutable, quantities and
+costs monotonic, the stop only tightening and closed positions final. An entry against an
+open position of the other direction is refused (`OPPOSITE_POSITION`).
+**Why:** the dashboard needs per-trade entry/exit, exit reason and strategy origin, without
+a second accounting system. Limitation: two open positions in one asset share the ledger's
+average cost.
+
+### D-169 Protection is position-level; one protective exit at a time (OCO)
+
+**Decision:** a position's protection is levels, not resting broker orders: the approved stop
+(6C approval; may only tighten), an operator trailing stop, the strategy proposal's
+invalidation level and holding horizon (expiry), and the target. The position monitor checks
+the adverse levels against the observations since its last pass and, when one is reached (or
+on expiry or an operator close request), withdraws the entry's unfilled remainder, cancels
+resting take-profits and, once they are final, submits **one** MARKET exit for what the
+position holds. The target is a resting TAKE_PROFIT limit at the broker (filled only by the
+limit rules). Exit quantities are bounded by `closable_quantity`, so a stop exit and a
+take-profit can never both close the same quantity.
+**Why:** OCO without races between two resting orders; simulated execution delay between a
+trigger and its exit; exits keep working while new-entry breakers are tripped (D-157).
+
+### D-170 Stop first when the order of events is unknown
+
+**Decision:** when a bar (or the trades since the last pass) reached both the stop side and
+the target, the monitor treats the stop as first; the simulator does not fill a take-profit
+from activity at or after the first observation that reached the position's binding stop
+(`STOP_REACHED_FIRST`). With trades, time order is known and used.
+**Why:** spec and prompt section 9: the conservative stop-first assumption; no intrabar path.
+
+### D-171 Costs: commissions per order, regulatory fees per fill, borrow accrued daily
+
+**Decision:** commissions are computed on the order's cumulative fills (minimum and cap per
+order); SEC-style and per-share sell fees per fill; all rounded up to the currency's minor
+unit. Short positions accrue borrow daily at the model's annual rate on the last fresh mark
+(6A `financing_cost`, accrued) and the accrued amount is paid when the position closes
+(`accrual_settlement`). Long financing is zero (no margin borrowing); crypto funding is not
+applicable (spot only). The default rates are configured assumptions, not current fee
+schedules.
+
+### D-172 Workers and polling
+
+**Decision:** the paper execution worker runs the simulator each tick after outbox delivery,
+skipping orders with no observation newly available since their last evaluation, and doing
+nothing while the broker is not RUNNING. The position-monitor worker passes every 5 s by
+default; it evaluates *all* trades and bars since its cursor, so a longer interval delays an
+exit but misses no touch. Equity protection is evaluated on regular-session data only.
